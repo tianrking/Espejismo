@@ -75,7 +75,7 @@ mod tests {
     fn profile_url_roundtrips() {
         let profile = ClientProfile {
             name: "default".to_string(),
-            server: "127.0.0.1:8443".parse().unwrap(),
+            server: "127.0.0.1:6690".parse().unwrap(),
             psk: "change-me-long-random-secret".to_string(),
             socks5_listen: Some("127.0.0.1:6680".parse().unwrap()),
             http_listen: None,

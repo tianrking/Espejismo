@@ -6,7 +6,7 @@ param(
     [string]$ProfileUrl = "",
     [string]$Server = "",
     [string]$Psk = "",
-    [string]$RemoteListen = "0.0.0.0:8443",
+    [string]$RemoteListen = "0.0.0.0:6690",
     [string]$Socks5Listen = "127.0.0.1:6680",
     [string]$HttpListen = "127.0.0.1:6681",
     [string]$ProxyUsername = "",
@@ -122,7 +122,7 @@ if ($Psk -eq "") {
     $Psk = New-Secret
 }
 if ($Mode -eq "local" -and $Server -eq "") {
-    throw "-Server is required for local mode, for example -Server 203.0.113.10:8443"
+    throw "-Server is required for local mode, for example -Server 203.0.113.10:6690"
 }
 if ($ProxyUsername -eq "" -and $ProxyPassword -ne "") {
     throw "-ProxyUsername is required when -ProxyPassword is set"

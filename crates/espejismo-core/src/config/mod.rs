@@ -255,7 +255,7 @@ pub fn example_config() -> String {
             ..SharedConfig::default()
         },
         local: LocalConfig {
-            server: Some("127.0.0.1:8443".parse().expect("valid address")),
+            server: Some("127.0.0.1:6690".parse().expect("valid address")),
             auth: Some(ProxyAuth {
                 username: "local-user".to_string(),
                 password: "local-pass".to_string(),
@@ -314,7 +314,7 @@ fn default_handshake_padding() -> usize {
 }
 
 fn default_remote_listen() -> SocketAddr {
-    "0.0.0.0:8443".parse().expect("valid address")
+    "0.0.0.0:6690".parse().expect("valid address")
 }
 
 fn default_handshake_timeout_ms() -> u64 {

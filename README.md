@@ -121,7 +121,7 @@ Terminal 1:
 
 ```bash
 ESPEJISMO_PSK='change-me-long-random-secret' \
-cargo run --bin espejismo-remote -- --listen 0.0.0.0:8443
+cargo run --bin espejismo-remote -- --listen 0.0.0.0:6690
 ```
 
 Terminal 2:
@@ -131,7 +131,7 @@ ESPEJISMO_PSK='change-me-long-random-secret' \
 cargo run --bin espejismo-local -- \
   --socks5-listen 127.0.0.1:6680 \
   --http-listen 127.0.0.1:6681 \
-  --server 127.0.0.1:8443
+  --server 127.0.0.1:6690
 ```
 
 Then point a SOCKS5-capable client at `127.0.0.1:6680` or an HTTP proxy client
@@ -156,14 +156,14 @@ Terminal 1:
 
 ```powershell
 $env:ESPEJISMO_PSK = "change-me-long-random-secret"
-cargo run --bin espejismo-remote -- --listen 127.0.0.1:8443
+cargo run --bin espejismo-remote -- --listen 127.0.0.1:6690
 ```
 
 Terminal 2:
 
 ```powershell
 $env:ESPEJISMO_PSK = "change-me-long-random-secret"
-cargo run --bin espejismo-local -- --socks5-listen 127.0.0.1:6680 --http-listen 127.0.0.1:6681 --server 127.0.0.1:8443
+cargo run --bin espejismo-local -- --socks5-listen 127.0.0.1:6680 --http-listen 127.0.0.1:6681 --server 127.0.0.1:6690
 ```
 
 ## Configuration
@@ -190,7 +190,7 @@ backpressure_cooldown_ms = 1000
 tunnel_buffer = 1048576
 
 [local]
-server = "127.0.0.1:8443"
+server = "127.0.0.1:6690"
 socks5_listen = "127.0.0.1:6680"
 http_listen = "127.0.0.1:6681"
 handshake_padding = 256
@@ -210,7 +210,7 @@ ansi = true
 # token = "change-me-admin-token"
 
 [remote]
-listen = "0.0.0.0:8443"
+listen = "0.0.0.0:6690"
 handshake_timeout_ms = 3000
 reject_delay_ms = 0
 max_handshake_padding = 1024
@@ -251,7 +251,7 @@ Windows packaged release:
 Windows setup helper:
 
 ```powershell
-.\scripts\setup-windows.ps1 -Mode local -Server "YOUR_SERVER_IP:8443" -Psk "the-same-psk"
+.\scripts\setup-windows.ps1 -Mode local -Server "YOUR_SERVER_IP:6690" -Psk "the-same-psk"
 ```
 
 Run from base64-encoded TOML, useful for deployment panels or one-line imports:

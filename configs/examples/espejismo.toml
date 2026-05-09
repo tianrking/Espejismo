@@ -10,7 +10,7 @@ backpressure_cooldown_ms = 1000
 tunnel_buffer = 1048576
 
 [local]
-server = "127.0.0.1:8443"
+server = "127.0.0.1:6690"
 socks5_listen = "127.0.0.1:6680"
 http_listen = "127.0.0.1:6681"
 handshake_padding = 256
@@ -30,7 +30,7 @@ ansi = true
 # token = "change-me-admin-token"
 
 [remote]
-listen = "0.0.0.0:8443"
+listen = "0.0.0.0:6690"
 handshake_timeout_ms = 3000
 reject_delay_ms = 0
 max_handshake_padding = 1024

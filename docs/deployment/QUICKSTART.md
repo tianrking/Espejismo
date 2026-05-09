@@ -28,7 +28,7 @@ connect to:
 curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
   | sudo ESPEJISMO_REPO=OWNER/REPO \
     ESPEJISMO_VERSION=latest \
-    ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:8443 \
+    ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690 \
     bash
 ```
 
@@ -54,8 +54,8 @@ systemd unit, and starts `espejismo-remote`.
 Useful install-time variables:
 
 ```bash
-ESPEJISMO_LISTEN=0.0.0.0:8443
-ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:8443
+ESPEJISMO_LISTEN=0.0.0.0:6690
+ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690
 # Or use ESPEJISMO_PUBLIC_HOST=203.0.113.10 with the port from ESPEJISMO_LISTEN.
 ESPEJISMO_PSK='use-a-long-random-secret'
 ESPEJISMO_CLIENT_SOCKS5_LISTEN=127.0.0.1:6680
@@ -115,7 +115,7 @@ Windows can also run the remote endpoint directly:
 ```powershell
 .\scripts\setup-windows.ps1 `
   -Mode remote `
-  -RemoteListen "0.0.0.0:8443" `
+  -RemoteListen "0.0.0.0:6690" `
   -Psk "use-a-long-random-secret" `
   -AdminListen "127.0.0.1:9090"
 ```
