@@ -4,11 +4,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PSK="change-me-long-random-secret"
 HTTP_ADDR="127.0.0.1"
-HTTP_PORT="18080"
-REMOTE_ADDR="127.0.0.1:18443"
-SOCKS5_ADDR="127.0.0.1:11080"
-HTTP_PROXY_ADDR="127.0.0.1:18081"
+PORT_BASE=$((20000 + ($$ % 20000)))
+HTTP_PORT="${PORT_BASE}"
+REMOTE_ADDR="127.0.0.1:$((PORT_BASE + 1))"
+SOCKS5_ADDR="127.0.0.1:$((PORT_BASE + 2))"
+HTTP_PROXY_ADDR="127.0.0.1:$((PORT_BASE + 3))"
 CONFIG_FILE="$(mktemp /tmp/espejismo-config.XXXXXX.toml)"
+PROBE_TOKEN="probe-$(date +%s)-$$"
+POST_BODY="body-${PROBE_TOKEN}"
 
 cleanup() {
   if [[ -n "${LOCAL_PID:-}" ]]; then kill "${LOCAL_PID}" 2>/dev/null || true; fi
@@ -34,7 +37,7 @@ wait_for_port() {
 
 cd "${ROOT}"
 
-python3 -m http.server "${HTTP_PORT}" --bind "${HTTP_ADDR}" >/tmp/espejismo-http.log 2>&1 &
+python3 "${ROOT}/scripts/probe_http_server.py" --host "${HTTP_ADDR}" --port "${HTTP_PORT}" >/tmp/espejismo-http.log 2>&1 &
 HTTP_PID=$!
 wait_for_port "${HTTP_ADDR}" "${HTTP_PORT}" "http fixture"
 
@@ -61,24 +64,39 @@ CONFIG_B64="$(base64 -w0 "${CONFIG_FILE}" 2>/dev/null || base64 "${CONFIG_FILE}"
 cargo run --quiet --bin espejismo-remote -- \
   --config-base64 "${CONFIG_B64}" >/tmp/espejismo-remote.log 2>&1 &
 REMOTE_PID=$!
-wait_for_port "127.0.0.1" "18443" "espejismo remote"
+wait_for_port "127.0.0.1" "$((PORT_BASE + 1))" "espejismo remote"
 
 cargo run --quiet --bin espejismo-local -- \
   --config "${CONFIG_FILE}" >/tmp/espejismo-local.log 2>&1 &
 LOCAL_PID=$!
-wait_for_port "127.0.0.1" "11080" "SOCKS5 proxy"
-wait_for_port "127.0.0.1" "18081" "HTTP proxy"
+wait_for_port "127.0.0.1" "$((PORT_BASE + 2))" "SOCKS5 proxy"
+wait_for_port "127.0.0.1" "$((PORT_BASE + 3))" "HTTP proxy"
 
 curl --silent --show-error --max-time 10 \
   --socks5-hostname "${SOCKS5_ADDR}" \
-  "http://${HTTP_ADDR}:${HTTP_PORT}/" | grep -q "Directory listing"
+  -H "X-Espejismo-Probe: ${PROBE_TOKEN}" \
+  "http://${HTTP_ADDR}:${HTTP_PORT}/probe/socks5/${PROBE_TOKEN}" \
+  | grep -q "\"probe\": \"${PROBE_TOKEN}\""
 
 curl --silent --show-error --max-time 10 \
   --socks5-hostname "${SOCKS5_ADDR}" \
-  "http://${HTTP_ADDR}:${HTTP_PORT}/README.md" | grep -q "Espejismo"
+  -X POST \
+  -H "X-Espejismo-Probe: ${PROBE_TOKEN}" \
+  --data "${POST_BODY}" \
+  "http://${HTTP_ADDR}:${HTTP_PORT}/probe/post/${PROBE_TOKEN}" \
+  | grep -q "\"body\": \"${POST_BODY}\""
 
 curl --silent --show-error --max-time 10 \
   --proxy "http://${HTTP_PROXY_ADDR}" \
-  "http://${HTTP_ADDR}:${HTTP_PORT}/README.md" | grep -q "Espejismo"
+  -H "X-Espejismo-Probe: ${PROBE_TOKEN}" \
+  "http://${HTTP_ADDR}:${HTTP_PORT}/probe/http/${PROBE_TOKEN}" \
+  | grep -q "\"path\": \"/probe/http/${PROBE_TOKEN}\""
+
+curl --silent --show-error --max-time 10 \
+  --proxytunnel \
+  --proxy "http://${HTTP_PROXY_ADDR}" \
+  -H "X-Espejismo-Probe: ${PROBE_TOKEN}" \
+  "http://${HTTP_ADDR}:${HTTP_PORT}/probe/connect/${PROBE_TOKEN}" \
+  | grep -q "\"path\": \"/probe/connect/${PROBE_TOKEN}\""
 
 echo "e2e smoke test passed"

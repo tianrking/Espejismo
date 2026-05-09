@@ -225,3 +225,7 @@ then performs two SOCKS5 requests through the same encrypted yamux tunnel.
 See [docs/development/STATUS.md](docs/development/STATUS.md) for the implemented
 feature matrix and the remaining roadmap, including UDP, transparent migration,
 WASM/browser packaging, metrics, and runtime reload.
+
+See [docs/testing/TEST_PLAN.md](docs/testing/TEST_PLAN.md) for the executable
+test strategy and [docs/research/DESIGN_PRINCIPLES.md](docs/research/DESIGN_PRINCIPLES.md)
+for the protocol design principles.
