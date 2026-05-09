@@ -1,0 +1,20 @@
+[package]
+name = "espejismo-server"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+authors.workspace = true
+
+[[bin]]
+name = "espejismo-remote"
+path = "src/main.rs"
+
+[dependencies]
+anyhow.workspace = true
+clap.workspace = true
+espejismo-core = { path = "../espejismo-core" }
+futures.workspace = true
+tokio.workspace = true
+tokio-yamux.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
