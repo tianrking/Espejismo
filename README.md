@@ -76,7 +76,39 @@ C/C++ native extensions.
 cargo build --release
 ```
 
-Cross-platform CI checks Linux, macOS, and Windows.
+Cross-platform CI checks Linux, macOS, and Windows. The release workflow builds
+packaged artifacts for:
+
+- `linux-x86_64`
+- `macos-x86_64`
+- `macos-aarch64`
+- `windows-x86_64`
+
+Each archive contains:
+
+- `bin/espejismo-local`
+- `bin/espejismo-remote`
+- `configs/espejismo.toml`
+- README and architecture/testing notes
+
+Create a package for the current Unix-like host:
+
+```bash
+./scripts/package-release.sh
+```
+
+Create a package on Windows PowerShell:
+
+```powershell
+.\scripts\package-release.ps1
+```
+
+You can also pass an installed Rust target triple:
+
+```bash
+rustup target add x86_64-unknown-linux-gnu
+./scripts/package-release.sh x86_64-unknown-linux-gnu
+```
 
 ## Run on Linux/macOS
 
@@ -165,6 +197,20 @@ Run from a file:
 ```bash
 cargo run --bin espejismo-remote -- --config espejismo.toml
 cargo run --bin espejismo-local -- --config espejismo.toml
+```
+
+Run from a packaged release:
+
+```bash
+./bin/espejismo-remote --config configs/espejismo.toml
+./bin/espejismo-local --config configs/espejismo.toml
+```
+
+Windows packaged release:
+
+```powershell
+.\bin\espejismo-remote.exe --config .\configs\espejismo.toml
+.\bin\espejismo-local.exe --config .\configs\espejismo.toml
 ```
 
 Run from base64-encoded TOML, useful for deployment panels or one-line imports:

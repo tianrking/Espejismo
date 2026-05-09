@@ -24,7 +24,10 @@ cargo fmt --all --check
 cargo check --workspace --all-targets
 cargo test --workspace --all-targets
 ./scripts/e2e_smoke.sh
+./scripts/package-release.sh
 ```
+
+On Windows, use `.\scripts\package-release.ps1` for the packaging check.
 
 ## End-to-End Probe
 

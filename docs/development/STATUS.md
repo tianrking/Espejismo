@@ -19,6 +19,9 @@
 - End-to-end smoke test covering authenticated SOCKS5, authenticated HTTP proxy,
   file config, and base64 config.
 - CI for Linux, macOS, and Windows.
+- Release artifact workflow for Linux x86_64, macOS x86_64, macOS aarch64, and
+  Windows x86_64.
+- Local packaging scripts for Unix-like hosts and Windows PowerShell.
 - systemd and Docker deployment starter assets.
 
 ## Not Yet Implemented
@@ -27,6 +30,7 @@
 - Transparent migration of live yamux streams across a new physical tunnel.
 - Browser extension packaging.
 - WASM transport crate. The current runtime uses Tokio TCP and is native-first.
+- Linux aarch64 release artifact automation.
 - Admin API, live metrics endpoint, and runtime config reload.
 - OS-specific TCP_INFO congestion telemetry. Current backpressure is portable write-latency based.
 
