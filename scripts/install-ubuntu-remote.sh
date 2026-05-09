@@ -105,10 +105,10 @@ download_archive() {
   local dest="$1"
   local package_arch
   case "$(uname -m)" in
-    x86_64|amd64) package_arch="linux-x86_64" ;;
-    i386|i486|i586|i686) package_arch="linux-x86" ;;
+    x86_64|amd64) package_arch="linux-amd64" ;;
+    i386|i486|i586|i686) package_arch="linux-386" ;;
     aarch64|arm64) package_arch="linux-arm64" ;;
-    armv7l|armv7*) package_arch="linux-arm32" ;;
+    armv7l|armv7*) package_arch="linux-armv7" ;;
     *)
       echo "unsupported Ubuntu architecture: $(uname -m)" >&2
       exit 1

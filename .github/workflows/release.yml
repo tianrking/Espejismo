@@ -17,12 +17,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: linux-x86_64
+          - name: linux-amd64
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
             use_cross: false
-          - name: linux-x86
+          - name: linux-386
             os: ubuntu-latest
             target: i686-unknown-linux-gnu
             archive: tar.gz
@@ -32,27 +32,27 @@ jobs:
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
             use_cross: true
-          - name: linux-arm32
+          - name: linux-armv7
             os: ubuntu-latest
             target: armv7-unknown-linux-gnueabihf
             archive: tar.gz
             use_cross: true
-          - name: macos-x86_64
+          - name: darwin-amd64
             os: macos-13
             target: x86_64-apple-darwin
             archive: tar.gz
             use_cross: false
-          - name: macos-aarch64
+          - name: darwin-arm64
             os: macos-14
             target: aarch64-apple-darwin
             archive: tar.gz
             use_cross: false
-          - name: windows-x86_64
+          - name: windows-amd64
             os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
             use_cross: false
-          - name: windows-x86
+          - name: windows-386
             os: windows-latest
             target: i686-pc-windows-msvc
             archive: zip

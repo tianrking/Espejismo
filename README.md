@@ -66,9 +66,9 @@ C/C++ native extensions.
 
 | Platform | Status | Notes |
 | --- | --- | --- |
-| Linux x86_64/x86/arm64/arm32 | Supported | Suitable for servers, desktops, and ARM single-board systems. |
+| Linux amd64/386/arm64/armv7 | Supported | Suitable for servers, desktops, and ARM single-board systems. |
 | macOS Intel/Apple Silicon | Supported | Build with the standard Rust toolchain. |
-| Windows x86_64/x86/arm64 | Supported | Run from PowerShell or Windows Terminal. |
+| Windows amd64/386/arm64 | Supported | Run from PowerShell or Windows Terminal. |
 
 ## Build
 
@@ -79,14 +79,14 @@ cargo build --release
 Cross-platform CI checks Linux, macOS, and Windows. The release workflow builds
 packaged artifacts for:
 
-- `linux-x86_64`
-- `linux-x86`
+- `linux-amd64`
+- `linux-386`
 - `linux-arm64`
-- `linux-arm32`
-- `macos-x86_64`
-- `macos-aarch64`
-- `windows-x86_64`
-- `windows-x86`
+- `linux-armv7`
+- `darwin-amd64`
+- `darwin-arm64`
+- `windows-amd64`
+- `windows-386`
 - `windows-arm64`
 
 Each archive contains:
