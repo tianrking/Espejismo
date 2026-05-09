@@ -7,6 +7,7 @@
 - HTTP proxy ingress with optional Basic proxy authentication, CONNECT, and
   absolute-form HTTP forwarding.
 - Shared TOML configuration and base64 configuration import.
+- Configurable compact, pretty, or JSON logging with optional file output.
 - Variable-length authenticated first packet.
 - X25519 ephemeral key exchange and HKDF session keys.
 - XChaCha20-Poly1305 encrypted frames with fail-fast authentication.
@@ -31,7 +32,7 @@
 - Browser extension packaging.
 - WASM transport crate. The current runtime uses Tokio TCP and is native-first.
 - Linux aarch64 release artifact automation.
-- Admin API, live metrics endpoint, and runtime config reload.
+- Admin API, live metrics endpoint, log rotation policy, and runtime config reload.
 - OS-specific TCP_INFO congestion telemetry. Current backpressure is portable write-latency based.
 
 ## Architecture Direction

@@ -17,4 +17,3 @@ futures.workspace = true
 tokio.workspace = true
 tokio-yamux.workspace = true
 tracing.workspace = true
-tracing-subscriber.workspace = true

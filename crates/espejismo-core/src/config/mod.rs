@@ -1,6 +1,7 @@
 use std::fs;
 use std::net::SocketAddr;
 use std::path::Path;
+use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -22,6 +23,8 @@ pub struct EspejismoConfig {
     pub local: LocalConfig,
     #[serde(default)]
     pub remote: RemoteConfig,
+    #[serde(default)]
+    pub logging: LogConfig,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -78,12 +81,34 @@ pub struct RemoteConfig {
     pub tarpit_hold_secs: u64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LogConfig {
+    #[serde(default = "default_log_level")]
+    pub level: String,
+    #[serde(default)]
+    pub format: LogFormat,
+    #[serde(default)]
+    pub file: Option<PathBuf>,
+    #[serde(default = "default_log_ansi")]
+    pub ansi: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum LogFormat {
+    #[default]
+    Compact,
+    Pretty,
+    Json,
+}
+
 impl Default for EspejismoConfig {
     fn default() -> Self {
         Self {
             shared: SharedConfig::default(),
             local: LocalConfig::default(),
             remote: RemoteConfig::default(),
+            logging: LogConfig::default(),
         }
     }
 }
@@ -127,6 +152,17 @@ impl Default for RemoteConfig {
             cold_start_delay_ms: default_cold_start_delay_ms(),
             tarpit_max: default_tarpit_max(),
             tarpit_hold_secs: default_tarpit_hold_secs(),
+        }
+    }
+}
+
+impl Default for LogConfig {
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+            format: LogFormat::default(),
+            file: None,
+            ansi: default_log_ansi(),
         }
     }
 }
@@ -177,6 +213,7 @@ pub fn example_config() -> String {
             ..LocalConfig::default()
         },
         remote: RemoteConfig::default(),
+        logging: LogConfig::default(),
     };
     toml::to_string_pretty(&config).expect("example config serializes")
 }
@@ -251,4 +288,12 @@ fn default_tarpit_max() -> usize {
 
 fn default_tarpit_hold_secs() -> u64 {
     300
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
+fn default_log_ansi() -> bool {
+    true
 }

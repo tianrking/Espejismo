@@ -181,6 +181,12 @@ handshake_padding = 256
 username = "local-user"
 password = "local-pass"
 
+[logging]
+level = "info"
+format = "compact"
+ansi = true
+# file = "/var/log/espejismo/espejismo.log"
+
 [remote]
 listen = "0.0.0.0:8443"
 handshake_timeout_ms = 3000
@@ -233,6 +239,10 @@ cargo run --bin espejismo-local -- --print-example-config-base64
 - `espejismo-local --http-listen` enables the local HTTP proxy.
 - `[local.auth]` enables local SOCKS5 username/password auth and HTTP Basic
   proxy auth. Omit it for a trusted loopback-only no-auth listener.
+- `[logging]` controls structured logs. `format` can be `compact`, `pretty`, or
+  `json`; `file` writes logs to a path instead of stderr.
+- `--log-level`, `--log-format`, `--log-file`, and `--no-log-ansi` override the
+  logging config for either binary.
 - `--max-padding` controls the maximum payload size of encrypted padding frames.
 - `--padding-chance-percent` controls how often padding is attempted.
 - `--backpressure-threshold-ms` detects slow writes and disables padding.
@@ -271,6 +281,30 @@ cargo run --bin espejismo-local -- --print-example-config-base64
 
 The script starts a local HTTP server, `espejismo-remote`, and `espejismo-local`,
 then performs two SOCKS5 requests through the same encrypted yamux tunnel.
+
+## Logging
+
+Console logs default to compact human-readable output:
+
+```toml
+[logging]
+level = "info"
+format = "compact"
+ansi = true
+```
+
+For production ingestion, use JSON logs:
+
+```toml
+[logging]
+level = "info,espejismo_core=debug"
+format = "json"
+ansi = false
+file = "/var/log/espejismo/espejismo.log"
+```
+
+The `level` field accepts normal tracing filter directives, so operators can
+raise one module while keeping the rest quiet.
 
 ## Project Status
 

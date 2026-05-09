@@ -45,6 +45,7 @@ The probe sends a unique token through these paths:
 - Authenticated HTTP proxy absolute-form GET
 - Authenticated HTTP CONNECT tunnel
 - HTTP proxy authentication rejection
+- JSON logging configuration during process startup
 
 The fixture returns JSON containing method, path, probe header, and request
 body. The script checks that the returned JSON contains the expected token,

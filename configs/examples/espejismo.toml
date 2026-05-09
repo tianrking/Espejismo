@@ -19,6 +19,12 @@ handshake_padding = 256
 username = "local-user"
 password = "local-pass"
 
+[logging]
+level = "info"
+format = "compact"
+ansi = true
+# file = "/var/log/espejismo/espejismo.log"
+
 [remote]
 listen = "0.0.0.0:8443"
 handshake_timeout_ms = 3000

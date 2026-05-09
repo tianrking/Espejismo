@@ -1,13 +1,13 @@
-use std::env;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
 use espejismo_core::config::{encode_config_base64, example_config};
 use espejismo_core::{
-    accept_handshake_with_replay, load_config, parse_psk, spawn_frame_transport, ConfigInput,
-    EspejismoConfig, FrameOptions, HandshakeConfig, ReplayCache,
+    accept_handshake_with_replay, init_logging, load_config, parse_psk, spawn_frame_transport,
+    ConfigInput, EspejismoConfig, FrameOptions, HandshakeConfig, LogConfig, LogFormat, ReplayCache,
 };
 use futures::StreamExt;
 use tokio::io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt};
@@ -63,6 +63,14 @@ struct Args {
     tarpit_max: Option<usize>,
     #[arg(long)]
     tarpit_hold_secs: Option<u64>,
+    #[arg(long)]
+    log_level: Option<String>,
+    #[arg(long)]
+    log_format: Option<String>,
+    #[arg(long)]
+    log_file: Option<PathBuf>,
+    #[arg(long)]
+    no_log_ansi: bool,
 }
 
 #[derive(Clone)]
@@ -81,10 +89,6 @@ struct RemoteRuntime {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string()))
-        .init();
-
     let args = Args::parse();
     if args.print_example_config || args.print_example_config_base64 {
         let example = example_config();
@@ -96,10 +100,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let config = load_config(ConfigInput {
+    let mut config = load_config(ConfigInput {
         path: args.config.clone(),
         base64: args.config_base64.clone(),
     })?;
+    apply_log_overrides(&mut config.logging, &args)?;
+    let _log_guard = init_logging(&config.logging)?;
     let runtime = build_runtime(config, &args)?;
 
     let listener = TcpListener::bind(runtime.listen).await?;
@@ -119,6 +125,31 @@ async fn main() -> Result<()> {
                 debug!(%peer, error = %err, "remote peer ended");
             }
         });
+    }
+}
+
+fn apply_log_overrides(config: &mut LogConfig, args: &Args) -> Result<()> {
+    if let Some(level) = &args.log_level {
+        config.level = level.clone();
+    }
+    if let Some(format) = &args.log_format {
+        config.format = parse_log_format(format)?;
+    }
+    if let Some(file) = &args.log_file {
+        config.file = Some(file.clone());
+    }
+    if args.no_log_ansi {
+        config.ansi = false;
+    }
+    Ok(())
+}
+
+fn parse_log_format(format: &str) -> Result<LogFormat> {
+    match format {
+        "compact" => Ok(LogFormat::Compact),
+        "pretty" => Ok(LogFormat::Pretty),
+        "json" => Ok(LogFormat::Json),
+        _ => anyhow::bail!("log format must be compact, pretty, or json"),
     }
 }
 

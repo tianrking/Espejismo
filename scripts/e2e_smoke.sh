@@ -58,6 +58,11 @@ handshake_padding = 256
 username = "${PROXY_USER}"
 password = "${PROXY_PASS}"
 
+[logging]
+level = "debug"
+format = "json"
+ansi = false
+
 [remote]
 listen = "${REMOTE_ADDR}"
 handshake_timeout_ms = 1000

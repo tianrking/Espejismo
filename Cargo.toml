@@ -32,7 +32,8 @@ tokio = { version = "1.44", features = ["full"] }
 tokio-yamux = "0.3"
 toml = "0.9"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 
 [workspace.lints.rust]
