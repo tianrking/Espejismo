@@ -10,6 +10,12 @@ ESPEJISMO_REPO="${ESPEJISMO_REPO:-}"
 ESPEJISMO_VERSION="${ESPEJISMO_VERSION:-latest}"
 ESPEJISMO_ARCHIVE_URL="${ESPEJISMO_ARCHIVE_URL:-}"
 ESPEJISMO_LISTEN="${ESPEJISMO_LISTEN:-0.0.0.0:8443}"
+ESPEJISMO_PUBLIC_ENDPOINT="${ESPEJISMO_PUBLIC_ENDPOINT:-}"
+ESPEJISMO_PUBLIC_HOST="${ESPEJISMO_PUBLIC_HOST:-}"
+ESPEJISMO_CLIENT_SOCKS5_LISTEN="${ESPEJISMO_CLIENT_SOCKS5_LISTEN:-127.0.0.1:1080}"
+ESPEJISMO_CLIENT_HTTP_LISTEN="${ESPEJISMO_CLIENT_HTTP_LISTEN:-127.0.0.1:8080}"
+ESPEJISMO_CLIENT_AUTH_USER="${ESPEJISMO_CLIENT_AUTH_USER:-local-user}"
+ESPEJISMO_CLIENT_AUTH_PASSWORD="${ESPEJISMO_CLIENT_AUTH_PASSWORD:-}"
 ESPEJISMO_ADMIN_LISTEN="${ESPEJISMO_ADMIN_LISTEN:-127.0.0.1:9090}"
 ESPEJISMO_ADMIN_TOKEN="${ESPEJISMO_ADMIN_TOKEN:-}"
 ESPEJISMO_PSK="${ESPEJISMO_PSK:-}"
@@ -101,6 +107,28 @@ toml_number_array() {
   printf "%s" "${output}"
 }
 
+client_endpoint() {
+  if [[ -n "${ESPEJISMO_PUBLIC_ENDPOINT}" ]]; then
+    printf "%s" "${ESPEJISMO_PUBLIC_ENDPOINT}"
+    return
+  fi
+  local listen_port="${ESPEJISMO_LISTEN##*:}"
+  if [[ -n "${ESPEJISMO_PUBLIC_HOST}" ]]; then
+    printf "%s:%s" "${ESPEJISMO_PUBLIC_HOST}" "${listen_port}"
+    return
+  fi
+  local listen_host="${ESPEJISMO_LISTEN%:*}"
+  listen_host="${listen_host#[}"
+  listen_host="${listen_host%]}"
+  if [[ "${listen_host}" != "0.0.0.0" && "${listen_host}" != "::" && -n "${listen_host}" ]]; then
+    printf "%s:%s" "${listen_host}" "${listen_port}"
+    return
+  fi
+  local first_host
+  first_host="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  printf "%s:%s" "${first_host:-127.0.0.1}" "${listen_port}"
+}
+
 download_archive() {
   local dest="$1"
   local package_arch
@@ -145,6 +173,9 @@ if [[ -z "${ESPEJISMO_PSK}" ]]; then
 fi
 if [[ -z "${ESPEJISMO_ADMIN_TOKEN}" ]]; then
   ESPEJISMO_ADMIN_TOKEN="$(random_secret)"
+fi
+if [[ -z "${ESPEJISMO_CLIENT_AUTH_PASSWORD}" ]]; then
+  ESPEJISMO_CLIENT_AUTH_PASSWORD="$(random_secret)"
 fi
 
 tmpdir="$(mktemp -d)"
@@ -247,13 +278,27 @@ EOF
 systemctl daemon-reload
 systemctl enable --now espejismo-remote.service
 
+listen_port="${ESPEJISMO_LISTEN##*:}"
 if [[ "${ESPEJISMO_OPEN_UFW}" == "1" ]] && command -v ufw >/dev/null 2>&1; then
-  listen_port="${ESPEJISMO_LISTEN##*:}"
   ufw allow "${listen_port}/tcp"
 fi
 
-server_host="$(hostname -I 2>/dev/null | awk '{print $1}')"
-server_host="${server_host:-YOUR_SERVER_IP}"
+client_server="$(client_endpoint)"
+client_config="${tmpdir}/client-profile.toml"
+cat >"${client_config}" <<EOF
+[shared]
+psk = "${ESPEJISMO_PSK//\"/\\\"}"
+
+[local]
+server = "${client_server}"
+socks5_listen = "${ESPEJISMO_CLIENT_SOCKS5_LISTEN}"
+http_listen = "${ESPEJISMO_CLIENT_HTTP_LISTEN}"
+
+[local.auth]
+username = "${ESPEJISMO_CLIENT_AUTH_USER//\"/\\\"}"
+password = "${ESPEJISMO_CLIENT_AUTH_PASSWORD//\"/\\\"}"
+EOF
+client_profile="$(/usr/local/bin/espejismo-local --config "${client_config}" --print-client-profile --profile-name default)"
 
 cat <<EOF
 Espejismo remote is installed and running.
@@ -265,19 +310,22 @@ Status:
   systemctl status espejismo-remote --no-pager
   journalctl -u espejismo-remote -f
 
-Client TOML starter:
+Client import profile:
+  ${client_profile}
 
-[shared]
-psk = "${ESPEJISMO_PSK}"
+Client command:
+  espejismo-local --import-profile '${client_profile}'
 
-[local]
-server = "${server_host}:${ESPEJISMO_LISTEN##*:}"
-socks5_listen = "127.0.0.1:1080"
-http_listen = "127.0.0.1:8080"
+Client server endpoint in profile:
+  ${client_server}
+  Set ESPEJISMO_PUBLIC_ENDPOINT on install if this is not the address your
+  client should dial.
 
-[local.auth]
-username = "local-user"
-password = "$(random_secret)"
+Local proxy after import:
+  SOCKS5: ${ESPEJISMO_CLIENT_SOCKS5_LISTEN}
+  HTTP:   ${ESPEJISMO_CLIENT_HTTP_LISTEN}
+  Auth:   ${ESPEJISMO_CLIENT_AUTH_USER} / ${ESPEJISMO_CLIENT_AUTH_PASSWORD}
 
-Keep the PSK and profile/config private.
+Keep the client import profile private. It contains the server address, PSK,
+and local proxy credentials.
 EOF

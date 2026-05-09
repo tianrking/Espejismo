@@ -17,6 +17,21 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubu
   | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=latest bash
 ```
 
+The installer prints a single `espejismo://import/...` client profile. Keep it
+private. It contains the remote address, PSK, local proxy listeners, and local
+proxy credentials.
+
+For a ready-to-use client profile, pass the public endpoint that clients should
+connect to:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
+  | sudo ESPEJISMO_REPO=OWNER/REPO \
+    ESPEJISMO_VERSION=latest \
+    ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:8443 \
+    bash
+```
+
 Pinned release:
 
 ```bash
@@ -40,7 +55,13 @@ Useful install-time variables:
 
 ```bash
 ESPEJISMO_LISTEN=0.0.0.0:8443
+ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:8443
+# Or use ESPEJISMO_PUBLIC_HOST=203.0.113.10 with the port from ESPEJISMO_LISTEN.
 ESPEJISMO_PSK='use-a-long-random-secret'
+ESPEJISMO_CLIENT_SOCKS5_LISTEN=127.0.0.1:1080
+ESPEJISMO_CLIENT_HTTP_LISTEN=127.0.0.1:8080
+ESPEJISMO_CLIENT_AUTH_USER=local-user
+ESPEJISMO_CLIENT_AUTH_PASSWORD='use-a-local-proxy-password'
 ESPEJISMO_ADMIN_LISTEN=127.0.0.1:9090
 ESPEJISMO_ADMIN_TOKEN='use-a-long-random-admin-token'
 ESPEJISMO_DENY_PRIVATE_IPS=true
@@ -66,10 +87,7 @@ PowerShell:
 ```powershell
 .\scripts\setup-windows.ps1 `
   -Mode local `
-  -Server "YOUR_SERVER_IP:8443" `
-  -Psk "the-same-psk-from-the-server" `
-  -ProxyUsername "local-user" `
-  -ProxyPassword "local-pass"
+  -ProfileUrl "espejismo://import/..."
 ```
 
 The script writes `configs\espejismo-local.toml` and starts
@@ -85,8 +103,7 @@ Generate config without starting:
 ```powershell
 .\scripts\setup-windows.ps1 `
   -Mode local `
-  -Server "YOUR_SERVER_IP:8443" `
-  -Psk "the-same-psk-from-the-server" `
+  -ProfileUrl "espejismo://import/..." `
   -NoStart `
   -PrintCommand
 ```

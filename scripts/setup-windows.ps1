@@ -3,6 +3,7 @@ param(
     [string]$Mode = "local",
     [string]$InstallDir = "",
     [string]$ConfigPath = "",
+    [string]$ProfileUrl = "",
     [string]$Server = "",
     [string]$Psk = "",
     [string]$RemoteListen = "0.0.0.0:8443",
@@ -71,6 +72,22 @@ function Number-Array {
     "[" + (($Values | ForEach-Object { $_.ToString() }) -join ", ") + "]"
 }
 
+function Decode-ProfileUrl {
+    param([string]$Value)
+    $prefix = "espejismo://import/"
+    if (!$Value.StartsWith($prefix)) {
+        throw "-ProfileUrl must start with espejismo://import/"
+    }
+    $encoded = $Value.Substring($prefix.Length).Replace('-', '+').Replace('_', '/')
+    switch ($encoded.Length % 4) {
+        2 { $encoded += "==" }
+        3 { $encoded += "=" }
+        1 { throw "invalid profile URL base64 length" }
+    }
+    $json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($encoded))
+    $json | ConvertFrom-Json
+}
+
 if ($InstallDir -eq "") {
     $InstallDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 }
@@ -81,6 +98,25 @@ if ($ConfigPath -eq "") {
 }
 $ConfigDir = Split-Path -Parent $ConfigPath
 New-Item -ItemType Directory -Force $ConfigDir | Out-Null
+
+if ($ProfileUrl -ne "") {
+    if ($Mode -ne "local") {
+        throw "-ProfileUrl is only supported in local mode"
+    }
+    $profile = Decode-ProfileUrl $ProfileUrl
+    $Server = [string]$profile.server
+    $Psk = [string]$profile.psk
+    if ($profile.socks5_listen) {
+        $Socks5Listen = [string]$profile.socks5_listen
+    }
+    if ($profile.http_listen) {
+        $HttpListen = [string]$profile.http_listen
+    }
+    if ($profile.auth) {
+        $ProxyUsername = [string]$profile.auth.username
+        $ProxyPassword = [string]$profile.auth.password
+    }
+}
 
 if ($Psk -eq "") {
     $Psk = New-Secret
