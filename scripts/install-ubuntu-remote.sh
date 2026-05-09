@@ -106,7 +106,9 @@ download_archive() {
   local package_arch
   case "$(uname -m)" in
     x86_64|amd64) package_arch="linux-x86_64" ;;
-    aarch64|arm64) package_arch="linux-aarch64" ;;
+    i386|i486|i586|i686) package_arch="linux-x86" ;;
+    aarch64|arm64) package_arch="linux-arm64" ;;
+    armv7l|armv7*) package_arch="linux-arm32" ;;
     *)
       echo "unsupported Ubuntu architecture: $(uname -m)" >&2
       exit 1
@@ -151,7 +153,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-archive="${tmpdir}/espejismo-linux-x86_64.tar.gz"
+archive="${tmpdir}/espejismo-release.tar.gz"
 download_archive "${archive}"
 tar -xzf "${archive}" -C "${tmpdir}"
 pkgdir="$(find "${tmpdir}" -maxdepth 1 -type d -name 'espejismo-*' | head -n 1)"

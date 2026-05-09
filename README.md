@@ -66,9 +66,9 @@ C/C++ native extensions.
 
 | Platform | Status | Notes |
 | --- | --- | --- |
-| Linux x86_64/aarch64 | Supported | Suitable for servers, desktops, and ARM single-board systems. |
+| Linux x86_64/x86/arm64/arm32 | Supported | Suitable for servers, desktops, and ARM single-board systems. |
 | macOS Intel/Apple Silicon | Supported | Build with the standard Rust toolchain. |
-| Windows x86_64/aarch64 | Supported | Run from PowerShell or Windows Terminal. |
+| Windows x86_64/x86/arm64 | Supported | Run from PowerShell or Windows Terminal. |
 
 ## Build
 
@@ -80,11 +80,14 @@ Cross-platform CI checks Linux, macOS, and Windows. The release workflow builds
 packaged artifacts for:
 
 - `linux-x86_64`
-- `linux-aarch64`
+- `linux-x86`
+- `linux-arm64`
+- `linux-arm32`
 - `macos-x86_64`
 - `macos-aarch64`
 - `windows-x86_64`
-- `windows-aarch64`
+- `windows-x86`
+- `windows-arm64`
 
 Each archive contains:
 
