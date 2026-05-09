@@ -9,8 +9,10 @@
 - Variable-length authenticated first packet.
 - X25519 ephemeral key exchange and HKDF session keys.
 - XChaCha20-Poly1305 encrypted frames with fail-fast authentication.
+- HKDF-derived masked frame length headers.
 - SHA-256 client puzzle before HMAC verification.
 - Bounded replay cache for ephemeral public keys.
+- Bounded silent tarpit pool for invalid handshakes.
 - Adaptive padding backpressure.
 - Yamux multiplexing over one encrypted physical tunnel.
 - End-to-end smoke test covering SOCKS5, HTTP proxy, file config, and base64 config.

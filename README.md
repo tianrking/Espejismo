@@ -152,6 +152,8 @@ reject_delay_ms = 0
 max_handshake_padding = 1024
 replay_window_secs = 60
 cold_start_delay_ms = 35
+tarpit_max = 1024
+tarpit_hold_secs = 300
 ```
 
 Run from a file:
@@ -196,12 +198,18 @@ cargo run --bin espejismo-local -- --print-example-config-base64
 - `espejismo-remote --handshake-timeout-ms` bounds incomplete handshakes.
 - `espejismo-remote --reject-delay-ms` adds a bounded silent close delay for
   invalid handshakes. Values above 10000 ms are capped.
+- `espejismo-remote --tarpit-max` controls the bounded silent tarpit size used
+  when `reject_delay_ms = 0`.
+- `espejismo-remote --tarpit-hold-secs` controls how long invalid sockets are
+  retained in the bounded silent tarpit.
 - `--tunnel-buffer` controls the in-process encrypted transport buffer used
   below yamux.
 - `espejismo-remote --cold-start-delay-ms` applies a small startup delay after
   a valid handshake and before yamux begins.
 - The PSK accepts `hex:...`, `base64:...`, or a raw UTF-8 string.
 - Invalid handshakes are closed quietly and without application data.
+- The tarpit is intentionally silent: it holds sockets briefly and never sends
+  drip bytes to unknown peers.
 
 ## Smoke Test
 

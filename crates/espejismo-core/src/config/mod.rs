@@ -68,6 +68,10 @@ pub struct RemoteConfig {
     pub replay_window_secs: i64,
     #[serde(default = "default_cold_start_delay_ms")]
     pub cold_start_delay_ms: u64,
+    #[serde(default = "default_tarpit_max")]
+    pub tarpit_max: usize,
+    #[serde(default = "default_tarpit_hold_secs")]
+    pub tarpit_hold_secs: u64,
 }
 
 impl Default for EspejismoConfig {
@@ -116,6 +120,8 @@ impl Default for RemoteConfig {
             max_handshake_padding: default_max_handshake_padding(),
             replay_window_secs: default_replay_window_secs(),
             cold_start_delay_ms: default_cold_start_delay_ms(),
+            tarpit_max: default_tarpit_max(),
+            tarpit_hold_secs: default_tarpit_hold_secs(),
         }
     }
 }
@@ -220,4 +226,12 @@ fn default_replay_window_secs() -> i64 {
 
 fn default_cold_start_delay_ms() -> u64 {
     35
+}
+
+fn default_tarpit_max() -> usize {
+    1024
+}
+
+fn default_tarpit_hold_secs() -> u64 {
+    300
 }

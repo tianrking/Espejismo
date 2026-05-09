@@ -22,3 +22,5 @@ reject_delay_ms = 0
 max_handshake_padding = 1024
 replay_window_secs = 60
 cold_start_delay_ms = 35
+tarpit_max = 1024
+tarpit_hold_secs = 300

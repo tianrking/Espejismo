@@ -35,10 +35,13 @@ After the handshake, both sides use HKDF-derived XChaCha20-Poly1305 keys. Frames
 are length-prefixed encrypted super-frames:
 
 ```text
-[ ciphertext length 4 ][ AEAD(frame type || payload) ]
+[ masked ciphertext length 4 ][ AEAD(frame type || payload) ]
 ```
 
-Any AEAD failure is fail-fast: the caller receives an error and the physical TCP
+The 4-byte length field is XOR-masked with a per-direction HKDF-derived
+header-mask stream keyed by frame sequence. This keeps the robust length-based
+framing model while removing the plaintext TLV length signal from the wire. Any
+AEAD failure is fail-fast: the caller receives an error and the physical TCP
 connection is discarded. The protocol does not try to resynchronize inside a
 corrupted byte stream.
 
@@ -88,6 +91,11 @@ padding is disabled for a cooldown window, giving priority to real payload.
 Invalid or incomplete handshakes receive no application-layer response. The
 remote can apply a short bounded silent delay before closing, but it does not
 retain unbounded connections.
+
+When `reject_delay_ms = 0`, invalid sockets are moved into a global bounded
+silent tarpit pool. The pool has a hard capacity and time-to-live with oldest
+entry eviction, so file descriptor and memory usage remain bounded. The tarpit
+does not send drip bytes to unknown peers.
 
 ## Next Layer: Migration
 

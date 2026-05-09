@@ -16,6 +16,8 @@ use tokio::time::{sleep, timeout, Duration};
 use tokio_yamux::{Config as YamuxConfig, Session, StreamHandle};
 use tracing::{debug, info};
 
+mod tarpit;
+
 #[derive(Parser, Debug)]
 #[command(name = "espejismo-remote")]
 struct Args {
@@ -57,6 +59,10 @@ struct Args {
     tunnel_buffer: Option<usize>,
     #[arg(long)]
     cold_start_delay_ms: Option<u64>,
+    #[arg(long)]
+    tarpit_max: Option<usize>,
+    #[arg(long)]
+    tarpit_hold_secs: Option<u64>,
 }
 
 #[derive(Clone)]
@@ -69,6 +75,8 @@ struct RemoteRuntime {
     replay_window_secs: i64,
     tunnel_buffer: usize,
     cold_start_delay: Duration,
+    tarpit_max: usize,
+    tarpit_hold: Duration,
 }
 
 #[tokio::main]
@@ -95,6 +103,7 @@ async fn main() -> Result<()> {
     let runtime = build_runtime(config, &args)?;
 
     let listener = TcpListener::bind(runtime.listen).await?;
+    let tarpit = tarpit::TarpitManager::spawn(runtime.tarpit_max, runtime.tarpit_hold);
     let replay = Arc::new(tokio::sync::Mutex::new(ReplayCache::new(
         runtime.replay_window_secs,
     )));
@@ -104,8 +113,9 @@ async fn main() -> Result<()> {
         let (socket, peer) = listener.accept().await?;
         let replay = replay.clone();
         let runtime = runtime.clone();
+        let tarpit = tarpit.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle_peer(socket, runtime, replay).await {
+            if let Err(err) = handle_peer(socket, runtime, replay, tarpit).await {
                 debug!(%peer, error = %err, "remote peer ended");
             }
         });
@@ -161,6 +171,11 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<RemoteRuntime> 
             args.cold_start_delay_ms
                 .unwrap_or(config.remote.cold_start_delay_ms),
         ),
+        tarpit_max: args.tarpit_max.unwrap_or(config.remote.tarpit_max),
+        tarpit_hold: Duration::from_secs(
+            args.tarpit_hold_secs
+                .unwrap_or(config.remote.tarpit_hold_secs),
+        ),
     })
 }
 
@@ -168,6 +183,7 @@ async fn handle_peer(
     mut inbound: TcpStream,
     runtime: RemoteRuntime,
     replay: Arc<tokio::sync::Mutex<ReplayCache>>,
+    tarpit: tarpit::TarpitManager,
 ) -> Result<()> {
     let keys = match timeout(
         runtime.handshake_timeout,
@@ -177,11 +193,11 @@ async fn handle_peer(
     {
         Ok(Ok(keys)) => keys,
         Ok(Err(err)) => {
-            quiet_reject(inbound, runtime.reject_delay).await;
+            reject_or_quarantine(inbound, runtime.reject_delay, &tarpit).await;
             return Err(err);
         }
         Err(err) => {
-            quiet_reject(inbound, runtime.reject_delay).await;
+            reject_or_quarantine(inbound, runtime.reject_delay, &tarpit).await;
             return Err(err.into());
         }
     };
@@ -222,6 +238,18 @@ where
     let mut bytes = vec![0_u8; len];
     reader.read_exact(&mut bytes).await?;
     Ok(String::from_utf8(bytes)?)
+}
+
+async fn reject_or_quarantine(
+    stream: TcpStream,
+    reject_delay: Duration,
+    tarpit: &tarpit::TarpitManager,
+) {
+    if reject_delay.is_zero() {
+        tarpit.quarantine(stream).await;
+    } else {
+        quiet_reject(stream, reject_delay).await;
+    }
 }
 
 async fn quiet_reject(mut stream: TcpStream, delay: Duration) {

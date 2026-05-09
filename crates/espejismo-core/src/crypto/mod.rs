@@ -38,6 +38,8 @@ pub struct HandshakeConfig {
 pub struct SessionKeys {
     pub tx: XChaCha20Poly1305,
     pub rx: XChaCha20Poly1305,
+    pub(crate) tx_len_mask: [u8; 32],
+    pub(crate) rx_len_mask: [u8; 32],
 }
 
 pub fn parse_psk(input: &str) -> Result<Vec<u8>> {
@@ -195,20 +197,38 @@ fn derive_keys(psk: &[u8], shared: &[u8; 32], nonce: &[u8], role: &[u8]) -> Resu
     let hk = Hkdf::<Sha256>::new(Some(&salt), shared);
     let mut client_to_server = [0_u8; 32];
     let mut server_to_client = [0_u8; 32];
+    let mut client_len_mask = [0_u8; 32];
+    let mut server_len_mask = [0_u8; 32];
     hk.expand(b"espejismo v1 client-to-server", &mut client_to_server)
         .map_err(|_| anyhow!("hkdf expansion failed"))?;
     hk.expand(b"espejismo v1 server-to-client", &mut server_to_client)
         .map_err(|_| anyhow!("hkdf expansion failed"))?;
+    hk.expand(b"espejismo v1 client-length-mask", &mut client_len_mask)
+        .map_err(|_| anyhow!("hkdf expansion failed"))?;
+    hk.expand(b"espejismo v1 server-length-mask", &mut server_len_mask)
+        .map_err(|_| anyhow!("hkdf expansion failed"))?;
 
-    let (tx, rx) = if role == b"client" {
-        (client_to_server, server_to_client)
+    let (tx, rx, tx_len_mask, rx_len_mask) = if role == b"client" {
+        (
+            client_to_server,
+            server_to_client,
+            client_len_mask,
+            server_len_mask,
+        )
     } else {
-        (server_to_client, client_to_server)
+        (
+            server_to_client,
+            client_to_server,
+            server_len_mask,
+            client_len_mask,
+        )
     };
 
     Ok(SessionKeys {
         tx: XChaCha20Poly1305::new((&tx).into()),
         rx: XChaCha20Poly1305::new((&rx).into()),
+        tx_len_mask,
+        rx_len_mask,
     })
 }
 
@@ -222,6 +242,14 @@ pub(crate) fn decrypt(cipher: &XChaCha20Poly1305, seq: u64, encrypted: &[u8]) ->
     cipher
         .decrypt(XNonce::from_slice(&nonce(seq)), encrypted)
         .map_err(|_| anyhow!("frame authentication failed"))
+}
+
+pub(crate) fn length_mask(key: &[u8; 32], seq: u64) -> Result<u32> {
+    let mut mac = <HmacSha256 as Mac>::new_from_slice(key).map_err(|_| anyhow!("invalid key"))?;
+    mac.update(b"len:");
+    mac.update(&seq.to_be_bytes());
+    let digest = mac.finalize().into_bytes();
+    Ok(u32::from_be_bytes(digest[..4].try_into()?))
 }
 
 fn nonce(seq: u64) -> [u8; 24] {

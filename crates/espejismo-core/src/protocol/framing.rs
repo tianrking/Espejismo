@@ -6,7 +6,7 @@ use rand::Rng;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::{sleep, Instant};
 
-use crate::crypto::{decrypt, encrypt, SessionKeys};
+use crate::crypto::{decrypt, encrypt, length_mask, SessionKeys};
 
 const MAX_FRAME: usize = 64 * 1024;
 const DATA_CHUNK: usize = 16 * 1024;
@@ -289,17 +289,17 @@ where
 {
     maybe_jitter(options).await;
     let started = Instant::now();
+    let seq = *tx_seq;
     let mut plain = Vec::with_capacity(frame.payload.len() + 1);
     plain.push(frame.ty as u8);
     plain.extend_from_slice(&frame.payload);
-    let encrypted = encrypt(&keys.tx, *tx_seq, &plain)?;
+    let encrypted = encrypt(&keys.tx, seq, &plain)?;
     *tx_seq += 1;
     if encrypted.len() > MAX_FRAME {
         bail!("encrypted frame too large");
     }
-    stream
-        .write_all(&(encrypted.len() as u32).to_be_bytes())
-        .await?;
+    let masked_len = (encrypted.len() as u32) ^ length_mask(&keys.tx_len_mask, seq)?;
+    stream.write_all(&masked_len.to_be_bytes()).await?;
     stream.write_all(&encrypted).await?;
     Ok(started.elapsed())
 }
@@ -308,13 +308,15 @@ async fn read_one<S>(stream: &mut S, keys: &SessionKeys, rx_seq: &mut u64) -> Re
 where
     S: AsyncRead + Unpin,
 {
-    let len = stream.read_u32().await? as usize;
+    let seq = *rx_seq;
+    let masked_len = stream.read_u32().await?;
+    let len = (masked_len ^ length_mask(&keys.rx_len_mask, seq)?) as usize;
     if len == 0 || len > MAX_FRAME {
         bail!("invalid frame length {len}");
     }
     let mut encrypted = vec![0_u8; len];
     stream.read_exact(&mut encrypted).await?;
-    let plain = decrypt(&keys.rx, *rx_seq, &encrypted)?;
+    let plain = decrypt(&keys.rx, seq, &encrypted)?;
     *rx_seq += 1;
     if plain.is_empty() {
         bail!("empty plaintext frame");
