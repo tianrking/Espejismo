@@ -1,0 +1,20 @@
+[Unit]
+Description=Espejismo local SOCKS5 and HTTP proxy
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=espejismo
+Group=espejismo
+ExecStart=/usr/local/bin/espejismo-local --config /etc/espejismo/espejismo.toml
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadOnlyPaths=/etc/espejismo
+
+[Install]
+WantedBy=multi-user.target

@@ -15,8 +15,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 use x25519_dalek::{PublicKey, StaticSecret};
 
-use crate::puzzle;
-use crate::replay::ReplayCache;
+use crate::protocol::puzzle;
+use crate::protocol::replay::ReplayCache;
 
 type HmacSha256 = Hmac<Sha256>;
 

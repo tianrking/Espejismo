@@ -67,6 +67,16 @@ Operators can provide TOML from a path with `--config` or from a base64 string
 with `--config-base64`. `--print-example-config` and
 `--print-example-config-base64` generate deployable starter configs.
 
+## Source Layout
+
+`espejismo-core` is organized by responsibility:
+
+- `config/`: TOML and base64 configuration loading.
+- `crypto/`: authenticated first packet, X25519, HKDF, and AEAD helpers.
+- `ingress/`: local protocol parsers such as SOCKS5 and HTTP proxy.
+- `protocol/`: encrypted frames, puzzles, padding, and replay protection.
+- `transport/`: bridge between encrypted frames and `AsyncRead + AsyncWrite`.
+
 ## Adaptive Padding
 
 Padding is optional and bounded. `FrameWriter` measures write latency as a

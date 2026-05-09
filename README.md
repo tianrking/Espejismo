@@ -211,3 +211,9 @@ cargo run --bin espejismo-local -- --print-example-config-base64
 
 The script starts a local HTTP server, `espejismo-remote`, and `espejismo-local`,
 then performs two SOCKS5 requests through the same encrypted yamux tunnel.
+
+## Project Status
+
+See [docs/development/STATUS.md](docs/development/STATUS.md) for the implemented
+feature matrix and the remaining roadmap, including UDP, transparent migration,
+WASM/browser packaging, metrics, and runtime reload.

@@ -2,7 +2,7 @@ use tokio::io::{duplex, split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteEx
 use tracing::debug;
 
 use crate::crypto::SessionKeys;
-use crate::framing::{Frame, FrameOptions, FrameReader, FrameType, FrameWriter};
+use crate::protocol::framing::{Frame, FrameOptions, FrameReader, FrameType, FrameWriter};
 
 pub fn spawn_frame_transport<S>(
     stream: S,

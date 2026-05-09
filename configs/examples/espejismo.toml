@@ -1,0 +1,24 @@
+[shared]
+psk = "change-me-long-random-secret"
+clock_skew_secs = 30
+puzzle_bits = 12
+max_padding = 64
+jitter_ms = 0
+padding_chance_percent = 35
+backpressure_threshold_ms = 40
+backpressure_cooldown_ms = 1000
+tunnel_buffer = 1048576
+
+[local]
+server = "127.0.0.1:8443"
+socks5_listen = "127.0.0.1:1080"
+http_listen = "127.0.0.1:8080"
+handshake_padding = 256
+
+[remote]
+listen = "0.0.0.0:8443"
+handshake_timeout_ms = 3000
+reject_delay_ms = 0
+max_handshake_padding = 1024
+replay_window_secs = 60
+cold_start_delay_ms = 35
