@@ -7,6 +7,7 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
+use crate::egress::EgressPolicy;
 use crate::ingress::ProxyAuth;
 
 #[derive(Clone, Debug, Default)]
@@ -25,6 +26,8 @@ pub struct EspejismoConfig {
     pub remote: RemoteConfig,
     #[serde(default)]
     pub logging: LogConfig,
+    #[serde(default)]
+    pub admin: AdminConfig,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -79,6 +82,34 @@ pub struct RemoteConfig {
     pub tarpit_max: usize,
     #[serde(default = "default_tarpit_hold_secs")]
     pub tarpit_hold_secs: u64,
+    #[serde(default)]
+    pub egress: EgressConfig,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct EgressConfig {
+    #[serde(default)]
+    pub deny_private_ips: bool,
+    #[serde(default)]
+    pub allow_hosts: Vec<String>,
+    #[serde(default)]
+    pub block_hosts: Vec<String>,
+    #[serde(default)]
+    pub allow_ports: Vec<u16>,
+    #[serde(default)]
+    pub block_ports: Vec<u16>,
+}
+
+impl From<EgressConfig> for EgressPolicy {
+    fn from(config: EgressConfig) -> Self {
+        Self {
+            deny_private_ips: config.deny_private_ips,
+            allow_hosts: config.allow_hosts,
+            block_hosts: config.block_hosts,
+            allow_ports: config.allow_ports,
+            block_ports: config.block_ports,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -102,6 +133,14 @@ pub enum LogFormat {
     Json,
 }
 
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct AdminConfig {
+    #[serde(default)]
+    pub listen: Option<SocketAddr>,
+    #[serde(default)]
+    pub token: Option<String>,
+}
+
 impl Default for EspejismoConfig {
     fn default() -> Self {
         Self {
@@ -109,6 +148,7 @@ impl Default for EspejismoConfig {
             local: LocalConfig::default(),
             remote: RemoteConfig::default(),
             logging: LogConfig::default(),
+            admin: AdminConfig::default(),
         }
     }
 }
@@ -152,6 +192,7 @@ impl Default for RemoteConfig {
             cold_start_delay_ms: default_cold_start_delay_ms(),
             tarpit_max: default_tarpit_max(),
             tarpit_hold_secs: default_tarpit_hold_secs(),
+            egress: EgressConfig::default(),
         }
     }
 }
@@ -195,6 +236,9 @@ fn parse_config(content: &str) -> Result<EspejismoConfig> {
     if let Some(auth) = &config.local.auth {
         auth.validate()?;
     }
+    if let Some(token) = &config.admin.token {
+        anyhow::ensure!(!token.is_empty(), "admin.token must not be empty");
+    }
     Ok(config)
 }
 
@@ -214,6 +258,7 @@ pub fn example_config() -> String {
         },
         remote: RemoteConfig::default(),
         logging: LogConfig::default(),
+        admin: AdminConfig::default(),
     };
     toml::to_string_pretty(&config).expect("example config serializes")
 }

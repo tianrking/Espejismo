@@ -8,6 +8,8 @@
   absolute-form HTTP forwarding.
 - Shared TOML configuration and base64 configuration import.
 - Configurable compact, pretty, or JSON logging with optional file output.
+- Read-only admin HTTP endpoint with health, status, and Prometheus-style metrics.
+- Server-side egress policy for host/port allow and block rules.
 - Variable-length authenticated first packet.
 - X25519 ephemeral key exchange and HKDF session keys.
 - XChaCha20-Poly1305 encrypted frames with fail-fast authentication.
@@ -32,7 +34,7 @@
 - Browser extension packaging.
 - WASM transport crate. The current runtime uses Tokio TCP and is native-first.
 - Linux aarch64 release artifact automation.
-- Admin API, live metrics endpoint, log rotation policy, and runtime config reload.
+- Runtime config reload, richer user/profile control plane, and log rotation policy.
 - OS-specific TCP_INFO congestion telemetry. Current backpressure is portable write-latency based.
 
 ## Architecture Direction

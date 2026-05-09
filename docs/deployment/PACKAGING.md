@@ -35,8 +35,8 @@ Windows PowerShell:
 ```
 
 Both scripts build release binaries and create a `dist/` archive containing the
-binaries, starter config, README, architecture notes, logging guide, packaging
-guide, status, and test plan.
+binaries, starter config, README, architecture notes, admin guide, egress guide,
+logging guide, packaging guide, status, and test plan.
 
 ## Configuration Import
 

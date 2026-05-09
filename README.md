@@ -187,6 +187,10 @@ format = "compact"
 ansi = true
 # file = "/var/log/espejismo/espejismo.log"
 
+[admin]
+# listen = "127.0.0.1:9090"
+# token = "change-me-admin-token"
+
 [remote]
 listen = "0.0.0.0:8443"
 handshake_timeout_ms = 3000
@@ -196,6 +200,13 @@ replay_window_secs = 60
 cold_start_delay_ms = 35
 tarpit_max = 1024
 tarpit_hold_secs = 300
+
+[remote.egress]
+deny_private_ips = false
+allow_hosts = []
+block_hosts = []
+allow_ports = []
+block_ports = []
 ```
 
 Run from a file:
@@ -243,6 +254,10 @@ cargo run --bin espejismo-local -- --print-example-config-base64
   `json`; `file` writes logs to a path instead of stderr.
 - `--log-level`, `--log-format`, `--log-file`, and `--no-log-ansi` override the
   logging config for either binary.
+- `[admin]` enables a read-only HTTP admin endpoint with `/healthz`, `/status`,
+  and `/metrics`. Use `token` outside trusted loopback-only environments.
+- `[remote.egress]` controls server-side outbound policy with host and port
+  allow/block lists.
 - `--max-padding` controls the maximum payload size of encrypted padding frames.
 - `--padding-chance-percent` controls how often padding is attempted.
 - `--backpressure-threshold-ms` detects slow writes and disables padding.

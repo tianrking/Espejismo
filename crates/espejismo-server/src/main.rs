@@ -6,8 +6,9 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use espejismo_core::config::{encode_config_base64, example_config};
 use espejismo_core::{
-    accept_handshake_with_replay, init_logging, load_config, parse_psk, spawn_frame_transport,
-    ConfigInput, EspejismoConfig, FrameOptions, HandshakeConfig, LogConfig, LogFormat, ReplayCache,
+    accept_handshake_with_replay, init_logging, load_config, parse_psk, spawn_admin_server,
+    spawn_frame_transport, AdminState, ConfigInput, EgressPolicy, EspejismoConfig, FrameOptions,
+    HandshakeConfig, LogConfig, LogFormat, Metrics, ReplayCache,
 };
 use futures::StreamExt;
 use tokio::io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt};
@@ -71,6 +72,10 @@ struct Args {
     log_file: Option<PathBuf>,
     #[arg(long)]
     no_log_ansi: bool,
+    #[arg(long)]
+    admin_listen: Option<SocketAddr>,
+    #[arg(long)]
+    admin_token: Option<String>,
 }
 
 #[derive(Clone)]
@@ -85,6 +90,9 @@ struct RemoteRuntime {
     cold_start_delay: Duration,
     tarpit_max: usize,
     tarpit_hold: Duration,
+    admin_listen: Option<SocketAddr>,
+    admin_token: Option<String>,
+    egress: EgressPolicy,
 }
 
 #[tokio::main]
@@ -107,6 +115,17 @@ async fn main() -> Result<()> {
     apply_log_overrides(&mut config.logging, &args)?;
     let _log_guard = init_logging(&config.logging)?;
     let runtime = build_runtime(config, &args)?;
+    let metrics = Metrics::default();
+    if let Some(addr) = runtime.admin_listen {
+        spawn_admin_server(
+            addr,
+            AdminState {
+                role: "remote".to_string(),
+                metrics: metrics.clone(),
+                token: runtime.admin_token.clone(),
+            },
+        );
+    }
 
     let listener = TcpListener::bind(runtime.listen).await?;
     let tarpit = tarpit::TarpitManager::spawn(runtime.tarpit_max, runtime.tarpit_hold);
@@ -120,8 +139,10 @@ async fn main() -> Result<()> {
         let replay = replay.clone();
         let runtime = runtime.clone();
         let tarpit = tarpit.clone();
+        let metrics = metrics.clone();
+        metrics.inc_accepted();
         tokio::spawn(async move {
-            if let Err(err) = handle_peer(socket, runtime, replay, tarpit).await {
+            if let Err(err) = handle_peer(socket, runtime, replay, tarpit, metrics).await {
                 debug!(%peer, error = %err, "remote peer ended");
             }
         });
@@ -207,6 +228,9 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<RemoteRuntime> 
             args.tarpit_hold_secs
                 .unwrap_or(config.remote.tarpit_hold_secs),
         ),
+        admin_listen: args.admin_listen.or(config.admin.listen),
+        admin_token: args.admin_token.clone().or(config.admin.token),
+        egress: config.remote.egress.into(),
     })
 }
 
@@ -215,19 +239,28 @@ async fn handle_peer(
     runtime: RemoteRuntime,
     replay: Arc<tokio::sync::Mutex<ReplayCache>>,
     tarpit: tarpit::TarpitManager,
+    metrics: Metrics,
 ) -> Result<()> {
+    metrics.inc_active_physical();
     let keys = match timeout(
         runtime.handshake_timeout,
         accept_handshake_with_replay(&mut inbound, &runtime.handshake, replay),
     )
     .await
     {
-        Ok(Ok(keys)) => keys,
+        Ok(Ok(keys)) => {
+            metrics.inc_handshake_success();
+            keys
+        }
         Ok(Err(err)) => {
+            metrics.inc_handshake_failure();
+            metrics.dec_active_physical();
             reject_or_quarantine(inbound, runtime.reject_delay, &tarpit).await;
             return Err(err);
         }
         Err(err) => {
+            metrics.inc_handshake_failure();
+            metrics.dec_active_physical();
             reject_or_quarantine(inbound, runtime.reject_delay, &tarpit).await;
             return Err(err.into());
         }
@@ -240,23 +273,55 @@ async fn handle_peer(
     let transport = spawn_frame_transport(inbound, keys, runtime.frames, runtime.tunnel_buffer);
     let mut session = Session::new_server(transport, YamuxConfig::default());
     while let Some(stream) = session.next().await {
-        let stream = stream?;
+        let stream = match stream {
+            Ok(stream) => stream,
+            Err(err) => {
+                metrics.dec_active_physical();
+                return Err(err.into());
+            }
+        };
+        let metrics = metrics.clone();
+        let egress = runtime.egress.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle_mux_stream(stream).await {
+            if let Err(err) = handle_mux_stream(stream, metrics, egress).await {
                 debug!(error = %err, "mux stream ended");
             }
         });
     }
+    metrics.dec_active_physical();
     Ok(())
 }
 
-async fn handle_mux_stream(mut stream: StreamHandle) -> Result<()> {
-    let target = read_target(&mut stream).await?;
+async fn handle_mux_stream(
+    mut stream: StreamHandle,
+    metrics: Metrics,
+    egress: EgressPolicy,
+) -> Result<()> {
+    metrics.inc_active_stream();
+    metrics.inc_stream_opened();
+    let result = handle_mux_stream_inner(&mut stream, metrics.clone(), egress).await;
+    if result.is_err() {
+        metrics.inc_stream_failed();
+    }
+    metrics.dec_active_stream();
+    result
+}
+
+async fn handle_mux_stream_inner(
+    stream: &mut StreamHandle,
+    metrics: Metrics,
+    egress: EgressPolicy,
+) -> Result<()> {
+    let target = read_target(stream).await?;
+    egress
+        .validate_authority(&target)
+        .context("egress policy rejected target")?;
     let mut remote = TcpStream::connect(&target)
         .await
         .with_context(|| format!("connect {target}"))?;
     info!(%target, "mux relay opened");
-    copy_bidirectional(&mut stream, &mut remote).await?;
+    let (client_to_remote, remote_to_client) = copy_bidirectional(stream, &mut remote).await?;
+    metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
     Ok(())
 }
 

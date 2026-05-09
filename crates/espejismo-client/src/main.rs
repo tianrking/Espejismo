@@ -6,8 +6,8 @@ use clap::Parser;
 use espejismo_core::config::{encode_config_base64, example_config};
 use espejismo_core::{
     connect_handshake, http_proxy, init_logging, load_config, parse_psk, socks5,
-    spawn_frame_transport, ConfigInput, EspejismoConfig, FrameOptions, HandshakeConfig, LogConfig,
-    LogFormat, ProxyAuth,
+    spawn_admin_server, spawn_frame_transport, AdminState, ConfigInput, EspejismoConfig,
+    FrameOptions, HandshakeConfig, LogConfig, LogFormat, Metrics, ProxyAuth,
 };
 use futures::StreamExt;
 use tokio::io::{copy_bidirectional, AsyncWriteExt};
@@ -60,6 +60,10 @@ struct Args {
     log_file: Option<PathBuf>,
     #[arg(long)]
     no_log_ansi: bool,
+    #[arg(long)]
+    admin_listen: Option<SocketAddr>,
+    #[arg(long)]
+    admin_token: Option<String>,
 }
 
 #[derive(Clone)]
@@ -71,6 +75,8 @@ struct LocalRuntime {
     frames: FrameOptions,
     tunnel_buffer: usize,
     auth: Option<ProxyAuth>,
+    admin_listen: Option<SocketAddr>,
+    admin_token: Option<String>,
 }
 
 #[tokio::main]
@@ -93,12 +99,24 @@ async fn main() -> Result<()> {
     apply_log_overrides(&mut config.logging, &args)?;
     let _log_guard = init_logging(&config.logging)?;
     let runtime = build_runtime(config, &args)?;
+    let metrics = Metrics::default();
+    if let Some(addr) = runtime.admin_listen {
+        spawn_admin_server(
+            addr,
+            AdminState {
+                role: "local".to_string(),
+                metrics: metrics.clone(),
+                token: runtime.admin_token.clone(),
+            },
+        );
+    }
 
     let control = connect_mux(
         runtime.server,
         runtime.handshake,
         runtime.frames,
         runtime.tunnel_buffer,
+        metrics.clone(),
     )
     .await?;
 
@@ -107,14 +125,17 @@ async fn main() -> Result<()> {
         let listener = TcpListener::bind(addr).await?;
         let control = control.clone();
         let auth = runtime.auth.clone();
+        let metrics = metrics.clone();
         listeners.push(tokio::spawn(async move {
             info!(listen = %addr, "SOCKS5 proxy listening");
             loop {
                 let (socket, peer) = listener.accept().await?;
                 let control = control.clone();
                 let auth = auth.clone();
+                let metrics = metrics.clone();
+                metrics.inc_accepted();
                 tokio::spawn(async move {
-                    if let Err(err) = handle_socks5_client(socket, control, auth).await {
+                    if let Err(err) = handle_socks5_client(socket, control, auth, metrics).await {
                         debug!(%peer, error = %err, "SOCKS5 connection ended");
                     }
                 });
@@ -128,14 +149,17 @@ async fn main() -> Result<()> {
         let listener = TcpListener::bind(addr).await?;
         let control = control.clone();
         let auth = runtime.auth.clone();
+        let metrics = metrics.clone();
         listeners.push(tokio::spawn(async move {
             info!(listen = %addr, "HTTP proxy listening");
             loop {
                 let (socket, peer) = listener.accept().await?;
                 let control = control.clone();
                 let auth = auth.clone();
+                let metrics = metrics.clone();
+                metrics.inc_accepted();
                 tokio::spawn(async move {
-                    if let Err(err) = handle_http_client(socket, control, auth).await {
+                    if let Err(err) = handle_http_client(socket, control, auth, metrics).await {
                         debug!(%peer, error = %err, "HTTP proxy connection ended");
                     }
                 });
@@ -220,6 +244,8 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
         },
         tunnel_buffer: args.tunnel_buffer.unwrap_or(config.shared.tunnel_buffer),
         auth: config.local.auth,
+        admin_listen: args.admin_listen.or(config.admin.listen),
+        admin_token: args.admin_token.clone().or(config.admin.token),
     })
 }
 
@@ -228,9 +254,21 @@ async fn connect_mux(
     cfg: HandshakeConfig,
     options: FrameOptions,
     tunnel_buffer: usize,
+    metrics: Metrics,
 ) -> Result<Control> {
     let mut upstream = TcpStream::connect(server).await?;
-    let keys = connect_handshake(&mut upstream, &cfg).await?;
+    metrics.inc_active_physical();
+    let keys = match connect_handshake(&mut upstream, &cfg).await {
+        Ok(keys) => {
+            metrics.inc_handshake_success();
+            keys
+        }
+        Err(err) => {
+            metrics.inc_handshake_failure();
+            metrics.dec_active_physical();
+            return Err(err);
+        }
+    };
     let transport = spawn_frame_transport(upstream, keys, options, tunnel_buffer);
     let mut session = Session::new_client(transport, YamuxConfig::default());
     let control = session.control();
@@ -242,6 +280,7 @@ async fn connect_mux(
                 break;
             }
         }
+        metrics.dec_active_physical();
     });
 
     Ok(control)
@@ -251,11 +290,29 @@ async fn handle_socks5_client(
     mut local: TcpStream,
     mut control: Control,
     auth: Option<ProxyAuth>,
+    metrics: Metrics,
 ) -> Result<()> {
-    let target = socks5::accept_connect_with_auth(&mut local, auth.as_ref()).await?;
+    metrics.inc_active_stream();
+    metrics.inc_stream_opened();
+    let result = handle_socks5_client_inner(&mut local, &mut control, auth, metrics.clone()).await;
+    if result.is_err() {
+        metrics.inc_stream_failed();
+    }
+    metrics.dec_active_stream();
+    result
+}
+
+async fn handle_socks5_client_inner(
+    local: &mut TcpStream,
+    control: &mut Control,
+    auth: Option<ProxyAuth>,
+    metrics: Metrics,
+) -> Result<()> {
+    let target = socks5::accept_connect_with_auth(local, auth.as_ref()).await?;
     let mut stream = control.open_stream().await?;
     write_target(&mut stream, &target.authority()).await?;
-    copy_bidirectional(&mut local, &mut stream).await?;
+    let (client_to_remote, remote_to_client) = copy_bidirectional(local, &mut stream).await?;
+    metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
     Ok(())
 }
 
@@ -263,14 +320,32 @@ async fn handle_http_client(
     mut local: TcpStream,
     mut control: Control,
     auth: Option<ProxyAuth>,
+    metrics: Metrics,
 ) -> Result<()> {
-    let target = http_proxy::accept_http_proxy_with_auth(&mut local, auth.as_ref()).await?;
+    metrics.inc_active_stream();
+    metrics.inc_stream_opened();
+    let result = handle_http_client_inner(&mut local, &mut control, auth, metrics.clone()).await;
+    if result.is_err() {
+        metrics.inc_stream_failed();
+    }
+    metrics.dec_active_stream();
+    result
+}
+
+async fn handle_http_client_inner(
+    local: &mut TcpStream,
+    control: &mut Control,
+    auth: Option<ProxyAuth>,
+    metrics: Metrics,
+) -> Result<()> {
+    let target = http_proxy::accept_http_proxy_with_auth(local, auth.as_ref()).await?;
     let mut stream = control.open_stream().await?;
     write_target(&mut stream, &target.authority).await?;
     if !target.prebuffer.is_empty() {
         stream.write_all(&target.prebuffer).await?;
     }
-    copy_bidirectional(&mut local, &mut stream).await?;
+    let (client_to_remote, remote_to_client) = copy_bidirectional(local, &mut stream).await?;
+    metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
     Ok(())
 }
 

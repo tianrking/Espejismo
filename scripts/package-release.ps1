@@ -24,7 +24,7 @@ Copy-Item "$TargetDir/espejismo-local.exe" "$Out/bin/"
 Copy-Item "$TargetDir/espejismo-remote.exe" "$Out/bin/"
 Copy-Item "configs/examples/espejismo.toml" "$Out/configs/"
 Copy-Item "README.md" "$Out/"
-Copy-Item "docs/ARCHITECTURE.md", "docs/deployment/LOGGING.md", "docs/deployment/PACKAGING.md", "docs/development/STATUS.md", "docs/testing/TEST_PLAN.md" "$Out/docs/"
+Copy-Item "docs/ARCHITECTURE.md", "docs/deployment/ADMIN.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/PACKAGING.md", "docs/development/STATUS.md", "docs/testing/TEST_PLAN.md" "$Out/docs/"
 
 Compress-Archive -Path $Out -DestinationPath "dist/$Pkg.zip" -Force
 Write-Host "created dist/$Pkg.zip"

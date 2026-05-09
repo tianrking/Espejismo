@@ -46,6 +46,8 @@ The probe sends a unique token through these paths:
 - Authenticated HTTP CONNECT tunnel
 - HTTP proxy authentication rejection
 - JSON logging configuration during process startup
+- Admin health/status/metrics endpoint checks
+- Egress allow-port policy in the remote test config
 
 The fixture returns JSON containing method, path, probe header, and request
 body. The script checks that the returned JSON contains the expected token,

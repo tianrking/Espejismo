@@ -9,11 +9,14 @@ HTTP_PORT="${PORT_BASE}"
 REMOTE_ADDR="127.0.0.1:$((PORT_BASE + 1))"
 SOCKS5_ADDR="127.0.0.1:$((PORT_BASE + 2))"
 HTTP_PROXY_ADDR="127.0.0.1:$((PORT_BASE + 3))"
+LOCAL_ADMIN_ADDR="127.0.0.1:$((PORT_BASE + 4))"
+REMOTE_ADMIN_ADDR="127.0.0.1:$((PORT_BASE + 5))"
 CONFIG_FILE="$(mktemp /tmp/espejismo-config.XXXXXX.toml)"
 PROBE_TOKEN="probe-$(date +%s)-$$"
 POST_BODY="body-${PROBE_TOKEN}"
 PROXY_USER="probe-user"
 PROXY_PASS="probe-pass"
+ADMIN_TOKEN="admin-${PROBE_TOKEN}"
 
 cleanup() {
   if [[ -n "${LOCAL_PID:-}" ]]; then kill "${LOCAL_PID}" 2>/dev/null || true; fi
@@ -63,25 +66,35 @@ level = "debug"
 format = "json"
 ansi = false
 
+[admin]
+listen = "${LOCAL_ADMIN_ADDR}"
+token = "${ADMIN_TOKEN}"
+
 [remote]
 listen = "${REMOTE_ADDR}"
 handshake_timeout_ms = 1000
 reject_delay_ms = 25
 cold_start_delay_ms = 20
+
+[remote.egress]
+allow_ports = [${HTTP_PORT}]
 EOF
 
 CONFIG_B64="$(base64 -w0 "${CONFIG_FILE}" 2>/dev/null || base64 "${CONFIG_FILE}" | tr -d '\n')"
 
 cargo run --quiet --bin espejismo-remote -- \
-  --config-base64 "${CONFIG_B64}" >/tmp/espejismo-remote.log 2>&1 &
+  --config-base64 "${CONFIG_B64}" \
+  --admin-listen "${REMOTE_ADMIN_ADDR}" >/tmp/espejismo-remote.log 2>&1 &
 REMOTE_PID=$!
 wait_for_port "127.0.0.1" "$((PORT_BASE + 1))" "espejismo remote"
+wait_for_port "127.0.0.1" "$((PORT_BASE + 5))" "espejismo remote admin"
 
 cargo run --quiet --bin espejismo-local -- \
   --config "${CONFIG_FILE}" >/tmp/espejismo-local.log 2>&1 &
 LOCAL_PID=$!
 wait_for_port "127.0.0.1" "$((PORT_BASE + 2))" "SOCKS5 proxy"
 wait_for_port "127.0.0.1" "$((PORT_BASE + 3))" "HTTP proxy"
+wait_for_port "127.0.0.1" "$((PORT_BASE + 4))" "espejismo local admin"
 
 curl --silent --show-error --max-time 10 \
   --proxy-user "${PROXY_USER}:${PROXY_PASS}" \
@@ -118,5 +131,24 @@ HTTP_AUTH_STATUS="$(curl --silent --output /dev/null --write-out "%{http_code}" 
   --proxy "http://${HTTP_PROXY_ADDR}" \
   "http://${HTTP_ADDR}:${HTTP_PORT}/probe/reject/${PROBE_TOKEN}" || true)"
 test "${HTTP_AUTH_STATUS}" = "407"
+
+curl --silent --show-error --max-time 5 \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  "http://${LOCAL_ADMIN_ADDR}/healthz" \
+  | grep -q "ok"
+
+curl --silent --show-error --max-time 5 \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  "http://${LOCAL_ADMIN_ADDR}/status" \
+  | grep -q "\"role\": \"local\""
+
+curl --silent --show-error --max-time 5 \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  "http://${REMOTE_ADMIN_ADDR}/metrics" \
+  | grep -q "espejismo_stream_opened_total"
+
+ADMIN_AUTH_STATUS="$(curl --silent --output /dev/null --write-out "%{http_code}" --max-time 5 \
+  "http://${LOCAL_ADMIN_ADDR}/status" || true)"
+test "${ADMIN_AUTH_STATUS}" = "401"
 
 echo "e2e smoke test passed"
