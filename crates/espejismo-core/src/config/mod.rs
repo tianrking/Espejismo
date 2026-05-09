@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::egress::EgressPolicy;
 use crate::ingress::ProxyAuth;
+use crate::protocol::framing::ObfuscationProfile;
 
 #[derive(Clone, Debug, Default)]
 pub struct ConfigInput {
@@ -53,6 +54,20 @@ pub struct SharedConfig {
     pub idle_timeout_secs: u64,
     #[serde(default = "default_max_streams")]
     pub max_streams: u32,
+    #[serde(default)]
+    pub obfuscation: ObfuscationConfig,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ObfuscationConfig {
+    #[serde(default)]
+    pub profile: ObfuscationProfile,
+    #[serde(default = "default_randomize_chunks")]
+    pub randomize_chunks: bool,
+    #[serde(default = "default_min_chunk")]
+    pub min_chunk: usize,
+    #[serde(default = "default_max_chunk")]
+    pub max_chunk: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -171,6 +186,18 @@ impl Default for SharedConfig {
             tunnel_buffer: default_tunnel_buffer(),
             idle_timeout_secs: default_idle_timeout_secs(),
             max_streams: default_max_streams(),
+            obfuscation: ObfuscationConfig::default(),
+        }
+    }
+}
+
+impl Default for ObfuscationConfig {
+    fn default() -> Self {
+        Self {
+            profile: ObfuscationProfile::Balanced,
+            randomize_chunks: default_randomize_chunks(),
+            min_chunk: default_min_chunk(),
+            max_chunk: default_max_chunk(),
         }
     }
 }
@@ -245,6 +272,14 @@ fn parse_config(content: &str) -> Result<EspejismoConfig> {
     if let Some(token) = &config.admin.token {
         anyhow::ensure!(!token.is_empty(), "admin.token must not be empty");
     }
+    anyhow::ensure!(
+        config.shared.obfuscation.min_chunk > 0,
+        "shared.obfuscation.min_chunk must be greater than 0"
+    );
+    anyhow::ensure!(
+        config.shared.obfuscation.min_chunk <= config.shared.obfuscation.max_chunk,
+        "shared.obfuscation.min_chunk must be <= max_chunk"
+    );
     Ok(config)
 }
 
@@ -355,4 +390,16 @@ fn default_idle_timeout_secs() -> u64 {
 
 fn default_max_streams() -> u32 {
     256
+}
+
+fn default_randomize_chunks() -> bool {
+    true
+}
+
+fn default_min_chunk() -> usize {
+    1024
+}
+
+fn default_max_chunk() -> usize {
+    16 * 1024
 }

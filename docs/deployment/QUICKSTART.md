@@ -69,6 +69,10 @@ ESPEJISMO_ALLOW_PORTS=80,443
 ESPEJISMO_BLOCK_PORTS=25
 ESPEJISMO_MAX_STREAMS=256
 ESPEJISMO_IDLE_TIMEOUT_SECS=300
+ESPEJISMO_OBFUSCATION_PROFILE=balanced
+ESPEJISMO_RANDOMIZE_CHUNKS=true
+ESPEJISMO_MIN_CHUNK=1024
+ESPEJISMO_MAX_CHUNK=16384
 ESPEJISMO_OPEN_UFW=1
 ```
 
@@ -134,6 +138,8 @@ The most important knobs are:
 - `shared.psk`: shared secret. Keep it private.
 - `shared.max_streams`: concurrent yamux stream limit per physical tunnel.
 - `shared.idle_timeout_secs`: idle stream timeout.
+- `shared.obfuscation.profile`: sender-side traffic shape. Use `low_latency`,
+  `balanced`, or `high_entropy`.
 - `local.server`: remote server address.
 - `local.socks5_listen`: local SOCKS5 listener.
 - `local.http_listen`: local HTTP proxy listener.

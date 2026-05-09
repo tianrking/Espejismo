@@ -12,6 +12,7 @@ pub mod transport;
 pub use admin::{spawn_admin_server, AdminState};
 pub use config::{
     load_config, AdminConfig, ConfigInput, EgressConfig, EspejismoConfig, LogConfig, LogFormat,
+    ObfuscationConfig,
 };
 pub use crypto::{
     accept_handshake, accept_handshake_with_replay, connect_handshake, parse_psk, HandshakeConfig,
@@ -24,7 +25,7 @@ pub use metrics::{Metrics, MetricsSnapshot};
 pub use profile::{decode_profile_url, encode_profile_url, ClientProfile};
 pub use protocol::framing::{
     copy_encrypted, read_frame, send_frame, Frame, FrameCodec, FrameOptions, FrameReader,
-    FrameType, FrameWriter,
+    FrameType, FrameWriter, ObfuscationProfile,
 };
 pub use protocol::puzzle::PuzzleConfig;
 pub use protocol::replay::ReplayCache;

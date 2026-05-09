@@ -129,10 +129,11 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    let mut buf = vec![0_u8; options.normalized_chunk_bounds().1];
     let mut frame_writer = FrameWriter::new(net_writer, keys, options);
-    let mut buf = vec![0_u8; 16 * 1024];
     loop {
-        let n = app_reader.read(&mut buf).await?;
+        let chunk_size = frame_writer.options().next_chunk_size();
+        let n = app_reader.read(&mut buf[..chunk_size]).await?;
         if n == 0 {
             frame_writer
                 .send(Frame {

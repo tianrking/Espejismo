@@ -188,6 +188,14 @@ padding_chance_percent = 35
 backpressure_threshold_ms = 40
 backpressure_cooldown_ms = 1000
 tunnel_buffer = 1048576
+idle_timeout_secs = 300
+max_streams = 256
+
+[shared.obfuscation]
+profile = "balanced"
+randomize_chunks = true
+min_chunk = 1024
+max_chunk = 16384
 
 [local]
 server = "127.0.0.1:6690"
@@ -293,6 +301,9 @@ cargo run --bin espejismo-local -- --print-example-config-base64
 - `--backpressure-cooldown-ms` controls how long padding stays disabled after a
   slow write.
 - `--jitter-ms` applies a small randomized delay before outgoing frames.
+- `[shared.obfuscation]` controls sender-side traffic shape. `profile` can be
+  `low_latency`, `balanced`, or `high_entropy`; `randomize_chunks` and the
+  chunk bounds vary encrypted frame sizes before padding is added.
 - `--puzzle-bits` configures the client puzzle difficulty. Values are capped at
   24 bits.
 - `espejismo-local --handshake-padding` controls the maximum random padding in

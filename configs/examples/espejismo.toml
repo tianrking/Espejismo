@@ -8,6 +8,14 @@ padding_chance_percent = 35
 backpressure_threshold_ms = 40
 backpressure_cooldown_ms = 1000
 tunnel_buffer = 1048576
+idle_timeout_secs = 300
+max_streams = 256
+
+[shared.obfuscation]
+profile = "balanced"
+randomize_chunks = true
+min_chunk = 1024
+max_chunk = 16384
 
 [local]
 server = "127.0.0.1:6690"

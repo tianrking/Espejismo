@@ -31,6 +31,7 @@ On Windows, use:
 
 ```powershell
 .\scripts\e2e_smoke.ps1
+.\scripts\stress_smoke.ps1 -Requests 200 -Concurrency 16
 .\scripts\package-release.ps1
 ```
 
@@ -79,8 +80,7 @@ ingress, or configuration loading, always run the full automated check list.
 ## Not Covered Yet
 
 - Multi-hour soak tests.
-- High-concurrency load tests.
-- Packet-loss simulation.
+- Cross-platform packet-loss simulation.
 - Multi-packet UDP flows and fragmentation behavior.
 - Live physical tunnel migration.
 - Browser/WASM transport behavior.

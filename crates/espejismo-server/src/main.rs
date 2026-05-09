@@ -207,6 +207,10 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<RemoteRuntime> 
             backpressure_cooldown_ms: args
                 .backpressure_cooldown_ms
                 .unwrap_or(config.shared.backpressure_cooldown_ms),
+            obfuscation_profile: config.shared.obfuscation.profile,
+            randomize_chunks: config.shared.obfuscation.randomize_chunks,
+            min_chunk: config.shared.obfuscation.min_chunk,
+            max_chunk: config.shared.obfuscation.max_chunk,
         },
         handshake_timeout: Duration::from_millis(
             args.handshake_timeout_ms

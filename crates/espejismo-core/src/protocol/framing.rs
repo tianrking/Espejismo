@@ -2,7 +2,10 @@ use std::cmp;
 use std::time::Duration;
 
 use anyhow::{bail, Result};
+use rand::rngs::OsRng;
 use rand::Rng;
+use rand::RngCore;
+use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::time::{sleep, Instant};
 
@@ -40,6 +43,15 @@ pub struct Frame {
     pub payload: Vec<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObfuscationProfile {
+    LowLatency,
+    #[default]
+    Balanced,
+    HighEntropy,
+}
+
 #[derive(Clone, Debug)]
 pub struct FrameOptions {
     pub max_padding: usize,
@@ -47,6 +59,10 @@ pub struct FrameOptions {
     pub padding_chance_percent: u8,
     pub backpressure_threshold_ms: u64,
     pub backpressure_cooldown_ms: u64,
+    pub obfuscation_profile: ObfuscationProfile,
+    pub randomize_chunks: bool,
+    pub min_chunk: usize,
+    pub max_chunk: usize,
 }
 
 impl Default for FrameOptions {
@@ -57,6 +73,30 @@ impl Default for FrameOptions {
             padding_chance_percent: 35,
             backpressure_threshold_ms: 40,
             backpressure_cooldown_ms: 1000,
+            obfuscation_profile: ObfuscationProfile::Balanced,
+            randomize_chunks: true,
+            min_chunk: 1024,
+            max_chunk: DATA_CHUNK,
+        }
+    }
+}
+
+impl FrameOptions {
+    pub fn normalized_chunk_bounds(&self) -> (usize, usize) {
+        if !self.randomize_chunks {
+            return (DATA_CHUNK, DATA_CHUNK);
+        }
+        let min = self.min_chunk.clamp(1, DATA_CHUNK);
+        let max = self.max_chunk.clamp(min, DATA_CHUNK);
+        (min, max)
+    }
+
+    pub fn next_chunk_size(&self) -> usize {
+        let (min, max) = self.normalized_chunk_bounds();
+        if min == max {
+            max
+        } else {
+            rand::thread_rng().gen_range(min..=max)
         }
     }
 }
@@ -115,6 +155,10 @@ where
         Ok(())
     }
 
+    pub fn options(&self) -> &FrameOptions {
+        &self.options
+    }
+
     pub async fn recv(&mut self) -> Result<Frame> {
         loop {
             let frame = read_one(&mut self.stream, &self.keys, &mut self.rx_seq).await?;
@@ -133,7 +177,7 @@ where
             return Ok(());
         }
         let len = rand::thread_rng().gen_range(1..=self.options.max_padding);
-        let payload = patterned_padding(len);
+        let payload = random_padding(len);
         let elapsed = write_one(
             &mut self.stream,
             &self.keys,
@@ -186,6 +230,10 @@ where
         Ok(())
     }
 
+    pub fn options(&self) -> &FrameOptions {
+        &self.options
+    }
+
     async fn maybe_send_padding(&mut self) -> Result<()> {
         if !should_send_padding(&self.options, self.padding_disabled_until) {
             return Ok(());
@@ -198,7 +246,7 @@ where
             &self.options,
             Frame {
                 ty: FrameType::Padding,
-                payload: patterned_padding(len),
+                payload: random_padding(len),
             },
         )
         .await?;
@@ -254,10 +302,11 @@ where
     R: AsyncRead + Unpin,
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut buf = vec![0_u8; DATA_CHUNK];
+    let mut buf = vec![0_u8; codec.options.normalized_chunk_bounds().1];
     let mut total = 0_u64;
     loop {
-        let n = reader.read(&mut buf).await?;
+        let chunk_size = codec.options.next_chunk_size();
+        let n = reader.read(&mut buf[..chunk_size]).await?;
         if n == 0 {
             codec
                 .send(Frame {
@@ -332,17 +381,23 @@ async fn maybe_jitter(options: &FrameOptions) {
         return;
     }
     let upper = cmp::max(1, options.jitter_ms);
-    let delay = rand::thread_rng().gen_range(0..=upper);
+    let delay = match options.obfuscation_profile {
+        ObfuscationProfile::LowLatency => rand::thread_rng().gen_range(0..=cmp::max(1, upper / 4)),
+        ObfuscationProfile::Balanced => rand::thread_rng().gen_range(0..=upper),
+        ObfuscationProfile::HighEntropy => {
+            let first = rand::thread_rng().gen_range(0..=upper);
+            let second = rand::thread_rng().gen_range(0..=upper);
+            cmp::max(first, second)
+        }
+    };
     if delay > 0 {
         sleep(Duration::from_millis(delay)).await;
     }
 }
 
-fn patterned_padding(len: usize) -> Vec<u8> {
+fn random_padding(len: usize) -> Vec<u8> {
     let mut payload = vec![0_u8; len];
-    for (idx, byte) in payload.iter_mut().enumerate() {
-        *byte = if idx % 9 == 0 { b':' } else { b'0' };
-    }
+    OsRng.fill_bytes(&mut payload);
     payload
 }
 
