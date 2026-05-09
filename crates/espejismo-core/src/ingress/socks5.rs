@@ -1,4 +1,5 @@
 use anyhow::{bail, Result};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::ProxyAuth;
@@ -7,6 +8,18 @@ use super::ProxyAuth;
 pub struct SocksTarget {
     pub host: String,
     pub port: u16,
+}
+
+#[derive(Clone, Debug)]
+pub enum SocksRequest {
+    Connect(SocksTarget),
+    UdpAssociate,
+}
+
+#[derive(Clone, Debug)]
+pub struct UdpPacket {
+    pub target: SocksTarget,
+    pub payload: Vec<u8>,
 }
 
 impl SocksTarget {
@@ -29,6 +42,19 @@ pub async fn accept_connect_with_auth<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    match accept_request_with_auth(stream, auth).await? {
+        SocksRequest::Connect(target) => Ok(target),
+        SocksRequest::UdpAssociate => bail!("SOCKS5 UDP ASSOCIATE is not a CONNECT request"),
+    }
+}
+
+pub async fn accept_request_with_auth<S>(
+    stream: &mut S,
+    auth: Option<&ProxyAuth>,
+) -> Result<SocksRequest>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let ver = stream.read_u8().await?;
     if ver != 5 {
         bail!("unsupported SOCKS version {ver}");
@@ -42,9 +68,9 @@ where
     let cmd = stream.read_u8().await?;
     let _rsv = stream.read_u8().await?;
     let atyp = stream.read_u8().await?;
-    if ver != 5 || cmd != 1 {
+    if ver != 5 {
         reply(stream, 0x07).await?;
-        bail!("only SOCKS5 CONNECT is supported");
+        bail!("unsupported SOCKS request version {ver}");
     }
 
     let host = match atyp {
@@ -70,8 +96,113 @@ where
         }
     };
     let port = stream.read_u16().await?;
-    reply(stream, 0x00).await?;
-    Ok(SocksTarget { host, port })
+    match cmd {
+        1 => {
+            reply(stream, 0x00).await?;
+            Ok(SocksRequest::Connect(SocksTarget { host, port }))
+        }
+        3 => Ok(SocksRequest::UdpAssociate),
+        _ => {
+            reply(stream, 0x07).await?;
+            bail!("unsupported SOCKS5 command {cmd}");
+        }
+    }
+}
+
+pub async fn reply_udp_associate<S>(stream: &mut S, bound: SocketAddr) -> Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
+    match bound {
+        SocketAddr::V4(addr) => {
+            let mut reply = vec![0x05, 0x00, 0x00, 0x01];
+            reply.extend_from_slice(&addr.ip().octets());
+            reply.extend_from_slice(&addr.port().to_be_bytes());
+            stream.write_all(&reply).await?;
+        }
+        SocketAddr::V6(addr) => {
+            let mut reply = vec![0x05, 0x00, 0x00, 0x04];
+            reply.extend_from_slice(&addr.ip().octets());
+            reply.extend_from_slice(&addr.port().to_be_bytes());
+            stream.write_all(&reply).await?;
+        }
+    }
+    Ok(())
+}
+
+pub fn parse_udp_packet(input: &[u8]) -> Result<UdpPacket> {
+    if input.len() < 4 {
+        bail!("SOCKS UDP packet too short");
+    }
+    if input[0] != 0 || input[1] != 0 {
+        bail!("SOCKS UDP reserved bytes are invalid");
+    }
+    if input[2] != 0 {
+        bail!("SOCKS UDP fragmentation is not supported");
+    }
+    let atyp = input[3];
+    let mut idx = 4;
+    let host = match atyp {
+        1 => {
+            if input.len() < idx + 4 + 2 {
+                bail!("SOCKS UDP IPv4 packet too short");
+            }
+            let ip = Ipv4Addr::new(input[idx], input[idx + 1], input[idx + 2], input[idx + 3]);
+            idx += 4;
+            ip.to_string()
+        }
+        3 => {
+            if input.len() < idx + 1 {
+                bail!("SOCKS UDP domain packet too short");
+            }
+            let len = input[idx] as usize;
+            idx += 1;
+            if input.len() < idx + len + 2 {
+                bail!("SOCKS UDP domain packet too short");
+            }
+            let host = String::from_utf8(input[idx..idx + len].to_vec())?;
+            idx += len;
+            host
+        }
+        4 => {
+            if input.len() < idx + 16 + 2 {
+                bail!("SOCKS UDP IPv6 packet too short");
+            }
+            let mut octets = [0_u8; 16];
+            octets.copy_from_slice(&input[idx..idx + 16]);
+            idx += 16;
+            Ipv6Addr::from(octets).to_string()
+        }
+        _ => bail!("unsupported SOCKS UDP address type {atyp}"),
+    };
+    let port = u16::from_be_bytes([input[idx], input[idx + 1]]);
+    idx += 2;
+    Ok(UdpPacket {
+        target: SocksTarget { host, port },
+        payload: input[idx..].to_vec(),
+    })
+}
+
+pub fn build_udp_packet(target: &SocksTarget, payload: &[u8]) -> Result<Vec<u8>> {
+    let mut output = vec![0x00, 0x00, 0x00];
+    if let Ok(ip) = target.host.parse::<Ipv4Addr>() {
+        output.push(0x01);
+        output.extend_from_slice(&ip.octets());
+    } else if let Ok(ip) = target.host.parse::<Ipv6Addr>() {
+        output.push(0x04);
+        output.extend_from_slice(&ip.octets());
+    } else {
+        let host = target.host.as_bytes();
+        if host.len() > u8::MAX as usize {
+            bail!("SOCKS UDP domain name too long");
+        }
+        output.push(0x03);
+        output.push(host.len() as u8);
+        output.extend_from_slice(host);
+    }
+    output.extend_from_slice(&target.port.to_be_bytes());
+    output.extend_from_slice(payload);
+    Ok(output)
 }
 
 async fn negotiate_auth<S>(stream: &mut S, methods: &[u8], auth: Option<&ProxyAuth>) -> Result<()>

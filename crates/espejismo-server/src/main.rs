@@ -6,13 +6,14 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use espejismo_core::config::{encode_config_base64, example_config};
 use espejismo_core::{
-    accept_handshake_with_replay, init_logging, load_config, parse_psk, spawn_admin_server,
-    spawn_frame_transport, AdminState, ConfigInput, EgressPolicy, EspejismoConfig, FrameOptions,
-    HandshakeConfig, LogConfig, LogFormat, Metrics, ReplayCache,
+    accept_handshake_with_replay, idle_copy_bidirectional, init_logging, load_config, parse_psk,
+    read_tunnel_request, spawn_admin_server, spawn_frame_transport, AdminState, ConfigInput,
+    EgressPolicy, EspejismoConfig, FrameOptions, HandshakeConfig, LogConfig, LogFormat, Metrics,
+    ReplayCache, TunnelRequest,
 };
 use futures::StreamExt;
-use tokio::io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::AsyncWriteExt;
+use tokio::net::{lookup_host, TcpListener, TcpStream, UdpSocket};
 use tokio::time::{sleep, timeout, Duration};
 use tokio_yamux::{Config as YamuxConfig, Session, StreamHandle};
 use tracing::{debug, info};
@@ -93,6 +94,8 @@ struct RemoteRuntime {
     admin_listen: Option<SocketAddr>,
     admin_token: Option<String>,
     egress: EgressPolicy,
+    idle_timeout: Duration,
+    max_streams: u32,
 }
 
 #[tokio::main]
@@ -183,16 +186,14 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<RemoteRuntime> 
 
     Ok(RemoteRuntime {
         listen: args.listen.unwrap_or(config.remote.listen),
-        handshake: HandshakeConfig {
-            psk: parse_psk(&psk)?,
-            clock_skew_secs: args
-                .clock_skew_secs
+        handshake: HandshakeConfig::new(
+            parse_psk(&psk)?,
+            args.clock_skew_secs
                 .unwrap_or(config.shared.clock_skew_secs),
-            max_handshake_padding: args
-                .max_handshake_padding
+            args.max_handshake_padding
                 .unwrap_or(config.remote.max_handshake_padding),
-            puzzle_difficulty_bits: args.puzzle_bits.unwrap_or(config.shared.puzzle_bits),
-        },
+            args.puzzle_bits.unwrap_or(config.shared.puzzle_bits),
+        ),
         frames: FrameOptions {
             max_padding: args.max_padding.unwrap_or(config.shared.max_padding),
             jitter_ms: args.jitter_ms.unwrap_or(config.shared.jitter_ms),
@@ -231,6 +232,8 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<RemoteRuntime> 
         admin_listen: args.admin_listen.or(config.admin.listen),
         admin_token: args.admin_token.clone().or(config.admin.token),
         egress: config.remote.egress.into(),
+        idle_timeout: Duration::from_secs(config.shared.idle_timeout_secs),
+        max_streams: config.shared.max_streams,
     })
 }
 
@@ -272,6 +275,7 @@ async fn handle_peer(
 
     let transport = spawn_frame_transport(inbound, keys, runtime.frames, runtime.tunnel_buffer);
     let mut session = Session::new_server(transport, YamuxConfig::default());
+    let mut stream_count: u32 = 0;
     while let Some(stream) = session.next().await {
         let stream = match stream {
             Ok(stream) => stream,
@@ -280,10 +284,20 @@ async fn handle_peer(
                 return Err(err.into());
             }
         };
+        if stream_count >= runtime.max_streams {
+            debug!(
+                stream_count,
+                max = runtime.max_streams,
+                "rejecting stream: limit reached"
+            );
+            continue;
+        }
+        stream_count += 1;
         let metrics = metrics.clone();
         let egress = runtime.egress.clone();
+        let idle = runtime.idle_timeout;
         tokio::spawn(async move {
-            if let Err(err) = handle_mux_stream(stream, metrics, egress).await {
+            if let Err(err) = handle_mux_stream(stream, metrics, egress, idle).await {
                 debug!(error = %err, "mux stream ended");
             }
         });
@@ -296,10 +310,11 @@ async fn handle_mux_stream(
     mut stream: StreamHandle,
     metrics: Metrics,
     egress: EgressPolicy,
+    idle: Duration,
 ) -> Result<()> {
     metrics.inc_active_stream();
     metrics.inc_stream_opened();
-    let result = handle_mux_stream_inner(&mut stream, metrics.clone(), egress).await;
+    let result = handle_mux_stream_inner(&mut stream, metrics.clone(), egress, idle).await;
     if result.is_err() {
         metrics.inc_stream_failed();
     }
@@ -311,29 +326,89 @@ async fn handle_mux_stream_inner(
     stream: &mut StreamHandle,
     metrics: Metrics,
     egress: EgressPolicy,
+    idle: Duration,
 ) -> Result<()> {
-    let target = read_target(stream).await?;
-    egress
-        .validate_authority(&target)
-        .context("egress policy rejected target")?;
-    let mut remote = TcpStream::connect(&target)
-        .await
-        .with_context(|| format!("connect {target}"))?;
-    info!(%target, "mux relay opened");
-    let (client_to_remote, remote_to_client) = copy_bidirectional(stream, &mut remote).await?;
-    metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
+    match read_tunnel_request(stream).await? {
+        TunnelRequest::TcpConnect { authority } => {
+            let mut remote = connect_egress_tcp(&authority, &egress).await?;
+            info!(target = %authority, "mux TCP relay opened");
+            let (client_to_remote, remote_to_client) =
+                idle_copy_bidirectional(stream, &mut remote, idle).await?;
+            metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
+        }
+        TunnelRequest::UdpDatagram { authority, payload } => {
+            let response = relay_udp_datagram(&authority, &payload, &egress, idle).await?;
+            metrics.add_tunnel_bytes(payload.len() as u64, response.len() as u64);
+            anyhow::ensure!(
+                response.len() <= u16::MAX as usize,
+                "UDP response too large"
+            );
+            stream.write_u16(response.len() as u16).await?;
+            stream.write_all(&response).await?;
+            stream.shutdown().await?;
+        }
+    }
     Ok(())
 }
 
-async fn read_target<R>(reader: &mut R) -> Result<String>
-where
-    R: AsyncReadExt + Unpin,
-{
-    let len = reader.read_u16().await? as usize;
-    anyhow::ensure!(len > 0, "empty target authority");
-    let mut bytes = vec![0_u8; len];
-    reader.read_exact(&mut bytes).await?;
-    Ok(String::from_utf8(bytes)?)
+async fn connect_egress_tcp(authority: &str, egress: &EgressPolicy) -> Result<TcpStream> {
+    egress
+        .validate_authority(authority)
+        .context("egress policy rejected target")?;
+    let mut last_error = None;
+    for addr in lookup_host(authority)
+        .await
+        .with_context(|| format!("resolve {authority}"))?
+    {
+        if let Err(err) = egress.validate_resolved_addr(addr) {
+            last_error = Some(err);
+            continue;
+        }
+        match TcpStream::connect(addr).await {
+            Ok(stream) => return Ok(stream),
+            Err(err) => last_error = Some(err.into()),
+        }
+    }
+    Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no resolved egress address")))
+        .with_context(|| format!("connect {authority}"))
+}
+
+async fn relay_udp_datagram(
+    authority: &str,
+    payload: &[u8],
+    egress: &EgressPolicy,
+    idle: Duration,
+) -> Result<Vec<u8>> {
+    egress
+        .validate_authority(authority)
+        .context("egress policy rejected UDP target")?;
+    let mut selected = None;
+    for addr in lookup_host(authority)
+        .await
+        .with_context(|| format!("resolve {authority}"))?
+    {
+        if egress.validate_resolved_addr(addr).is_ok() {
+            selected = Some(addr);
+            break;
+        }
+    }
+    let target = selected.context("no allowed UDP egress address")?;
+    let bind = if target.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    };
+    let socket = UdpSocket::bind(bind).await?;
+    socket.connect(target).await?;
+    socket.send(payload).await?;
+    let mut response = vec![0_u8; 65_535];
+    let n = timeout(
+        idle.min(Duration::from_secs(10)),
+        socket.recv(&mut response),
+    )
+    .await??;
+    response.truncate(n);
+    Ok(response)
 }
 
 async fn reject_or_quarantine(

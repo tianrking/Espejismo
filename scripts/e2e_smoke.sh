@@ -11,6 +11,7 @@ SOCKS5_ADDR="127.0.0.1:$((PORT_BASE + 2))"
 HTTP_PROXY_ADDR="127.0.0.1:$((PORT_BASE + 3))"
 LOCAL_ADMIN_ADDR="127.0.0.1:$((PORT_BASE + 4))"
 REMOTE_ADMIN_ADDR="127.0.0.1:$((PORT_BASE + 5))"
+UDP_PORT="$((PORT_BASE + 6))"
 CONFIG_FILE="$(mktemp /tmp/espejismo-config.XXXXXX.toml)"
 PROBE_TOKEN="probe-$(date +%s)-$$"
 POST_BODY="body-${PROBE_TOKEN}"
@@ -22,6 +23,7 @@ cleanup() {
   if [[ -n "${LOCAL_PID:-}" ]]; then kill "${LOCAL_PID}" 2>/dev/null || true; fi
   if [[ -n "${REMOTE_PID:-}" ]]; then kill "${REMOTE_PID}" 2>/dev/null || true; fi
   if [[ -n "${HTTP_PID:-}" ]]; then kill "${HTTP_PID}" 2>/dev/null || true; fi
+  if [[ -n "${UDP_PID:-}" ]]; then kill "${UDP_PID}" 2>/dev/null || true; fi
   rm -f "${CONFIG_FILE}"
 }
 trap cleanup EXIT
@@ -45,6 +47,9 @@ cd "${ROOT}"
 python3 "${ROOT}/scripts/probe_http_server.py" --host "${HTTP_ADDR}" --port "${HTTP_PORT}" >/tmp/espejismo-http.log 2>&1 &
 HTTP_PID=$!
 wait_for_port "${HTTP_ADDR}" "${HTTP_PORT}" "http fixture"
+
+python3 "${ROOT}/scripts/probe_udp_server.py" --host "${HTTP_ADDR}" --port "${UDP_PORT}" >/tmp/espejismo-udp.log 2>&1 &
+UDP_PID=$!
 
 cat >"${CONFIG_FILE}" <<EOF
 [shared]
@@ -77,10 +82,17 @@ reject_delay_ms = 25
 cold_start_delay_ms = 20
 
 [remote.egress]
-allow_ports = [${HTTP_PORT}]
+allow_ports = [${HTTP_PORT}, ${UDP_PORT}]
 EOF
 
 CONFIG_B64="$(base64 -w0 "${CONFIG_FILE}" 2>/dev/null || base64 "${CONFIG_FILE}" | tr -d '\n')"
+PROFILE_URL="$(cargo run --quiet --bin espejismo-local -- --config "${CONFIG_FILE}" --print-client-profile --profile-name smoke)"
+case "${PROFILE_URL}" in
+  espejismo://import/*) ;;
+  *) echo "unexpected profile URL: ${PROFILE_URL}" >&2; exit 1 ;;
+esac
+cargo run --quiet --bin espejismo-local -- --import-profile "${PROFILE_URL}" --print-client-profile --profile-name smoke-imported \
+  | grep -q "espejismo://import/"
 
 cargo run --quiet --bin espejismo-remote -- \
   --config-base64 "${CONFIG_B64}" \
@@ -126,6 +138,14 @@ curl --silent --show-error --max-time 10 \
   -H "X-Espejismo-Probe: ${PROBE_TOKEN}" \
   "http://${HTTP_ADDR}:${HTTP_PORT}/probe/connect/${PROBE_TOKEN}" \
   | grep -q "\"path\": \"/probe/connect/${PROBE_TOKEN}\""
+
+python3 "${ROOT}/scripts/probe_socks5_udp.py" \
+  --socks-port "$((PORT_BASE + 2))" \
+  --username "${PROXY_USER}" \
+  --password "${PROXY_PASS}" \
+  --target-port "${UDP_PORT}" \
+  --payload "${PROBE_TOKEN}" \
+  | grep -q "udp-echo:${PROBE_TOKEN}"
 
 HTTP_AUTH_STATUS="$(curl --silent --output /dev/null --write-out "%{http_code}" --max-time 5 \
   --proxy "http://${HTTP_PROXY_ADDR}" \

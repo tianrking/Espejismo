@@ -42,12 +42,14 @@ The probe sends a unique token through these paths:
 
 - Authenticated SOCKS5 GET
 - Authenticated SOCKS5 POST with body echo
+- Authenticated SOCKS5 UDP ASSOCIATE datagram relay
 - Authenticated HTTP proxy absolute-form GET
 - Authenticated HTTP CONNECT tunnel
 - HTTP proxy authentication rejection
 - JSON logging configuration during process startup
 - Admin health/status/metrics endpoint checks
 - Egress allow-port policy in the remote test config
+- Profile URL export/import smoke check
 
 The fixture returns JSON containing method, path, probe header, and request
 body. The script checks that the returned JSON contains the expected token,
@@ -72,6 +74,6 @@ ingress, or configuration loading, always run the full automated check list.
 - Multi-hour soak tests.
 - High-concurrency load tests.
 - Packet-loss simulation.
-- UDP proxy behavior.
+- Multi-packet UDP flows and fragmentation behavior.
 - Live physical tunnel migration.
 - Browser/WASM transport behavior.

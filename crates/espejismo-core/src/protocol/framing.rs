@@ -293,7 +293,7 @@ where
     let mut plain = Vec::with_capacity(frame.payload.len() + 1);
     plain.push(frame.ty as u8);
     plain.extend_from_slice(&frame.payload);
-    let encrypted = encrypt(&keys.tx, seq, &plain)?;
+    let encrypted = encrypt(&keys.tx, seq, &keys.nonce_tag, &plain)?;
     *tx_seq += 1;
     if encrypted.len() > MAX_FRAME {
         bail!("encrypted frame too large");
@@ -316,7 +316,7 @@ where
     }
     let mut encrypted = vec![0_u8; len];
     stream.read_exact(&mut encrypted).await?;
-    let plain = decrypt(&keys.rx, seq, &encrypted)?;
+    let plain = decrypt(&keys.rx, seq, &keys.nonce_tag, &encrypted)?;
     *rx_seq += 1;
     if plain.is_empty() {
         bail!("empty plaintext frame");

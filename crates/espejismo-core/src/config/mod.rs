@@ -49,6 +49,10 @@ pub struct SharedConfig {
     pub backpressure_cooldown_ms: u64,
     #[serde(default = "default_tunnel_buffer")]
     pub tunnel_buffer: usize,
+    #[serde(default = "default_idle_timeout_secs")]
+    pub idle_timeout_secs: u64,
+    #[serde(default = "default_max_streams")]
+    pub max_streams: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -165,6 +169,8 @@ impl Default for SharedConfig {
             backpressure_threshold_ms: default_backpressure_threshold_ms(),
             backpressure_cooldown_ms: default_backpressure_cooldown_ms(),
             tunnel_buffer: default_tunnel_buffer(),
+            idle_timeout_secs: default_idle_timeout_secs(),
+            max_streams: default_max_streams(),
         }
     }
 }
@@ -341,4 +347,12 @@ fn default_log_level() -> String {
 
 fn default_log_ansi() -> bool {
     true
+}
+
+fn default_idle_timeout_secs() -> u64 {
+    300
+}
+
+fn default_max_streams() -> u32 {
+    256
 }

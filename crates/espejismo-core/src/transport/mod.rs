@@ -1,4 +1,7 @@
+use std::time::Duration;
+
 use tokio::io::{duplex, split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
+use tokio::time::timeout;
 use tracing::debug;
 
 use crate::crypto::SessionKeys;
@@ -32,6 +35,88 @@ where
     });
 
     app_stream
+}
+
+pub async fn idle_copy_bidirectional<A, B>(
+    a: &mut A,
+    b: &mut B,
+    idle: Duration,
+) -> std::io::Result<(u64, u64)>
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut buf_a = [0u8; 8192];
+    let mut buf_b = [0u8; 8192];
+    let mut total_a = 0u64;
+    let mut total_b = 0u64;
+    let mut a_done = false;
+    let mut b_done = false;
+
+    loop {
+        let read_a = if !a_done {
+            Some(timeout(idle, a.read(&mut buf_a)))
+        } else {
+            None
+        };
+        let read_b = if !b_done {
+            Some(timeout(idle, b.read(&mut buf_b)))
+        } else {
+            None
+        };
+
+        match (read_a, read_b) {
+            (Some(ra), Some(rb)) => {
+                tokio::select! {
+                    r = ra => {
+                        match r {
+                            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => {
+                                a_done = true;
+                                let _ = b.shutdown().await;
+                                if b_done { break; }
+                            }
+                            Ok(Ok(n)) => {
+                                total_a += n as u64;
+                                b.write_all(&buf_a[..n]).await?;
+                            }
+                        }
+                        continue;
+                    }
+                    r = rb => {
+                        match r {
+                            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => {
+                                b_done = true;
+                                let _ = a.shutdown().await;
+                                if a_done { break; }
+                            }
+                            Ok(Ok(n)) => {
+                                total_b += n as u64;
+                                a.write_all(&buf_b[..n]).await?;
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
+            (Some(ra), None) => match ra.await {
+                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(n)) => {
+                    total_a += n as u64;
+                    b.write_all(&buf_a[..n]).await?;
+                }
+            },
+            (None, Some(rb)) => match rb.await {
+                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(n)) => {
+                    total_b += n as u64;
+                    a.write_all(&buf_b[..n]).await?;
+                }
+            },
+            (None, None) => break,
+        }
+    }
+
+    Ok((total_a, total_b))
 }
 
 async fn upload_frames<R, W>(

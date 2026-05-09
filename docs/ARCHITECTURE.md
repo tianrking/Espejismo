@@ -22,12 +22,14 @@ relay can evolve independently.
 The first packet is variable length and authenticated:
 
 ```text
-[ HMAC-SHA256 32 ][ UTC timestamp 8 ][ nonce 24 ][ X25519 public key 32 ][ puzzle nonce 8 ][ padding length 2 ][ padding 0..N ]
+[ HMAC-SHA256 32 ][ UTC timestamp 8 ][ nonce 24 ][ X25519 public key 32 ][ protocol version 2 ][ capabilities 8 ][ puzzle nonce 8 ][ padding length 2 ][ padding 0..N ]
 ```
 
 The client solves a bounded SHA-256 leading-zero puzzle over the body before it
 computes the HMAC. The remote verifies the puzzle before the HMAC, checks the
 timestamp skew, and records the ephemeral public key in a bounded replay cache.
+The current protocol version is `1`; capability bit 0 enables TCP CONNECT and
+bit 1 enables SOCKS5 UDP ASSOCIATE datagram relay.
 
 ## Frame Pipeline
 
@@ -51,16 +53,17 @@ AEAD, padding, jitter, and fail-fast behavior inside the protocol core.
 
 ## Multiplexing Pipeline
 
-`espejismo-local` creates one authenticated physical TCP tunnel to
+`espejismo-local` maintains a reconnecting authenticated physical TCP tunnel to
 `espejismo-remote`, wraps it in the encrypted frame transport, and runs yamux
 over it. Each accepted SOCKS5 or HTTP proxy connection opens a yamux logical
-stream and sends the target authority as the stream preface. HTTP CONNECT is
-accepted directly; absolute-form `http://` requests are rewritten to origin-form
-before entering the tunnel.
+stream and sends an internal command preface. HTTP CONNECT is accepted directly;
+absolute-form `http://` requests are rewritten to origin-form before entering
+the tunnel. SOCKS5 UDP ASSOCIATE datagrams are relayed as UDP command streams.
 
 `espejismo-remote` accepts yamux streams over the same physical tunnel. Each
-logical stream is handled independently: read target authority, connect the
-outbound TCP destination, then relay bidirectionally.
+logical stream is handled independently: read the command preface, validate
+egress policy, connect the outbound TCP destination or relay one UDP datagram,
+then return traffic through the tunnel.
 
 ## Configuration Pipeline
 

@@ -21,17 +21,40 @@ use crate::protocol::replay::ReplayCache;
 type HmacSha256 = Hmac<Sha256>;
 
 const CLIENT_HELLO_TAG_LEN: usize = 32;
-const CLIENT_HELLO_FIXED_BODY_LEN: usize = 8 + 24 + 32 + 8 + 2;
-const PUZZLE_NONCE_RANGE: std::ops::Range<usize> = 64..72;
-const SERVER_HELLO_LEN: usize = 32 + 32;
+const CLIENT_HELLO_FIXED_BODY_LEN: usize = 8 + 24 + 32 + 2 + 8 + 8 + 2;
+const PUZZLE_NONCE_RANGE: std::ops::Range<usize> = 74..82;
+const SERVER_HELLO_LEN: usize = 32 + 2 + 8 + 32;
 const MAX_HANDSHAKE_PADDING: usize = 1024;
+pub const PROTOCOL_VERSION: u16 = 1;
+pub const CAP_TCP_CONNECT: u64 = 1 << 0;
+pub const CAP_UDP_ASSOCIATE: u64 = 1 << 1;
+pub const DEFAULT_CAPABILITIES: u64 = CAP_TCP_CONNECT | CAP_UDP_ASSOCIATE;
 
 #[derive(Clone, Debug)]
 pub struct HandshakeConfig {
     pub psk: Vec<u8>,
+    pub auth_key: [u8; 32],
     pub clock_skew_secs: i64,
     pub max_handshake_padding: usize,
     pub puzzle_difficulty_bits: u8,
+}
+
+impl HandshakeConfig {
+    pub fn new(
+        psk: Vec<u8>,
+        clock_skew_secs: i64,
+        max_handshake_padding: usize,
+        puzzle_difficulty_bits: u8,
+    ) -> Self {
+        let auth_key = derive_auth_key(&psk);
+        Self {
+            psk,
+            auth_key,
+            clock_skew_secs,
+            max_handshake_padding,
+            puzzle_difficulty_bits,
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -40,6 +63,7 @@ pub struct SessionKeys {
     pub rx: XChaCha20Poly1305,
     pub(crate) tx_len_mask: [u8; 32],
     pub(crate) rx_len_mask: [u8; 32],
+    pub(crate) nonce_tag: [u8; 8],
 }
 
 pub fn parse_psk(input: &str) -> Result<Vec<u8>> {
@@ -77,11 +101,13 @@ where
     body.extend_from_slice(&now.to_be_bytes());
     body.extend_from_slice(&nonce);
     body.extend_from_slice(public.as_bytes());
+    body.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
+    body.extend_from_slice(&DEFAULT_CAPABILITIES.to_be_bytes());
     body.extend_from_slice(&0_u64.to_be_bytes());
     body.extend_from_slice(&(padding_len as u16).to_be_bytes());
     body.extend_from_slice(&padding);
     let body = puzzle::solve(body, PUZZLE_NONCE_RANGE, cfg.puzzle_difficulty_bits);
-    let tag = hmac(&cfg.psk, &body)?;
+    let tag = hmac(&cfg.auth_key, &body)?;
     let mut hello = Vec::with_capacity(CLIENT_HELLO_TAG_LEN + body.len());
     hello.extend_from_slice(&tag);
     hello.extend_from_slice(&body);
@@ -93,8 +119,22 @@ where
         .await
         .context("server handshake failed")?;
     let server_public = PublicKey::from(slice_32(&reply[..32])?);
-    let expected = server_hmac(&cfg.psk, &body, server_public.as_bytes())?;
-    if expected.ct_eq(&reply[32..]).unwrap_u8() != 1 {
+    let server_version = u16::from_be_bytes(reply[32..34].try_into()?);
+    let server_capabilities = u64::from_be_bytes(reply[34..42].try_into()?);
+    if server_version != PROTOCOL_VERSION {
+        bail!("unsupported server protocol version {server_version}");
+    }
+    if server_capabilities & CAP_TCP_CONNECT == 0 {
+        bail!("server does not support TCP CONNECT");
+    }
+    let expected = server_hmac(
+        &cfg.auth_key,
+        &body,
+        server_public.as_bytes(),
+        server_version,
+        server_capabilities,
+    )?;
+    if expected.ct_eq(&reply[42..]).unwrap_u8() != 1 {
         bail!("server authentication failed");
     }
 
@@ -139,7 +179,7 @@ where
         .await
         .context("client handshake body failed")?;
 
-    let padding_len = u16::from_be_bytes(fixed_body[72..74].try_into()?) as usize;
+    let padding_len = u16::from_be_bytes(fixed_body[82..84].try_into()?) as usize;
     let max_padding = cfg.max_handshake_padding.min(MAX_HANDSHAKE_PADDING);
     if padding_len > max_padding {
         bail!("handshake padding exceeds configured limit");
@@ -158,12 +198,20 @@ where
     if !puzzle::verify(&body, cfg.puzzle_difficulty_bits) {
         bail!("client puzzle verification failed");
     }
-    let expected = hmac(&cfg.psk, &body)?;
+    let expected = hmac(&cfg.auth_key, &body)?;
     if expected.ct_eq(&tag).unwrap_u8() != 1 {
         bail!("client authentication failed");
     }
 
     let timestamp = i64::from_be_bytes(fixed_body[..8].try_into()?);
+    let client_version = u16::from_be_bytes(fixed_body[64..66].try_into()?);
+    let client_capabilities = u64::from_be_bytes(fixed_body[66..74].try_into()?);
+    if client_version != PROTOCOL_VERSION {
+        bail!("unsupported client protocol version {client_version}");
+    }
+    if client_capabilities & CAP_TCP_CONNECT == 0 {
+        bail!("client does not support TCP CONNECT");
+    }
     let now = unix_now()?;
     if (now - timestamp).abs() > cfg.clock_skew_secs {
         bail!("handshake timestamp outside allowed window");
@@ -181,8 +229,17 @@ where
     let public = PublicKey::from(&secret);
     let shared = secret.diffie_hellman(&client_public);
 
-    let tag = server_hmac(&cfg.psk, &body, public.as_bytes())?;
+    let server_capabilities = DEFAULT_CAPABILITIES & client_capabilities;
+    let tag = server_hmac(
+        &cfg.auth_key,
+        &body,
+        public.as_bytes(),
+        PROTOCOL_VERSION,
+        server_capabilities,
+    )?;
     stream.write_all(public.as_bytes()).await?;
+    stream.write_all(&PROTOCOL_VERSION.to_be_bytes()).await?;
+    stream.write_all(&server_capabilities.to_be_bytes()).await?;
     stream.write_all(&tag).await?;
 
     derive_keys(&cfg.psk, shared.as_bytes(), &fixed_body[8..32], b"server")
@@ -199,6 +256,7 @@ fn derive_keys(psk: &[u8], shared: &[u8; 32], nonce: &[u8], role: &[u8]) -> Resu
     let mut server_to_client = [0_u8; 32];
     let mut client_len_mask = [0_u8; 32];
     let mut server_len_mask = [0_u8; 32];
+    let mut nonce_tag = [0_u8; 8];
     hk.expand(b"espejismo v1 client-to-server", &mut client_to_server)
         .map_err(|_| anyhow!("hkdf expansion failed"))?;
     hk.expand(b"espejismo v1 server-to-client", &mut server_to_client)
@@ -206,6 +264,8 @@ fn derive_keys(psk: &[u8], shared: &[u8; 32], nonce: &[u8], role: &[u8]) -> Resu
     hk.expand(b"espejismo v1 client-length-mask", &mut client_len_mask)
         .map_err(|_| anyhow!("hkdf expansion failed"))?;
     hk.expand(b"espejismo v1 server-length-mask", &mut server_len_mask)
+        .map_err(|_| anyhow!("hkdf expansion failed"))?;
+    hk.expand(b"espejismo v1 nonce-tag", &mut nonce_tag)
         .map_err(|_| anyhow!("hkdf expansion failed"))?;
 
     let (tx, rx, tx_len_mask, rx_len_mask) = if role == b"client" {
@@ -229,18 +289,32 @@ fn derive_keys(psk: &[u8], shared: &[u8; 32], nonce: &[u8], role: &[u8]) -> Resu
         rx: XChaCha20Poly1305::new((&rx).into()),
         tx_len_mask,
         rx_len_mask,
+        nonce_tag,
     })
 }
 
-pub(crate) fn encrypt(cipher: &XChaCha20Poly1305, seq: u64, plain: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn encrypt(
+    cipher: &XChaCha20Poly1305,
+    seq: u64,
+    nonce_tag: &[u8; 8],
+    plain: &[u8],
+) -> Result<Vec<u8>> {
     cipher
-        .encrypt(XNonce::from_slice(&nonce(seq)), plain)
+        .encrypt(XNonce::from_slice(&session_nonce(seq, nonce_tag)), plain)
         .map_err(|_| anyhow!("encryption failed"))
 }
 
-pub(crate) fn decrypt(cipher: &XChaCha20Poly1305, seq: u64, encrypted: &[u8]) -> Result<Vec<u8>> {
+pub(crate) fn decrypt(
+    cipher: &XChaCha20Poly1305,
+    seq: u64,
+    nonce_tag: &[u8; 8],
+    encrypted: &[u8],
+) -> Result<Vec<u8>> {
     cipher
-        .decrypt(XNonce::from_slice(&nonce(seq)), encrypted)
+        .decrypt(
+            XNonce::from_slice(&session_nonce(seq, nonce_tag)),
+            encrypted,
+        )
         .map_err(|_| anyhow!("frame authentication failed"))
 }
 
@@ -252,24 +326,42 @@ pub(crate) fn length_mask(key: &[u8; 32], seq: u64) -> Result<u32> {
     Ok(u32::from_be_bytes(digest[..4].try_into()?))
 }
 
-fn nonce(seq: u64) -> [u8; 24] {
+fn session_nonce(seq: u64, tag: &[u8; 8]) -> [u8; 24] {
     let mut nonce = [0_u8; 24];
+    nonce[..8].copy_from_slice(tag);
     nonce[16..].copy_from_slice(&seq.to_be_bytes());
     nonce
 }
 
-fn hmac(psk: &[u8], input: &[u8]) -> Result<[u8; 32]> {
-    let mut mac = <HmacSha256 as Mac>::new_from_slice(psk).map_err(|_| anyhow!("invalid PSK"))?;
+fn derive_auth_key(psk: &[u8]) -> [u8; 32] {
+    let hk = Hkdf::<Sha256>::new(None, psk);
+    let mut key = [0_u8; 32];
+    hk.expand(b"espejismo v1 handshake-auth-key", &mut key)
+        .expect("32 bytes always fits in HKDF-SHA256 output");
+    key
+}
+
+fn hmac(key: &[u8], input: &[u8]) -> Result<[u8; 32]> {
+    let mut mac =
+        <HmacSha256 as Mac>::new_from_slice(key).map_err(|_| anyhow!("invalid HMAC key"))?;
     mac.update(input);
     Ok(mac.finalize().into_bytes().into())
 }
 
-fn server_hmac(psk: &[u8], client_hello: &[u8], server_pub: &[u8]) -> Result<[u8; 32]> {
-    let mut data = Vec::with_capacity(client_hello.len() + server_pub.len() + 10);
+fn server_hmac(
+    key: &[u8],
+    client_hello: &[u8],
+    server_pub: &[u8],
+    version: u16,
+    capabilities: u64,
+) -> Result<[u8; 32]> {
+    let mut data = Vec::with_capacity(client_hello.len() + server_pub.len() + 20);
     data.extend_from_slice(b"server-v1:");
     data.extend_from_slice(client_hello);
     data.extend_from_slice(server_pub);
-    hmac(psk, &data)
+    data.extend_from_slice(&version.to_be_bytes());
+    data.extend_from_slice(&capabilities.to_be_bytes());
+    hmac(key, &data)
 }
 
 fn random_padding_len(max_padding: usize) -> usize {
@@ -299,12 +391,7 @@ mod tests {
 
     #[tokio::test]
     async fn client_and_server_complete_variable_length_handshake() {
-        let cfg = HandshakeConfig {
-            psk: b"test-secret-that-is-long-enough".to_vec(),
-            clock_skew_secs: 30,
-            max_handshake_padding: 128,
-            puzzle_difficulty_bits: 4,
-        };
+        let cfg = HandshakeConfig::new(b"test-secret-that-is-long-enough".to_vec(), 30, 128, 4);
         let (mut client, mut server) = duplex(4096);
         let client_cfg = cfg.clone();
         let server_cfg = cfg.clone();

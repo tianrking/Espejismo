@@ -25,15 +25,40 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let mut header = Vec::with_capacity(2048);
-    let mut byte = [0_u8; 1];
-    while !header.ends_with(b"\r\n\r\n") {
+    let mut read_buf = [0_u8; 2048];
+    loop {
         if header.len() >= 32 * 1024 {
             bail!("HTTP proxy header too large");
         }
-        stream.read_exact(&mut byte).await?;
-        header.push(byte[0]);
+        let n = stream.read(&mut read_buf).await?;
+        if n == 0 {
+            bail!("HTTP proxy connection closed before headers complete");
+        }
+        let prev_len = header.len();
+        header.extend_from_slice(&read_buf[..n]);
+        if let Some(pos) = find_header_end(&header, prev_len.saturating_sub(3)) {
+            let header_end = pos + 4;
+            let overflow = if header_end < header.len() {
+                let extra = header[header_end..].to_vec();
+                header.truncate(header_end);
+                Some(extra)
+            } else {
+                None
+            };
+            return parse_and_respond(stream, &header, auth, overflow).await;
+        }
     }
+}
 
+async fn parse_and_respond<S>(
+    stream: &mut S,
+    header: &[u8],
+    auth: Option<&ProxyAuth>,
+    overflow: Option<Vec<u8>>,
+) -> Result<HttpTarget>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let text = std::str::from_utf8(&header).context("HTTP proxy header is not UTF-8")?;
     let mut lines = text.split("\r\n");
     let request_line = lines.next().context("missing HTTP request line")?;
@@ -62,16 +87,20 @@ where
             .await?;
         return Ok(HttpTarget {
             authority: target.to_string(),
-            prebuffer: Vec::new(),
+            prebuffer: overflow.unwrap_or_default(),
         });
     }
 
     let (authority, path) = parse_absolute_http_target(target)?;
     let rewritten = rewrite_absolute_request(method, &path, version, &header_lines);
+    let mut prebuffer = rewritten.into_bytes();
+    if let Some(extra) = overflow {
+        prebuffer.extend_from_slice(&extra);
+    }
 
     Ok(HttpTarget {
         authority,
-        prebuffer: rewritten.into_bytes(),
+        prebuffer,
     })
 }
 
@@ -137,4 +166,17 @@ fn rewrite_absolute_request(method: &str, path: &str, version: &str, lines: &[&s
     }
     rewritten.push_str("\r\n");
     rewritten
+}
+
+fn find_header_end(data: &[u8], search_from: usize) -> Option<usize> {
+    if data.len() < 4 {
+        return None;
+    }
+    let start = search_from.min(data.len().saturating_sub(4));
+    for i in start..=data.len() - 4 {
+        if &data[i..i + 4] == b"\r\n\r\n" {
+            return Some(i);
+        }
+    }
+    None
 }

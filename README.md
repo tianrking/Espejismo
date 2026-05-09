@@ -258,6 +258,11 @@ cargo run --bin espejismo-local -- --print-example-config-base64
   and `/metrics`. Use `token` outside trusted loopback-only environments.
 - `[remote.egress]` controls server-side outbound policy with host and port
   allow/block lists.
+- `espejismo-local --print-client-profile` emits an
+  `espejismo://import/...` profile URL that can be imported with
+  `--import-profile`.
+- SOCKS5 supports TCP `CONNECT` and UDP `ASSOCIATE`. UDP datagrams are relayed
+  over authenticated yamux streams and checked by remote egress policy.
 - `--max-padding` controls the maximum payload size of encrypted padding frames.
 - `--padding-chance-percent` controls how often padding is attempted.
 - `--backpressure-threshold-ms` detects slow writes and disables padding.
@@ -295,7 +300,8 @@ cargo run --bin espejismo-local -- --print-example-config-base64
 ```
 
 The script starts a local HTTP server, `espejismo-remote`, and `espejismo-local`,
-then performs two SOCKS5 requests through the same encrypted yamux tunnel.
+then performs SOCKS5 TCP, SOCKS5 UDP, HTTP proxy, HTTP CONNECT, admin, metrics,
+and profile import checks through the encrypted yamux tunnel.
 
 ## Logging
 

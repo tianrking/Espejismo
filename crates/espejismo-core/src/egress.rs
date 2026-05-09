@@ -52,6 +52,19 @@ impl EgressPolicy {
         }
         Ok(())
     }
+
+    pub fn validate_resolved_addr(&self, addr: SocketAddr) -> Result<()> {
+        if self.deny_private_ips && is_private_or_special(addr.ip()) {
+            bail!("resolved private or special egress IP is blocked");
+        }
+        if self.block_ports.contains(&addr.port()) {
+            bail!("resolved egress port is blocked");
+        }
+        if !self.allow_ports.is_empty() && !self.allow_ports.contains(&addr.port()) {
+            bail!("resolved egress port is not allowed");
+        }
+        Ok(())
+    }
 }
 
 pub fn split_authority(authority: &str) -> Result<(String, u16)> {
