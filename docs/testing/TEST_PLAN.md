@@ -37,10 +37,11 @@ cargo test --workspace --all-targets
 
 The probe sends a unique token through these paths:
 
-- SOCKS5 GET
-- SOCKS5 POST with body echo
-- HTTP proxy absolute-form GET
-- HTTP CONNECT tunnel
+- Authenticated SOCKS5 GET
+- Authenticated SOCKS5 POST with body echo
+- Authenticated HTTP proxy absolute-form GET
+- Authenticated HTTP CONNECT tunnel
+- HTTP proxy authentication rejection
 
 The fixture returns JSON containing method, path, probe header, and request
 body. The script checks that the returned JSON contains the expected token,

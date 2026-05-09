@@ -3,8 +3,9 @@
 ## Implemented
 
 - Native Rust workspace with separate local, remote, and shared core crates.
-- SOCKS5 local proxy ingress.
-- HTTP proxy ingress with CONNECT and basic absolute-form HTTP forwarding.
+- SOCKS5 local proxy ingress with optional username/password authentication.
+- HTTP proxy ingress with optional Basic proxy authentication, CONNECT, and
+  absolute-form HTTP forwarding.
 - Shared TOML configuration and base64 configuration import.
 - Variable-length authenticated first packet.
 - X25519 ephemeral key exchange and HKDF session keys.
@@ -15,7 +16,8 @@
 - Bounded silent tarpit pool for invalid handshakes.
 - Adaptive padding backpressure.
 - Yamux multiplexing over one encrypted physical tunnel.
-- End-to-end smoke test covering SOCKS5, HTTP proxy, file config, and base64 config.
+- End-to-end smoke test covering authenticated SOCKS5, authenticated HTTP proxy,
+  file config, and base64 config.
 - CI for Linux, macOS, and Windows.
 - systemd and Docker deployment starter assets.
 

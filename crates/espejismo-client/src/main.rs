@@ -6,7 +6,7 @@ use clap::Parser;
 use espejismo_core::config::{encode_config_base64, example_config};
 use espejismo_core::{
     connect_handshake, http_proxy, load_config, parse_psk, socks5, spawn_frame_transport,
-    ConfigInput, EspejismoConfig, FrameOptions, HandshakeConfig,
+    ConfigInput, EspejismoConfig, FrameOptions, HandshakeConfig, ProxyAuth,
 };
 use futures::StreamExt;
 use tokio::io::{copy_bidirectional, AsyncWriteExt};
@@ -61,6 +61,7 @@ struct LocalRuntime {
     handshake: HandshakeConfig,
     frames: FrameOptions,
     tunnel_buffer: usize,
+    auth: Option<ProxyAuth>,
 }
 
 #[tokio::main]
@@ -98,13 +99,15 @@ async fn main() -> Result<()> {
     if let Some(addr) = runtime.socks5_listen {
         let listener = TcpListener::bind(addr).await?;
         let control = control.clone();
+        let auth = runtime.auth.clone();
         listeners.push(tokio::spawn(async move {
             info!(listen = %addr, "SOCKS5 proxy listening");
             loop {
                 let (socket, peer) = listener.accept().await?;
                 let control = control.clone();
+                let auth = auth.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = handle_socks5_client(socket, control).await {
+                    if let Err(err) = handle_socks5_client(socket, control, auth).await {
                         debug!(%peer, error = %err, "SOCKS5 connection ended");
                     }
                 });
@@ -117,13 +120,15 @@ async fn main() -> Result<()> {
     if let Some(addr) = runtime.http_listen {
         let listener = TcpListener::bind(addr).await?;
         let control = control.clone();
+        let auth = runtime.auth.clone();
         listeners.push(tokio::spawn(async move {
             info!(listen = %addr, "HTTP proxy listening");
             loop {
                 let (socket, peer) = listener.accept().await?;
                 let control = control.clone();
+                let auth = auth.clone();
                 tokio::spawn(async move {
-                    if let Err(err) = handle_http_client(socket, control).await {
+                    if let Err(err) = handle_http_client(socket, control, auth).await {
                         debug!(%peer, error = %err, "HTTP proxy connection ended");
                     }
                 });
@@ -182,6 +187,7 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
                 .unwrap_or(config.shared.backpressure_cooldown_ms),
         },
         tunnel_buffer: args.tunnel_buffer.unwrap_or(config.shared.tunnel_buffer),
+        auth: config.local.auth,
     })
 }
 
@@ -209,16 +215,24 @@ async fn connect_mux(
     Ok(control)
 }
 
-async fn handle_socks5_client(mut local: TcpStream, mut control: Control) -> Result<()> {
-    let target = socks5::accept_connect(&mut local).await?;
+async fn handle_socks5_client(
+    mut local: TcpStream,
+    mut control: Control,
+    auth: Option<ProxyAuth>,
+) -> Result<()> {
+    let target = socks5::accept_connect_with_auth(&mut local, auth.as_ref()).await?;
     let mut stream = control.open_stream().await?;
     write_target(&mut stream, &target.authority()).await?;
     copy_bidirectional(&mut local, &mut stream).await?;
     Ok(())
 }
 
-async fn handle_http_client(mut local: TcpStream, mut control: Control) -> Result<()> {
-    let target = http_proxy::accept_http_proxy(&mut local).await?;
+async fn handle_http_client(
+    mut local: TcpStream,
+    mut control: Control,
+    auth: Option<ProxyAuth>,
+) -> Result<()> {
+    let target = http_proxy::accept_http_proxy_with_auth(&mut local, auth.as_ref()).await?;
     let mut stream = control.open_stream().await?;
     write_target(&mut stream, &target.authority).await?;
     if !target.prebuffer.is_empty() {

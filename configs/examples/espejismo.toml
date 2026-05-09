@@ -15,6 +15,10 @@ socks5_listen = "127.0.0.1:1080"
 http_listen = "127.0.0.1:8080"
 handshake_padding = 256
 
+[local.auth]
+username = "local-user"
+password = "local-pass"
+
 [remote]
 listen = "0.0.0.0:8443"
 handshake_timeout_ms = 3000

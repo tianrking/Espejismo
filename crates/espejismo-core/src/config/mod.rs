@@ -6,6 +6,8 @@ use anyhow::{Context, Result};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 
+use crate::ingress::ProxyAuth;
+
 #[derive(Clone, Debug, Default)]
 pub struct ConfigInput {
     pub path: Option<String>,
@@ -52,6 +54,8 @@ pub struct LocalConfig {
     pub http_listen: Option<SocketAddr>,
     #[serde(default = "default_handshake_padding")]
     pub handshake_padding: usize,
+    #[serde(default)]
+    pub auth: Option<ProxyAuth>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -107,6 +111,7 @@ impl Default for LocalConfig {
             socks5_listen: default_socks5_listen(),
             http_listen: default_http_listen(),
             handshake_padding: default_handshake_padding(),
+            auth: None,
         }
     }
 }
@@ -138,7 +143,7 @@ pub fn load_config(input: ConfigInput) -> Result<EspejismoConfig> {
 pub fn load_config_file(path: impl AsRef<Path>) -> Result<EspejismoConfig> {
     let path = path.as_ref();
     let content = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
-    toml::from_str(&content).with_context(|| format!("parse {}", path.display()))
+    parse_config(&content).with_context(|| format!("parse {}", path.display()))
 }
 
 pub fn load_config_base64(encoded: &str) -> Result<EspejismoConfig> {
@@ -146,7 +151,15 @@ pub fn load_config_base64(encoded: &str) -> Result<EspejismoConfig> {
         .decode(encoded.trim())
         .context("decode base64 config")?;
     let content = String::from_utf8(bytes).context("config is not UTF-8")?;
-    toml::from_str(&content).context("parse base64 TOML config")
+    parse_config(&content).context("parse base64 TOML config")
+}
+
+fn parse_config(content: &str) -> Result<EspejismoConfig> {
+    let config: EspejismoConfig = toml::from_str(content)?;
+    if let Some(auth) = &config.local.auth {
+        auth.validate()?;
+    }
+    Ok(config)
 }
 
 pub fn example_config() -> String {
@@ -157,6 +170,10 @@ pub fn example_config() -> String {
         },
         local: LocalConfig {
             server: Some("127.0.0.1:8443".parse().expect("valid address")),
+            auth: Some(ProxyAuth {
+                username: "local-user".to_string(),
+                password: "local-pass".to_string(),
+            }),
             ..LocalConfig::default()
         },
         remote: RemoteConfig::default(),

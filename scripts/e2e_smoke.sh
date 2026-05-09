@@ -12,6 +12,8 @@ HTTP_PROXY_ADDR="127.0.0.1:$((PORT_BASE + 3))"
 CONFIG_FILE="$(mktemp /tmp/espejismo-config.XXXXXX.toml)"
 PROBE_TOKEN="probe-$(date +%s)-$$"
 POST_BODY="body-${PROBE_TOKEN}"
+PROXY_USER="probe-user"
+PROXY_PASS="probe-pass"
 
 cleanup() {
   if [[ -n "${LOCAL_PID:-}" ]]; then kill "${LOCAL_PID}" 2>/dev/null || true; fi
@@ -52,6 +54,10 @@ socks5_listen = "${SOCKS5_ADDR}"
 http_listen = "${HTTP_PROXY_ADDR}"
 handshake_padding = 256
 
+[local.auth]
+username = "${PROXY_USER}"
+password = "${PROXY_PASS}"
+
 [remote]
 listen = "${REMOTE_ADDR}"
 handshake_timeout_ms = 1000
@@ -73,12 +79,14 @@ wait_for_port "127.0.0.1" "$((PORT_BASE + 2))" "SOCKS5 proxy"
 wait_for_port "127.0.0.1" "$((PORT_BASE + 3))" "HTTP proxy"
 
 curl --silent --show-error --max-time 10 \
+  --proxy-user "${PROXY_USER}:${PROXY_PASS}" \
   --socks5-hostname "${SOCKS5_ADDR}" \
   -H "X-Espejismo-Probe: ${PROBE_TOKEN}" \
   "http://${HTTP_ADDR}:${HTTP_PORT}/probe/socks5/${PROBE_TOKEN}" \
   | grep -q "\"probe\": \"${PROBE_TOKEN}\""
 
 curl --silent --show-error --max-time 10 \
+  --proxy-user "${PROXY_USER}:${PROXY_PASS}" \
   --socks5-hostname "${SOCKS5_ADDR}" \
   -X POST \
   -H "X-Espejismo-Probe: ${PROBE_TOKEN}" \
@@ -88,6 +96,7 @@ curl --silent --show-error --max-time 10 \
 
 curl --silent --show-error --max-time 10 \
   --proxy "http://${HTTP_PROXY_ADDR}" \
+  --proxy-user "${PROXY_USER}:${PROXY_PASS}" \
   -H "X-Espejismo-Probe: ${PROBE_TOKEN}" \
   "http://${HTTP_ADDR}:${HTTP_PORT}/probe/http/${PROBE_TOKEN}" \
   | grep -q "\"path\": \"/probe/http/${PROBE_TOKEN}\""
@@ -95,8 +104,14 @@ curl --silent --show-error --max-time 10 \
 curl --silent --show-error --max-time 10 \
   --proxytunnel \
   --proxy "http://${HTTP_PROXY_ADDR}" \
+  --proxy-user "${PROXY_USER}:${PROXY_PASS}" \
   -H "X-Espejismo-Probe: ${PROBE_TOKEN}" \
   "http://${HTTP_ADDR}:${HTTP_PORT}/probe/connect/${PROBE_TOKEN}" \
   | grep -q "\"path\": \"/probe/connect/${PROBE_TOKEN}\""
+
+HTTP_AUTH_STATUS="$(curl --silent --output /dev/null --write-out "%{http_code}" --max-time 5 \
+  --proxy "http://${HTTP_PROXY_ADDR}" \
+  "http://${HTTP_ADDR}:${HTTP_PORT}/probe/reject/${PROBE_TOKEN}" || true)"
+test "${HTTP_AUTH_STATUS}" = "407"
 
 echo "e2e smoke test passed"

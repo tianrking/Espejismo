@@ -1,5 +1,8 @@
 use anyhow::{bail, Context, Result};
+use base64::Engine;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+
+use super::ProxyAuth;
 
 #[derive(Clone, Debug)]
 pub struct HttpTarget {
@@ -8,6 +11,16 @@ pub struct HttpTarget {
 }
 
 pub async fn accept_http_proxy<S>(stream: &mut S) -> Result<HttpTarget>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    accept_http_proxy_with_auth(stream, None).await
+}
+
+pub async fn accept_http_proxy_with_auth<S>(
+    stream: &mut S,
+    auth: Option<&ProxyAuth>,
+) -> Result<HttpTarget>
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
@@ -28,6 +41,20 @@ where
     let method = parts.next().context("missing HTTP method")?;
     let target = parts.next().context("missing HTTP target")?;
     let version = parts.next().unwrap_or("HTTP/1.1");
+    let header_lines: Vec<&str> = lines.filter(|line| !line.is_empty()).collect();
+
+    if let Some(auth) = auth {
+        if !has_valid_proxy_auth(&header_lines, auth) {
+            stream
+                .write_all(
+                    b"HTTP/1.1 407 Proxy Authentication Required\r\n\
+                      Proxy-Authenticate: Basic realm=\"Espejismo\"\r\n\
+                      Content-Length: 0\r\n\r\n",
+                )
+                .await?;
+            bail!("HTTP proxy authentication failed");
+        }
+    }
 
     if method.eq_ignore_ascii_case("CONNECT") {
         stream
@@ -40,11 +67,7 @@ where
     }
 
     let (authority, path) = parse_absolute_http_target(target)?;
-    let rest = text
-        .split_once("\r\n")
-        .map(|(_, rest)| rest)
-        .unwrap_or("\r\n");
-    let rewritten = format!("{method} {path} {version}\r\n{rest}");
+    let rewritten = rewrite_absolute_request(method, &path, version, &header_lines);
 
     Ok(HttpTarget {
         authority,
@@ -69,4 +92,49 @@ fn parse_absolute_http_target(target: &str) -> Result<(String, String)> {
         format!("{authority}:80")
     };
     Ok((authority, path.to_string()))
+}
+
+fn has_valid_proxy_auth(lines: &[&str], auth: &ProxyAuth) -> bool {
+    let Some(value) = lines.iter().find_map(|line| {
+        line.split_once(':').and_then(|(name, value)| {
+            name.eq_ignore_ascii_case("proxy-authorization")
+                .then_some(value.trim())
+        })
+    }) else {
+        return false;
+    };
+
+    let Some(encoded) = value
+        .strip_prefix("Basic ")
+        .or_else(|| value.strip_prefix("basic "))
+    else {
+        return false;
+    };
+    let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(encoded.trim()) else {
+        return false;
+    };
+    let Some((username, password)) = decoded.split(|byte| *byte == b':').next().and_then(|user| {
+        let password_start = user.len() + 1;
+        (password_start <= decoded.len())
+            .then_some((&decoded[..user.len()], &decoded[password_start..]))
+    }) else {
+        return false;
+    };
+    auth.matches(username, password)
+}
+
+fn rewrite_absolute_request(method: &str, path: &str, version: &str, lines: &[&str]) -> String {
+    let mut rewritten = format!("{method} {path} {version}\r\n");
+    for line in lines {
+        if line
+            .split_once(':')
+            .is_some_and(|(name, _)| name.eq_ignore_ascii_case("proxy-authorization"))
+        {
+            continue;
+        }
+        rewritten.push_str(line);
+        rewritten.push_str("\r\n");
+    }
+    rewritten.push_str("\r\n");
+    rewritten
 }

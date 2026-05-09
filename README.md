@@ -145,6 +145,10 @@ socks5_listen = "127.0.0.1:1080"
 http_listen = "127.0.0.1:8080"
 handshake_padding = 256
 
+[local.auth]
+username = "local-user"
+password = "local-pass"
+
 [remote]
 listen = "0.0.0.0:8443"
 handshake_timeout_ms = 3000
@@ -181,6 +185,8 @@ cargo run --bin espejismo-local -- --print-example-config-base64
 
 - `espejismo-local --socks5-listen` enables the local SOCKS5 proxy.
 - `espejismo-local --http-listen` enables the local HTTP proxy.
+- `[local.auth]` enables local SOCKS5 username/password auth and HTTP Basic
+  proxy auth. Omit it for a trusted loopback-only no-auth listener.
 - `--max-padding` controls the maximum payload size of encrypted padding frames.
 - `--padding-chance-percent` controls how often padding is attempted.
 - `--backpressure-threshold-ms` detects slow writes and disables padding.
