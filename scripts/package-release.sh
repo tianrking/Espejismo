@@ -18,13 +18,14 @@ fi
 PKG="espejismo-${TARGET}"
 OUT="dist/${PKG}"
 rm -rf "${OUT}" "dist/${PKG}.tar.gz"
-mkdir -p "${OUT}/bin" "${OUT}/configs" "${OUT}/docs"
+mkdir -p "${OUT}/bin" "${OUT}/configs" "${OUT}/docs" "${OUT}/scripts"
 
 cp "${TARGET_DIR}/espejismo-local" "${OUT}/bin/"
 cp "${TARGET_DIR}/espejismo-remote" "${OUT}/bin/"
 cp "configs/examples/espejismo.toml" "${OUT}/configs/"
 cp "README.md" "${OUT}/"
-cp "docs/ARCHITECTURE.md" "docs/deployment/ADMIN.md" "docs/deployment/EGRESS.md" "docs/deployment/LOGGING.md" "docs/deployment/PACKAGING.md" "docs/deployment/PROFILES.md" "docs/development/STATUS.md" "docs/testing/TEST_PLAN.md" "${OUT}/docs/"
+cp "docs/ARCHITECTURE.md" "docs/deployment/ADMIN.md" "docs/deployment/EGRESS.md" "docs/deployment/LOGGING.md" "docs/deployment/PACKAGING.md" "docs/deployment/PROFILES.md" "docs/deployment/QUICKSTART.md" "docs/development/STATUS.md" "docs/testing/TEST_PLAN.md" "${OUT}/docs/"
+cp "scripts/setup-windows.ps1" "scripts/install-ubuntu-remote.sh" "${OUT}/scripts/"
 
 tar -C dist -czf "dist/${PKG}.tar.gz" "${PKG}"
 echo "created dist/${PKG}.tar.gz"

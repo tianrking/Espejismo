@@ -80,9 +80,11 @@ Cross-platform CI checks Linux, macOS, and Windows. The release workflow builds
 packaged artifacts for:
 
 - `linux-x86_64`
+- `linux-aarch64`
 - `macos-x86_64`
 - `macos-aarch64`
 - `windows-x86_64`
+- `windows-aarch64`
 
 Each archive contains:
 
@@ -131,6 +133,19 @@ cargo run --bin espejismo-local -- \
 
 Then point a SOCKS5-capable client at `127.0.0.1:1080` or an HTTP proxy client
 at `127.0.0.1:8080`.
+
+## One-Line Ubuntu Remote Install
+
+After publishing release artifacts, install and start `espejismo-remote` on an
+Ubuntu server with:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
+  | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=latest bash
+```
+
+See [docs/deployment/QUICKSTART.md](docs/deployment/QUICKSTART.md) for all
+installer variables and Windows client setup.
 
 ## Run on Windows PowerShell
 
@@ -230,6 +245,12 @@ Windows packaged release:
 .\bin\espejismo-local.exe --config .\configs\espejismo.toml
 ```
 
+Windows setup helper:
+
+```powershell
+.\scripts\setup-windows.ps1 -Mode local -Server "YOUR_SERVER_IP:8443" -Psk "the-same-psk"
+```
+
 Run from base64-encoded TOML, useful for deployment panels or one-line imports:
 
 ```bash
@@ -297,6 +318,12 @@ cargo run --bin espejismo-local -- --print-example-config-base64
 
 ```bash
 ./scripts/e2e_smoke.sh
+```
+
+On Windows PowerShell:
+
+```powershell
+.\scripts\e2e_smoke.ps1
 ```
 
 The script starts a local HTTP server, `espejismo-remote`, and `espejismo-local`,

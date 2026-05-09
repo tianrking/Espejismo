@@ -19,6 +19,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
       - name: Format
@@ -27,3 +30,6 @@ jobs:
         run: cargo check --workspace --all-targets
       - name: Test
         run: cargo test --workspace --all-targets
+      - name: End-to-end smoke
+        if: matrix.os == 'ubuntu-latest'
+        run: ./scripts/e2e_smoke.sh

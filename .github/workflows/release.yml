@@ -21,18 +21,32 @@ jobs:
             os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
+            use_cross: false
+          - name: linux-aarch64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+            use_cross: true
           - name: macos-x86_64
             os: macos-13
             target: x86_64-apple-darwin
             archive: tar.gz
+            use_cross: false
           - name: macos-aarch64
             os: macos-14
             target: aarch64-apple-darwin
             archive: tar.gz
+            use_cross: false
           - name: windows-x86_64
             os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
+            use_cross: false
+          - name: windows-aarch64
+            os: windows-latest
+            target: aarch64-pc-windows-msvc
+            archive: zip
+            use_cross: false
 
     steps:
       - uses: actions/checkout@v4
@@ -41,32 +55,41 @@ jobs:
           targets: ${{ matrix.target }}
       - name: Cache cargo
         uses: Swatinem/rust-cache@v2
+      - name: Install cross
+        if: matrix.use_cross == true
+        run: cargo install cross --locked
       - name: Build
+        if: matrix.use_cross != true
         run: cargo build --release --locked --target ${{ matrix.target }} --bin espejismo-local --bin espejismo-remote
+      - name: Build with cross
+        if: matrix.use_cross == true
+        run: cross build --release --locked --target ${{ matrix.target }} --bin espejismo-local --bin espejismo-remote
       - name: Package Unix
         if: runner.os != 'Windows'
         shell: bash
         run: |
           set -euo pipefail
           pkg="espejismo-${{ matrix.name }}"
-          mkdir -p "dist/${pkg}/bin" "dist/${pkg}/configs" "dist/${pkg}/docs"
+          mkdir -p "dist/${pkg}/bin" "dist/${pkg}/configs" "dist/${pkg}/docs" "dist/${pkg}/scripts"
           cp "target/${{ matrix.target }}/release/espejismo-local" "dist/${pkg}/bin/"
           cp "target/${{ matrix.target }}/release/espejismo-remote" "dist/${pkg}/bin/"
           cp configs/examples/espejismo.toml "dist/${pkg}/configs/"
           cp README.md "dist/${pkg}/"
-          cp docs/ARCHITECTURE.md docs/deployment/ADMIN.md docs/deployment/EGRESS.md docs/deployment/LOGGING.md docs/deployment/PACKAGING.md docs/deployment/PROFILES.md docs/development/STATUS.md docs/testing/TEST_PLAN.md "dist/${pkg}/docs/"
+          cp docs/ARCHITECTURE.md docs/deployment/ADMIN.md docs/deployment/EGRESS.md docs/deployment/LOGGING.md docs/deployment/PACKAGING.md docs/deployment/PROFILES.md docs/deployment/QUICKSTART.md docs/development/STATUS.md docs/testing/TEST_PLAN.md "dist/${pkg}/docs/"
+          cp scripts/setup-windows.ps1 scripts/install-ubuntu-remote.sh "dist/${pkg}/scripts/"
           tar -C dist -czf "dist/${pkg}.tar.gz" "${pkg}"
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $pkg = "espejismo-${{ matrix.name }}"
-          New-Item -ItemType Directory -Force "dist/$pkg/bin", "dist/$pkg/configs", "dist/$pkg/docs" | Out-Null
+          New-Item -ItemType Directory -Force "dist/$pkg/bin", "dist/$pkg/configs", "dist/$pkg/docs", "dist/$pkg/scripts" | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/espejismo-local.exe" "dist/$pkg/bin/"
           Copy-Item "target/${{ matrix.target }}/release/espejismo-remote.exe" "dist/$pkg/bin/"
           Copy-Item "configs/examples/espejismo.toml" "dist/$pkg/configs/"
           Copy-Item "README.md" "dist/$pkg/"
-          Copy-Item "docs/ARCHITECTURE.md", "docs/deployment/ADMIN.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/PACKAGING.md", "docs/deployment/PROFILES.md", "docs/development/STATUS.md", "docs/testing/TEST_PLAN.md" "dist/$pkg/docs/"
+          Copy-Item "docs/ARCHITECTURE.md", "docs/deployment/ADMIN.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/PACKAGING.md", "docs/deployment/PROFILES.md", "docs/deployment/QUICKSTART.md", "docs/development/STATUS.md", "docs/testing/TEST_PLAN.md" "dist/$pkg/docs/"
+          Copy-Item "scripts/setup-windows.ps1", "scripts/install-ubuntu-remote.sh" "dist/$pkg/scripts/"
           Compress-Archive -Path "dist/$pkg" -DestinationPath "dist/$pkg.zip" -Force
       - name: Upload artifact
         uses: actions/upload-artifact@v4

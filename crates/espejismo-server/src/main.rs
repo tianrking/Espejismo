@@ -14,6 +14,7 @@ use espejismo_core::{
 use futures::StreamExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{lookup_host, TcpListener, TcpStream, UdpSocket};
+use tokio::sync::Semaphore;
 use tokio::time::{sleep, timeout, Duration};
 use tokio_yamux::{Config as YamuxConfig, Session, StreamHandle};
 use tracing::{debug, info};
@@ -275,7 +276,7 @@ async fn handle_peer(
 
     let transport = spawn_frame_transport(inbound, keys, runtime.frames, runtime.tunnel_buffer);
     let mut session = Session::new_server(transport, YamuxConfig::default());
-    let mut stream_count: u32 = 0;
+    let stream_limit = Arc::new(Semaphore::new(runtime.max_streams as usize));
     while let Some(stream) = session.next().await {
         let stream = match stream {
             Ok(stream) => stream,
@@ -284,19 +285,25 @@ async fn handle_peer(
                 return Err(err.into());
             }
         };
-        if stream_count >= runtime.max_streams {
+
+        if runtime.max_streams == 0 {
             debug!(
-                stream_count,
                 max = runtime.max_streams,
-                "rejecting stream: limit reached"
+                "rejecting stream: stream limit disabled"
             );
             continue;
         }
-        stream_count += 1;
+
+        let stream_permit = stream_limit
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|err| anyhow::anyhow!("stream limit closed: {err}"))?;
         let metrics = metrics.clone();
         let egress = runtime.egress.clone();
         let idle = runtime.idle_timeout;
         tokio::spawn(async move {
+            let _stream_permit = stream_permit;
             if let Err(err) = handle_mux_stream(stream, metrics, egress, idle).await {
                 debug!(error = %err, "mux stream ended");
             }

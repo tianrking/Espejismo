@@ -21,13 +21,18 @@ Run:
 
 ```bash
 cargo fmt --all --check
-cargo check --workspace --all-targets
+cargo check --workspace --all-targets --locked
 cargo test --workspace --all-targets
 ./scripts/e2e_smoke.sh
 ./scripts/package-release.sh
 ```
 
-On Windows, use `.\scripts\package-release.ps1` for the packaging check.
+On Windows, use:
+
+```powershell
+.\scripts\e2e_smoke.ps1
+.\scripts\package-release.ps1
+```
 
 ## End-to-End Probe
 
@@ -41,6 +46,8 @@ On Windows, use `.\scripts\package-release.ps1` for the packaging check.
 The probe sends a unique token through these paths:
 
 - Authenticated SOCKS5 GET
+- Sequential SOCKS5 GET requests with `max_streams = 2`, which proves the
+  remote stream limit is concurrent rather than lifetime-cumulative.
 - Authenticated SOCKS5 POST with body echo
 - Authenticated SOCKS5 UDP ASSOCIATE datagram relay
 - Authenticated HTTP proxy absolute-form GET

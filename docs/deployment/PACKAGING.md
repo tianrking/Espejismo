@@ -5,6 +5,9 @@ Espejismo is distributed as two native binaries plus configuration:
 - `espejismo-local`: local SOCKS5/HTTP proxy.
 - `espejismo-remote`: remote tunnel endpoint.
 - `configs/espejismo.toml`: starter shared configuration.
+- `scripts/setup-windows.ps1`: Windows config generator and launcher.
+- `scripts/install-ubuntu-remote.sh`: Ubuntu remote installer for one-line
+  server deployment.
 
 ## GitHub Release Artifacts
 
@@ -13,9 +16,11 @@ The release workflow builds these packages:
 | Package | Runner | Rust target |
 | --- | --- | --- |
 | `espejismo-linux-x86_64.tar.gz` | Ubuntu | `x86_64-unknown-linux-gnu` |
+| `espejismo-linux-aarch64.tar.gz` | Ubuntu + cross | `aarch64-unknown-linux-gnu` |
 | `espejismo-macos-x86_64.tar.gz` | macOS Intel | `x86_64-apple-darwin` |
 | `espejismo-macos-aarch64.tar.gz` | macOS Apple Silicon | `aarch64-apple-darwin` |
 | `espejismo-windows-x86_64.zip` | Windows | `x86_64-pc-windows-msvc` |
+| `espejismo-windows-aarch64.zip` | Windows | `aarch64-pc-windows-msvc` |
 
 The workflow runs on `v*` tags and can also be started manually from GitHub
 Actions.
@@ -36,7 +41,8 @@ Windows PowerShell:
 
 Both scripts build release binaries and create a `dist/` archive containing the
 binaries, starter config, README, architecture notes, admin guide, egress guide,
-logging guide, packaging guide, profile guide, status, and test plan.
+logging guide, packaging guide, profile guide, status, test plan, and deployment
+helper scripts.
 
 ## Configuration Import
 

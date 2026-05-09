@@ -5,6 +5,9 @@ license.workspace = true
 version.workspace = true
 authors.workspace = true
 
+[lints]
+workspace = true
+
 [[bin]]
 name = "espejismo-remote"
 path = "src/main.rs"

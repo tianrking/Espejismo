@@ -9,6 +9,8 @@ espejismo-local --config espejismo.toml --print-client-profile --profile-name la
 ```
 
 The output is an `espejismo://import/...` URL containing URL-safe base64 JSON.
+It includes the PSK and optional local proxy credentials, so treat the profile
+URL as secret key material. Base64 is only an encoding, not encryption.
 
 Import:
 

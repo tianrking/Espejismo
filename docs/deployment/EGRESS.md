@@ -21,5 +21,6 @@ Rules:
 - `allow_ports`: optional port allowlist.
 - `block_ports`: port blocklist. Block rules are evaluated before allow rules.
 
-The current policy validates literal IPs immediately. Domain names are validated
-as names before dialing; DNS-result filtering is a later hardening step.
+The policy validates literal IPs immediately. Domain names are validated as
+names before dialing, and resolved TCP/UDP addresses are filtered again before
+the remote endpoint connects or sends a datagram.

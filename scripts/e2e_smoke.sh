@@ -55,6 +55,7 @@ cat >"${CONFIG_FILE}" <<EOF
 [shared]
 psk = "${PSK}"
 puzzle_bits = 12
+max_streams = 2
 
 [local]
 server = "${REMOTE_ADDR}"
@@ -114,6 +115,15 @@ curl --silent --show-error --max-time 10 \
   -H "X-Espejismo-Probe: ${PROBE_TOKEN}" \
   "http://${HTTP_ADDR}:${HTTP_PORT}/probe/socks5/${PROBE_TOKEN}" \
   | grep -q "\"probe\": \"${PROBE_TOKEN}\""
+
+for idx in 1 2 3 4; do
+  curl --silent --show-error --max-time 10 \
+    --proxy-user "${PROXY_USER}:${PROXY_PASS}" \
+    --socks5-hostname "${SOCKS5_ADDR}" \
+    -H "X-Espejismo-Probe: ${PROBE_TOKEN}-seq-${idx}" \
+    "http://${HTTP_ADDR}:${HTTP_PORT}/probe/sequential/${idx}/${PROBE_TOKEN}" \
+    | grep -q "\"path\": \"/probe/sequential/${idx}/${PROBE_TOKEN}\""
+done
 
 curl --silent --show-error --max-time 10 \
   --proxy-user "${PROXY_USER}:${PROXY_PASS}" \
