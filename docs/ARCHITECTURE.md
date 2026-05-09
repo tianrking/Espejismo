@@ -11,7 +11,8 @@ relay can evolve independently.
 
 - `espejismo-core`: shared protocol library. It owns the handshake, replay
   cache, client puzzle, AEAD frame codec, padding generation, SOCKS5 parsing,
-  encrypted transport adapter, and adaptive frame writer.
+  HTTP proxy parsing, configuration loading, encrypted transport adapter, and
+  adaptive frame writer.
 - `espejismo-client`: builds `espejismo-local`, the local SOCKS5 ingress.
 - `espejismo-server`: builds `espejismo-remote`, the authenticated remote
   egress.
@@ -49,12 +50,22 @@ AEAD, padding, jitter, and fail-fast behavior inside the protocol core.
 
 `espejismo-local` creates one authenticated physical TCP tunnel to
 `espejismo-remote`, wraps it in the encrypted frame transport, and runs yamux
-over it. Each accepted SOCKS5 connection opens a yamux logical stream and sends
-the target authority as the stream preface.
+over it. Each accepted SOCKS5 or HTTP proxy connection opens a yamux logical
+stream and sends the target authority as the stream preface. HTTP CONNECT is
+accepted directly; absolute-form `http://` requests are rewritten to origin-form
+before entering the tunnel.
 
 `espejismo-remote` accepts yamux streams over the same physical tunnel. Each
 logical stream is handled independently: read target authority, connect the
 outbound TCP destination, then relay bidirectionally.
+
+## Configuration Pipeline
+
+Both binaries read the same TOML document and use their relevant sections:
+`shared`, `local`, and `remote`. Command-line flags override file values.
+Operators can provide TOML from a path with `--config` or from a base64 string
+with `--config-base64`. `--print-example-config` and
+`--print-example-config-base64` generate deployable starter configs.
 
 ## Adaptive Padding
 

@@ -4,9 +4,10 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use espejismo_core::config::{encode_config_base64, example_config};
 use espejismo_core::{
-    accept_handshake_with_replay, parse_psk, spawn_frame_transport, FrameOptions, HandshakeConfig,
-    ReplayCache,
+    accept_handshake_with_replay, load_config, parse_psk, spawn_frame_transport, ConfigInput,
+    EspejismoConfig, FrameOptions, HandshakeConfig, ReplayCache,
 };
 use futures::StreamExt;
 use tokio::io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt};
@@ -18,36 +19,56 @@ use tracing::{debug, info};
 #[derive(Parser, Debug)]
 #[command(name = "espejismo-remote")]
 struct Args {
-    #[arg(long, default_value = "0.0.0.0:8443")]
-    listen: SocketAddr,
+    #[arg(long)]
+    config: Option<String>,
+    #[arg(long)]
+    config_base64: Option<String>,
+    #[arg(long)]
+    print_example_config: bool,
+    #[arg(long)]
+    print_example_config_base64: bool,
+    #[arg(long)]
+    listen: Option<SocketAddr>,
     #[arg(long, env = "ESPEJISMO_PSK")]
     psk: Option<String>,
-    #[arg(long, default_value_t = 30)]
-    clock_skew_secs: i64,
-    #[arg(long, default_value_t = 64)]
-    max_padding: usize,
-    #[arg(long, default_value_t = 0)]
-    jitter_ms: u64,
-    #[arg(long, default_value_t = 35)]
-    padding_chance_percent: u8,
-    #[arg(long, default_value_t = 40)]
-    backpressure_threshold_ms: u64,
-    #[arg(long, default_value_t = 1000)]
-    backpressure_cooldown_ms: u64,
-    #[arg(long, default_value_t = 3000)]
-    handshake_timeout_ms: u64,
-    #[arg(long, default_value_t = 0)]
-    reject_delay_ms: u64,
-    #[arg(long, default_value_t = 1024)]
-    max_handshake_padding: usize,
-    #[arg(long, default_value_t = 60)]
+    #[arg(long)]
+    clock_skew_secs: Option<i64>,
+    #[arg(long)]
+    max_padding: Option<usize>,
+    #[arg(long)]
+    jitter_ms: Option<u64>,
+    #[arg(long)]
+    padding_chance_percent: Option<u8>,
+    #[arg(long)]
+    backpressure_threshold_ms: Option<u64>,
+    #[arg(long)]
+    backpressure_cooldown_ms: Option<u64>,
+    #[arg(long)]
+    handshake_timeout_ms: Option<u64>,
+    #[arg(long)]
+    reject_delay_ms: Option<u64>,
+    #[arg(long)]
+    max_handshake_padding: Option<usize>,
+    #[arg(long)]
+    replay_window_secs: Option<i64>,
+    #[arg(long)]
+    puzzle_bits: Option<u8>,
+    #[arg(long)]
+    tunnel_buffer: Option<usize>,
+    #[arg(long)]
+    cold_start_delay_ms: Option<u64>,
+}
+
+#[derive(Clone)]
+struct RemoteRuntime {
+    listen: SocketAddr,
+    handshake: HandshakeConfig,
+    frames: FrameOptions,
+    handshake_timeout: Duration,
+    reject_delay: Duration,
     replay_window_secs: i64,
-    #[arg(long, default_value_t = 12)]
-    puzzle_bits: u8,
-    #[arg(long, default_value_t = 1024 * 1024)]
     tunnel_buffer: usize,
-    #[arg(long, default_value_t = 35)]
-    cold_start_delay_ms: u64,
+    cold_start_delay: Duration,
 }
 
 #[tokio::main]
@@ -57,90 +78,119 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
-    let psk = args
-        .psk
-        .as_deref()
-        .context("provide --psk or ESPEJISMO_PSK")?;
-    let cfg = HandshakeConfig {
-        psk: parse_psk(psk)?,
-        clock_skew_secs: args.clock_skew_secs,
-        max_handshake_padding: args.max_handshake_padding,
-        puzzle_difficulty_bits: args.puzzle_bits,
-    };
-    let frame_options = FrameOptions {
-        max_padding: args.max_padding,
-        jitter_ms: args.jitter_ms,
-        padding_chance_percent: args.padding_chance_percent,
-        backpressure_threshold_ms: args.backpressure_threshold_ms,
-        backpressure_cooldown_ms: args.backpressure_cooldown_ms,
-    };
+    if args.print_example_config || args.print_example_config_base64 {
+        let example = example_config();
+        if args.print_example_config_base64 {
+            println!("{}", encode_config_base64(&example));
+        } else {
+            print!("{example}");
+        }
+        return Ok(());
+    }
 
-    let listener = TcpListener::bind(args.listen).await?;
+    let config = load_config(ConfigInput {
+        path: args.config.clone(),
+        base64: args.config_base64.clone(),
+    })?;
+    let runtime = build_runtime(config, &args)?;
+
+    let listener = TcpListener::bind(runtime.listen).await?;
     let replay = Arc::new(tokio::sync::Mutex::new(ReplayCache::new(
-        args.replay_window_secs,
+        runtime.replay_window_secs,
     )));
-    info!(listen = %args.listen, "remote listening with yamux tunnel support");
+    info!(listen = %runtime.listen, "remote listening with yamux tunnel support");
 
     loop {
         let (socket, peer) = listener.accept().await?;
-        let cfg = cfg.clone();
-        let options = frame_options.clone();
         let replay = replay.clone();
-        let handshake_timeout = Duration::from_millis(args.handshake_timeout_ms);
-        let reject_delay = Duration::from_millis(args.reject_delay_ms.min(10_000));
-        let tunnel_buffer = args.tunnel_buffer;
-        let cold_start_delay = Duration::from_millis(args.cold_start_delay_ms);
+        let runtime = runtime.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle_peer(
-                socket,
-                cfg,
-                options,
-                handshake_timeout,
-                reject_delay,
-                replay,
-                tunnel_buffer,
-                cold_start_delay,
-            )
-            .await
-            {
+            if let Err(err) = handle_peer(socket, runtime, replay).await {
                 debug!(%peer, error = %err, "remote peer ended");
             }
         });
     }
 }
 
+fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<RemoteRuntime> {
+    let psk = args
+        .psk
+        .clone()
+        .or(config.shared.psk)
+        .context("provide psk in config, --psk, or ESPEJISMO_PSK")?;
+
+    Ok(RemoteRuntime {
+        listen: args.listen.unwrap_or(config.remote.listen),
+        handshake: HandshakeConfig {
+            psk: parse_psk(&psk)?,
+            clock_skew_secs: args
+                .clock_skew_secs
+                .unwrap_or(config.shared.clock_skew_secs),
+            max_handshake_padding: args
+                .max_handshake_padding
+                .unwrap_or(config.remote.max_handshake_padding),
+            puzzle_difficulty_bits: args.puzzle_bits.unwrap_or(config.shared.puzzle_bits),
+        },
+        frames: FrameOptions {
+            max_padding: args.max_padding.unwrap_or(config.shared.max_padding),
+            jitter_ms: args.jitter_ms.unwrap_or(config.shared.jitter_ms),
+            padding_chance_percent: args
+                .padding_chance_percent
+                .unwrap_or(config.shared.padding_chance_percent),
+            backpressure_threshold_ms: args
+                .backpressure_threshold_ms
+                .unwrap_or(config.shared.backpressure_threshold_ms),
+            backpressure_cooldown_ms: args
+                .backpressure_cooldown_ms
+                .unwrap_or(config.shared.backpressure_cooldown_ms),
+        },
+        handshake_timeout: Duration::from_millis(
+            args.handshake_timeout_ms
+                .unwrap_or(config.remote.handshake_timeout_ms),
+        ),
+        reject_delay: Duration::from_millis(
+            args.reject_delay_ms
+                .unwrap_or(config.remote.reject_delay_ms)
+                .min(10_000),
+        ),
+        replay_window_secs: args
+            .replay_window_secs
+            .unwrap_or(config.remote.replay_window_secs),
+        tunnel_buffer: args.tunnel_buffer.unwrap_or(config.shared.tunnel_buffer),
+        cold_start_delay: Duration::from_millis(
+            args.cold_start_delay_ms
+                .unwrap_or(config.remote.cold_start_delay_ms),
+        ),
+    })
+}
+
 async fn handle_peer(
     mut inbound: TcpStream,
-    cfg: HandshakeConfig,
-    options: FrameOptions,
-    handshake_timeout: Duration,
-    reject_delay: Duration,
+    runtime: RemoteRuntime,
     replay: Arc<tokio::sync::Mutex<ReplayCache>>,
-    tunnel_buffer: usize,
-    cold_start_delay: Duration,
 ) -> Result<()> {
     let keys = match timeout(
-        handshake_timeout,
-        accept_handshake_with_replay(&mut inbound, &cfg, replay),
+        runtime.handshake_timeout,
+        accept_handshake_with_replay(&mut inbound, &runtime.handshake, replay),
     )
     .await
     {
         Ok(Ok(keys)) => keys,
         Ok(Err(err)) => {
-            quiet_reject(inbound, reject_delay).await;
+            quiet_reject(inbound, runtime.reject_delay).await;
             return Err(err);
         }
         Err(err) => {
-            quiet_reject(inbound, reject_delay).await;
+            quiet_reject(inbound, runtime.reject_delay).await;
             return Err(err.into());
         }
     };
 
-    if !cold_start_delay.is_zero() {
-        sleep(cold_start_delay).await;
+    if !runtime.cold_start_delay.is_zero() {
+        sleep(runtime.cold_start_delay).await;
     }
 
-    let transport = spawn_frame_transport(inbound, keys, options, tunnel_buffer);
+    let transport = spawn_frame_transport(inbound, keys, runtime.frames, runtime.tunnel_buffer);
     let mut session = Session::new_server(transport, YamuxConfig::default());
     while let Some(stream) = session.next().await {
         let stream = stream?;

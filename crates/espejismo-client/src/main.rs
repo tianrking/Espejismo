@@ -3,8 +3,10 @@ use std::net::SocketAddr;
 
 use anyhow::{Context, Result};
 use clap::Parser;
+use espejismo_core::config::{encode_config_base64, example_config};
 use espejismo_core::{
-    connect_handshake, parse_psk, socks5, spawn_frame_transport, FrameOptions, HandshakeConfig,
+    connect_handshake, http_proxy, load_config, parse_psk, socks5, spawn_frame_transport,
+    ConfigInput, EspejismoConfig, FrameOptions, HandshakeConfig,
 };
 use futures::StreamExt;
 use tokio::io::{copy_bidirectional, AsyncWriteExt};
@@ -15,29 +17,49 @@ use tracing::{debug, info};
 #[derive(Parser, Debug)]
 #[command(name = "espejismo-local")]
 struct Args {
-    #[arg(long, default_value = "127.0.0.1:1080")]
-    listen: SocketAddr,
     #[arg(long)]
-    server: SocketAddr,
+    config: Option<String>,
+    #[arg(long)]
+    config_base64: Option<String>,
+    #[arg(long)]
+    print_example_config: bool,
+    #[arg(long)]
+    print_example_config_base64: bool,
+    #[arg(long)]
+    socks5_listen: Option<SocketAddr>,
+    #[arg(long)]
+    http_listen: Option<SocketAddr>,
+    #[arg(long)]
+    server: Option<SocketAddr>,
     #[arg(long, env = "ESPEJISMO_PSK")]
     psk: Option<String>,
-    #[arg(long, default_value_t = 30)]
-    clock_skew_secs: i64,
-    #[arg(long, default_value_t = 64)]
-    max_padding: usize,
-    #[arg(long, default_value_t = 0)]
-    jitter_ms: u64,
-    #[arg(long, default_value_t = 35)]
-    padding_chance_percent: u8,
-    #[arg(long, default_value_t = 40)]
-    backpressure_threshold_ms: u64,
-    #[arg(long, default_value_t = 1000)]
-    backpressure_cooldown_ms: u64,
-    #[arg(long, default_value_t = 256)]
-    handshake_padding: usize,
-    #[arg(long, default_value_t = 12)]
-    puzzle_bits: u8,
-    #[arg(long, default_value_t = 1024 * 1024)]
+    #[arg(long)]
+    clock_skew_secs: Option<i64>,
+    #[arg(long)]
+    max_padding: Option<usize>,
+    #[arg(long)]
+    jitter_ms: Option<u64>,
+    #[arg(long)]
+    padding_chance_percent: Option<u8>,
+    #[arg(long)]
+    backpressure_threshold_ms: Option<u64>,
+    #[arg(long)]
+    backpressure_cooldown_ms: Option<u64>,
+    #[arg(long)]
+    handshake_padding: Option<usize>,
+    #[arg(long)]
+    puzzle_bits: Option<u8>,
+    #[arg(long)]
+    tunnel_buffer: Option<usize>,
+}
+
+#[derive(Clone)]
+struct LocalRuntime {
+    server: SocketAddr,
+    socks5_listen: Option<SocketAddr>,
+    http_listen: Option<SocketAddr>,
+    handshake: HandshakeConfig,
+    frames: FrameOptions,
     tunnel_buffer: usize,
 }
 
@@ -48,37 +70,119 @@ async fn main() -> Result<()> {
         .init();
 
     let args = Args::parse();
+    if args.print_example_config || args.print_example_config_base64 {
+        let example = example_config();
+        if args.print_example_config_base64 {
+            println!("{}", encode_config_base64(&example));
+        } else {
+            print!("{example}");
+        }
+        return Ok(());
+    }
+
+    let config = load_config(ConfigInput {
+        path: args.config.clone(),
+        base64: args.config_base64.clone(),
+    })?;
+    let runtime = build_runtime(config, &args)?;
+
+    let control = connect_mux(
+        runtime.server,
+        runtime.handshake,
+        runtime.frames,
+        runtime.tunnel_buffer,
+    )
+    .await?;
+
+    let mut listeners = Vec::new();
+    if let Some(addr) = runtime.socks5_listen {
+        let listener = TcpListener::bind(addr).await?;
+        let control = control.clone();
+        listeners.push(tokio::spawn(async move {
+            info!(listen = %addr, "SOCKS5 proxy listening");
+            loop {
+                let (socket, peer) = listener.accept().await?;
+                let control = control.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = handle_socks5_client(socket, control).await {
+                        debug!(%peer, error = %err, "SOCKS5 connection ended");
+                    }
+                });
+            }
+            #[allow(unreachable_code)]
+            Ok::<_, anyhow::Error>(())
+        }));
+    }
+
+    if let Some(addr) = runtime.http_listen {
+        let listener = TcpListener::bind(addr).await?;
+        let control = control.clone();
+        listeners.push(tokio::spawn(async move {
+            info!(listen = %addr, "HTTP proxy listening");
+            loop {
+                let (socket, peer) = listener.accept().await?;
+                let control = control.clone();
+                tokio::spawn(async move {
+                    if let Err(err) = handle_http_client(socket, control).await {
+                        debug!(%peer, error = %err, "HTTP proxy connection ended");
+                    }
+                });
+            }
+            #[allow(unreachable_code)]
+            Ok::<_, anyhow::Error>(())
+        }));
+    }
+
+    anyhow::ensure!(
+        !listeners.is_empty(),
+        "enable at least one local listener: socks5_listen or http_listen"
+    );
+    info!(server = %runtime.server, "local connected with yamux tunnel");
+
+    futures::future::try_join_all(listeners).await?;
+    Ok(())
+}
+
+fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
     let psk = args
         .psk
-        .as_deref()
-        .context("provide --psk or ESPEJISMO_PSK")?;
-    let cfg = HandshakeConfig {
-        psk: parse_psk(psk)?,
-        clock_skew_secs: args.clock_skew_secs,
-        max_handshake_padding: args.handshake_padding,
-        puzzle_difficulty_bits: args.puzzle_bits,
-    };
-    let frame_options = FrameOptions {
-        max_padding: args.max_padding,
-        jitter_ms: args.jitter_ms,
-        padding_chance_percent: args.padding_chance_percent,
-        backpressure_threshold_ms: args.backpressure_threshold_ms,
-        backpressure_cooldown_ms: args.backpressure_cooldown_ms,
-    };
+        .clone()
+        .or(config.shared.psk)
+        .context("provide psk in config, --psk, or ESPEJISMO_PSK")?;
+    let server = args
+        .server
+        .or(config.local.server)
+        .context("provide local.server in config or --server")?;
 
-    let control = connect_mux(args.server, cfg, frame_options, args.tunnel_buffer).await?;
-    let listener = TcpListener::bind(args.listen).await?;
-    info!(listen = %args.listen, server = %args.server, "local listening with yamux tunnel");
-
-    loop {
-        let (socket, peer) = listener.accept().await?;
-        let control = control.clone();
-        tokio::spawn(async move {
-            if let Err(err) = handle_client(socket, control).await {
-                debug!(%peer, error = %err, "local connection ended");
-            }
-        });
-    }
+    Ok(LocalRuntime {
+        server,
+        socks5_listen: args.socks5_listen.or(config.local.socks5_listen),
+        http_listen: args.http_listen.or(config.local.http_listen),
+        handshake: HandshakeConfig {
+            psk: parse_psk(&psk)?,
+            clock_skew_secs: args
+                .clock_skew_secs
+                .unwrap_or(config.shared.clock_skew_secs),
+            max_handshake_padding: args
+                .handshake_padding
+                .unwrap_or(config.local.handshake_padding),
+            puzzle_difficulty_bits: args.puzzle_bits.unwrap_or(config.shared.puzzle_bits),
+        },
+        frames: FrameOptions {
+            max_padding: args.max_padding.unwrap_or(config.shared.max_padding),
+            jitter_ms: args.jitter_ms.unwrap_or(config.shared.jitter_ms),
+            padding_chance_percent: args
+                .padding_chance_percent
+                .unwrap_or(config.shared.padding_chance_percent),
+            backpressure_threshold_ms: args
+                .backpressure_threshold_ms
+                .unwrap_or(config.shared.backpressure_threshold_ms),
+            backpressure_cooldown_ms: args
+                .backpressure_cooldown_ms
+                .unwrap_or(config.shared.backpressure_cooldown_ms),
+        },
+        tunnel_buffer: args.tunnel_buffer.unwrap_or(config.shared.tunnel_buffer),
+    })
 }
 
 async fn connect_mux(
@@ -105,10 +209,21 @@ async fn connect_mux(
     Ok(control)
 }
 
-async fn handle_client(mut local: TcpStream, mut control: Control) -> Result<()> {
+async fn handle_socks5_client(mut local: TcpStream, mut control: Control) -> Result<()> {
     let target = socks5::accept_connect(&mut local).await?;
     let mut stream = control.open_stream().await?;
     write_target(&mut stream, &target.authority()).await?;
+    copy_bidirectional(&mut local, &mut stream).await?;
+    Ok(())
+}
+
+async fn handle_http_client(mut local: TcpStream, mut control: Control) -> Result<()> {
+    let target = http_proxy::accept_http_proxy(&mut local).await?;
+    let mut stream = control.open_stream().await?;
+    write_target(&mut stream, &target.authority).await?;
+    if !target.prebuffer.is_empty() {
+        stream.write_all(&target.prebuffer).await?;
+    }
     copy_bidirectional(&mut local, &mut stream).await?;
     Ok(())
 }
