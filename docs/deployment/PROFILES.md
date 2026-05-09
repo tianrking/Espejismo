@@ -15,7 +15,7 @@ URL as secret key material. Base64 is only an encoding, not encryption.
 Import:
 
 ```bash
-espejismo-local --import-profile 'espejismo://import/...' --socks5-listen 127.0.0.1:1080
+espejismo-local --import-profile 'espejismo://import/...' --socks5-listen 127.0.0.1:6680
 ```
 
 Profiles currently carry the local client essentials: profile name, remote

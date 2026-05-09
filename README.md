@@ -129,13 +129,13 @@ Terminal 2:
 ```bash
 ESPEJISMO_PSK='change-me-long-random-secret' \
 cargo run --bin espejismo-local -- \
-  --socks5-listen 127.0.0.1:1080 \
-  --http-listen 127.0.0.1:8080 \
+  --socks5-listen 127.0.0.1:6680 \
+  --http-listen 127.0.0.1:6681 \
   --server 127.0.0.1:8443
 ```
 
-Then point a SOCKS5-capable client at `127.0.0.1:1080` or an HTTP proxy client
-at `127.0.0.1:8080`.
+Then point a SOCKS5-capable client at `127.0.0.1:6680` or an HTTP proxy client
+at `127.0.0.1:6681`.
 
 ## One-Line Ubuntu Remote Install
 
@@ -163,7 +163,7 @@ Terminal 2:
 
 ```powershell
 $env:ESPEJISMO_PSK = "change-me-long-random-secret"
-cargo run --bin espejismo-local -- --socks5-listen 127.0.0.1:1080 --http-listen 127.0.0.1:8080 --server 127.0.0.1:8443
+cargo run --bin espejismo-local -- --socks5-listen 127.0.0.1:6680 --http-listen 127.0.0.1:6681 --server 127.0.0.1:8443
 ```
 
 ## Configuration
@@ -191,8 +191,8 @@ tunnel_buffer = 1048576
 
 [local]
 server = "127.0.0.1:8443"
-socks5_listen = "127.0.0.1:1080"
-http_listen = "127.0.0.1:8080"
+socks5_listen = "127.0.0.1:6680"
+http_listen = "127.0.0.1:6681"
 handshake_padding = 256
 
 [local.auth]

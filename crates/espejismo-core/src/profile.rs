@@ -77,7 +77,7 @@ mod tests {
             name: "default".to_string(),
             server: "127.0.0.1:8443".parse().unwrap(),
             psk: "change-me-long-random-secret".to_string(),
-            socks5_listen: Some("127.0.0.1:1080".parse().unwrap()),
+            socks5_listen: Some("127.0.0.1:6680".parse().unwrap()),
             http_listen: None,
             auth: None,
         };

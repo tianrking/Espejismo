@@ -4,8 +4,8 @@ This guide covers the normal production shape:
 
 1. Install `espejismo-remote` on an Ubuntu server.
 2. Run `espejismo-local` on your own machine.
-3. Point local applications at `127.0.0.1:1080` for SOCKS5 or
-   `127.0.0.1:8080` for HTTP proxy.
+3. Point local applications at `127.0.0.1:6680` for SOCKS5 or
+   `127.0.0.1:6681` for HTTP proxy.
 
 ## Ubuntu Remote One-Liner
 
@@ -58,8 +58,8 @@ ESPEJISMO_LISTEN=0.0.0.0:8443
 ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:8443
 # Or use ESPEJISMO_PUBLIC_HOST=203.0.113.10 with the port from ESPEJISMO_LISTEN.
 ESPEJISMO_PSK='use-a-long-random-secret'
-ESPEJISMO_CLIENT_SOCKS5_LISTEN=127.0.0.1:1080
-ESPEJISMO_CLIENT_HTTP_LISTEN=127.0.0.1:8080
+ESPEJISMO_CLIENT_SOCKS5_LISTEN=127.0.0.1:6680
+ESPEJISMO_CLIENT_HTTP_LISTEN=127.0.0.1:6681
 ESPEJISMO_CLIENT_AUTH_USER=local-user
 ESPEJISMO_CLIENT_AUTH_PASSWORD='use-a-local-proxy-password'
 ESPEJISMO_ADMIN_LISTEN=127.0.0.1:9090
@@ -94,8 +94,8 @@ The script writes `configs\espejismo-local.toml` and starts
 `bin\espejismo-local.exe`. Applications can then use:
 
 ```text
-SOCKS5:     127.0.0.1:1080
-HTTP proxy: 127.0.0.1:8080
+SOCKS5:     127.0.0.1:6680
+HTTP proxy: 127.0.0.1:6681
 ```
 
 Generate config without starting:

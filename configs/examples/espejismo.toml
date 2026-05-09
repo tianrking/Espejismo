@@ -11,8 +11,8 @@ tunnel_buffer = 1048576
 
 [local]
 server = "127.0.0.1:8443"
-socks5_listen = "127.0.0.1:1080"
-http_listen = "127.0.0.1:8080"
+socks5_listen = "127.0.0.1:6680"
+http_listen = "127.0.0.1:6681"
 handshake_padding = 256
 
 [local.auth]

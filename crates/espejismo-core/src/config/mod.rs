@@ -302,11 +302,11 @@ fn default_tunnel_buffer() -> usize {
 }
 
 fn default_socks5_listen() -> Option<SocketAddr> {
-    Some("127.0.0.1:1080".parse().expect("valid address"))
+    Some("127.0.0.1:6680".parse().expect("valid address"))
 }
 
 fn default_http_listen() -> Option<SocketAddr> {
-    Some("127.0.0.1:8080".parse().expect("valid address"))
+    Some("127.0.0.1:6681".parse().expect("valid address"))
 }
 
 fn default_handshake_padding() -> usize {
