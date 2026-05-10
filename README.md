@@ -1,74 +1,64 @@
 # Espejismo
 
-Espejismo is a native cross-platform Rust privacy tunnel for encrypted
-transport on public and untrusted networks. It provides SOCKS5 and HTTP local ingress,
-an authenticated variable-length 0-RTT-style handshake, X25519 forward secrecy,
-HKDF key derivation, XChaCha20-Poly1305 encrypted frames, optional encrypted
-padding frames, client puzzles, replay protection, adaptive padding backpressure,
-yamux multiplexing over one encrypted physical tunnel, and sender-side jitter.
+**[🇬🇧 English](README.md) &nbsp;|&nbsp; [🇪🇸 Español](README_ES.md)**
 
-The project is designed as a compact, auditable foundation for learning,
-research, and lawful private-network deployment. Its public wording focuses on
-protecting data confidentiality and metadata minimization in shared network
-environments.
+<p>
+  <img src="https://img.shields.io/badge/Rust-1.75%2B-dea584?logo=rust&logoColor=white" alt="Rust">
+  <img src="https://img.shields.io/badge/Tokio-async_runtime-ff5e00?logo=tokio&logoColor=white" alt="Tokio">
+  <img src="https://img.shields.io/badge/XChaCha20--Poly1305-AEAD-4a90d9" alt="AEAD">
+  <img src="https://img.shields.io/badge/X25519-key__exchange-e97326" alt="X25519">
+  <img src="https://img.shields.io/badge/License-MIT-blue" alt="License">
+  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20macOS%20%7C%20Windows-lightgrey" alt="Platform">
+</p>
+
+A native cross-platform Rust encrypted transport tunnel for public and untrusted
+networks. SOCKS5 & HTTP local ingress, X25519 forward secrecy, XChaCha20-Poly1305
+encrypted frames, yamux multiplexing, adaptive padding, and client puzzles — all in
+safe Rust with no TUN/TAP or system-level dependencies.
 
 ## Architecture
 
-`espejismo-local` runs on the user's own device or gateway. It listens on local
-SOCKS5 and/or HTTP proxy ports, accepts clear local application requests,
-authenticates to the remote endpoint, and sends encrypted framed traffic over a
-single TCP stream. Multiple local proxy connections are opened as yamux logical
-streams over that one encrypted transport.
+```mermaid
+graph LR
+    subgraph Client["espejismo-local (Client)"]
+        APP["Application"]
+        SOCKS["SOCKS5 :6680"]
+        HTTP["HTTP Proxy :6681"]
+    end
 
-`espejismo-core` owns the shared protocol: PSK timestamp authentication,
-variable-length first packets, X25519 key agreement, HKDF session derivation,
-encrypted frames, padding frames, proof-of-work puzzles, replay protection,
-adaptive padding backpressure, a frame-to-`AsyncRead` transport adapter, and
-send-side jitter.
+    subgraph Core["espejismo-core (Protocol)"]
+        HS["Handshake<br/>HMAC-SHA256 + X25519"]
+        FRAME["Encrypted Frames<br/>XChaCha20-Poly1305"]
+        PAD["Adaptive Padding"]
+        YAMUX["yamux Multiplexing"]
+    end
 
-`espejismo-remote` runs on a server. It accepts authenticated tunnel sessions,
-reassembles and decrypts frames, accepts yamux logical streams, opens the
-requested TCP destinations, and sends responses back through the same encrypted
-framing layer.
+    subgraph Server["espejismo-remote (Server)"]
+        REPLAY["Replay Protection"]
+        EGRESS["Egress Policy"]
+        DEST["TCP / UDP Destination"]
+    end
 
-Invalid or incomplete handshakes receive no application-layer response. The
-remote can optionally apply a short bounded silent delay before closing the TCP
-connection, which avoids leaking protocol details without creating unbounded
-resource retention.
-
-## Handshake
-
-The client first packet is intentionally variable length:
-
-```text
-[ HMAC-SHA256 32 ][ UTC timestamp 8 ][ nonce 24 ][ X25519 public key 32 ][ padding length 2 ][ padding 0..N ]
+    APP --> SOCKS
+    APP --> HTTP
+    SOCKS --> HS
+    HTTP --> HS
+    HS --> FRAME
+    FRAME --> PAD
+    PAD --> YAMUX
+    YAMUX -->|"Encrypted Tunnel"| REPLAY
+    REPLAY --> FRAME
+    FRAME --> EGRESS
+    EGRESS --> DEST
 ```
-
-The current packet body also includes an 8-byte puzzle nonce before the padding
-length:
-
-```text
-[ HMAC-SHA256 32 ][ UTC timestamp 8 ][ nonce 24 ][ X25519 public key 32 ][ puzzle nonce 8 ][ padding length 2 ][ padding 0..N ]
-```
-
-The client solves a bounded SHA-256 leading-zero puzzle over the body before it
-computes the HMAC. The remote verifies the puzzle first, then checks the
-timestamp skew, validates the HMAC in constant time, and keeps a bounded
-in-memory replay cache of recently seen ephemeral public keys.
-
-More detail lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Platform Support
 
-Espejismo is implemented in safe Rust and uses Tokio's portable TCP runtime. It
-does not require kernel modules, TUN/TAP devices, packet capture permissions, or
-C/C++ native extensions.
-
-| Platform | Status | Notes |
+| Platform | Arch | Status |
 | --- | --- | --- |
-| Linux amd64/386/arm64/armv7 | Supported | Suitable for servers, desktops, and ARM single-board systems. |
-| macOS Intel/Apple Silicon | Supported | Build with the standard Rust toolchain. |
-| Windows amd64/386/arm64 | Supported | Run from PowerShell or Windows Terminal. |
+| Linux | amd64, 386, arm64, armv7 | Supported |
+| macOS | Apple Silicon (arm64) | Supported |
+| Windows | amd64, 386, arm64 | Supported |
 
 ## Build
 
@@ -83,7 +73,6 @@ packaged artifacts for:
 - `linux-386`
 - `linux-arm64`
 - `linux-armv7`
-- `darwin-amd64`
 - `darwin-arm64`
 - `windows-amd64`
 - `windows-386`
@@ -115,16 +104,18 @@ rustup target add x86_64-unknown-linux-gnu
 ./scripts/package-release.sh x86_64-unknown-linux-gnu
 ```
 
-## Run on Linux/macOS
+## Quick Start
 
-Terminal 1:
+### Linux/macOS
+
+Terminal 1 — remote:
 
 ```bash
 ESPEJISMO_PSK='change-me-long-random-secret' \
 cargo run --bin espejismo-remote -- --listen 0.0.0.0:6690
 ```
 
-Terminal 2:
+Terminal 2 — local:
 
 ```bash
 ESPEJISMO_PSK='change-me-long-random-secret' \
@@ -134,13 +125,26 @@ cargo run --bin espejismo-local -- \
   --server 127.0.0.1:6690
 ```
 
+### Windows PowerShell
+
+Terminal 1 — remote:
+
+```powershell
+$env:ESPEJISMO_PSK = "change-me-long-random-secret"
+cargo run --bin espejismo-remote -- --listen 127.0.0.1:6690
+```
+
+Terminal 2 — local:
+
+```powershell
+$env:ESPEJISMO_PSK = "change-me-long-random-secret"
+cargo run --bin espejismo-local -- --socks5-listen 127.0.0.1:6680 --http-listen 127.0.0.1:6681 --server 127.0.0.1:6690
+```
+
 Then point a SOCKS5-capable client at `127.0.0.1:6680` or an HTTP proxy client
 at `127.0.0.1:6681`.
 
-## One-Line Ubuntu Remote Install
-
-After publishing release artifacts, install and start `espejismo-remote` on an
-Ubuntu server with:
+### One-Line Ubuntu Remote Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
@@ -149,22 +153,6 @@ curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubu
 
 See [docs/deployment/QUICKSTART.md](docs/deployment/QUICKSTART.md) for all
 installer variables and Windows client setup.
-
-## Run on Windows PowerShell
-
-Terminal 1:
-
-```powershell
-$env:ESPEJISMO_PSK = "change-me-long-random-secret"
-cargo run --bin espejismo-remote -- --listen 127.0.0.1:6690
-```
-
-Terminal 2:
-
-```powershell
-$env:ESPEJISMO_PSK = "change-me-long-random-secret"
-cargo run --bin espejismo-local -- --socks5-listen 127.0.0.1:6680 --http-listen 127.0.0.1:6681 --server 127.0.0.1:6690
-```
 
 ## Configuration
 
@@ -276,6 +264,28 @@ You can print an example directly as base64:
 cargo run --bin espejismo-local -- --print-example-config-base64
 ```
 
+## Handshake
+
+The client first packet is intentionally variable length:
+
+```text
+[ HMAC-SHA256 32 ][ UTC timestamp 8 ][ nonce 24 ][ X25519 public key 32 ][ padding length 2 ][ padding 0..N ]
+```
+
+The current packet body also includes an 8-byte puzzle nonce before the padding
+length:
+
+```text
+[ HMAC-SHA256 32 ][ UTC timestamp 8 ][ nonce 24 ][ X25519 public key 32 ][ puzzle nonce 8 ][ padding length 2 ][ padding 0..N ]
+```
+
+The client solves a bounded SHA-256 leading-zero puzzle over the body before it
+computes the HMAC. The remote verifies the puzzle first, then checks the
+timestamp skew, validates the HMAC in constant time, and keeps a bounded
+in-memory replay cache of recently seen ephemeral public keys.
+
+More detail lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 ## Notes
 
 - `espejismo-local --socks5-listen` enables the local SOCKS5 proxy.
@@ -377,3 +387,17 @@ WASM/browser packaging, metrics, and runtime reload.
 See [docs/testing/TEST_PLAN.md](docs/testing/TEST_PLAN.md) for the executable
 test strategy and [docs/research/DESIGN_PRINCIPLES.md](docs/research/DESIGN_PRINCIPLES.md)
 for the protocol design principles.
+
+## Disclaimer
+
+Espejismo is intended solely for establishing encrypted connections to your own
+home network or privately-owned servers while traveling. It is designed to protect
+your data on untrusted public networks (e.g., hotel Wi-Fi, coffee shops, airports)
+by routing traffic through a secure tunnel to infrastructure you control.
+
+Users are solely responsible for ensuring that their use of this software complies
+with all applicable local, state, national, and international laws and regulations.
+The authors assume no liability for misuse. This project does not encourage, endorse,
+or support any activity that violates the laws of any jurisdiction, including but
+not limited to the regulations of the People's Republic of China regarding network
+access and cross-border data transmission.
