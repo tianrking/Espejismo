@@ -12,7 +12,7 @@ pub mod transport;
 pub use admin::{spawn_admin_server, AdminState};
 pub use config::{
     load_config, AdminConfig, ConfigInput, EgressConfig, EspejismoConfig, LogConfig, LogFormat,
-    ObfuscationConfig,
+    ObfuscationConfig, ProbeDefenseMode,
 };
 pub use crypto::{
     accept_handshake, accept_handshake_with_replay, connect_handshake, parse_psk, HandshakeConfig,

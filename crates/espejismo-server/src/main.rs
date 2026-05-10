@@ -9,10 +9,10 @@ use espejismo_core::{
     accept_handshake_with_replay, idle_copy_bidirectional, init_logging, load_config, parse_psk,
     read_tunnel_request, spawn_admin_server, spawn_frame_transport, AdminState, ConfigInput,
     EgressPolicy, EspejismoConfig, FrameOptions, HandshakeConfig, LogConfig, LogFormat, Metrics,
-    ReplayCache, TunnelRequest,
+    ProbeDefenseMode, ReplayCache, TunnelRequest,
 };
 use futures::StreamExt;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{copy_bidirectional, AsyncWriteExt};
 use tokio::net::{lookup_host, TcpListener, TcpStream, UdpSocket};
 use tokio::sync::Semaphore;
 use tokio::time::{sleep, timeout, Duration};
@@ -92,11 +92,21 @@ struct RemoteRuntime {
     cold_start_delay: Duration,
     tarpit_max: usize,
     tarpit_hold: Duration,
+    fallback_http: FallbackHttpRuntime,
     admin_listen: Option<SocketAddr>,
     admin_token: Option<String>,
     egress: EgressPolicy,
     idle_timeout: Duration,
     max_streams: u32,
+}
+
+#[derive(Clone)]
+struct FallbackHttpRuntime {
+    enabled: bool,
+    upstream: Option<String>,
+    probe_timeout: Duration,
+    server: String,
+    body: String,
 }
 
 #[tokio::main]
@@ -234,6 +244,16 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<RemoteRuntime> 
             args.tarpit_hold_secs
                 .unwrap_or(config.remote.tarpit_hold_secs),
         ),
+        fallback_http: FallbackHttpRuntime {
+            enabled: matches!(
+                config.remote.fallback_http.mode,
+                ProbeDefenseMode::HttpFallback
+            ) || config.remote.fallback_http.enabled,
+            upstream: config.remote.fallback_http.upstream,
+            probe_timeout: Duration::from_millis(config.remote.fallback_http.probe_timeout_ms),
+            server: config.remote.fallback_http.server,
+            body: config.remote.fallback_http.body,
+        },
         admin_listen: args.admin_listen.or(config.admin.listen),
         admin_token: args.admin_token.clone().or(config.admin.token),
         egress: config.remote.egress.into(),
@@ -249,6 +269,11 @@ async fn handle_peer(
     tarpit: tarpit::TarpitManager,
     metrics: Metrics,
 ) -> Result<()> {
+    if should_route_to_http_fallback(&mut inbound, &runtime.fallback_http).await? {
+        route_http_fallback(inbound, &runtime.fallback_http).await?;
+        return Ok(());
+    }
+
     metrics.inc_active_physical();
     let keys = match timeout(
         runtime.handshake_timeout,
@@ -263,13 +288,25 @@ async fn handle_peer(
         Ok(Err(err)) => {
             metrics.inc_handshake_failure();
             metrics.dec_active_physical();
-            reject_or_quarantine(inbound, runtime.reject_delay, &tarpit).await;
+            fallback_or_reject(
+                inbound,
+                &runtime.fallback_http,
+                runtime.reject_delay,
+                &tarpit,
+            )
+            .await;
             return Err(err);
         }
         Err(err) => {
             metrics.inc_handshake_failure();
             metrics.dec_active_physical();
-            reject_or_quarantine(inbound, runtime.reject_delay, &tarpit).await;
+            fallback_or_reject(
+                inbound,
+                &runtime.fallback_http,
+                runtime.reject_delay,
+                &tarpit,
+            )
+            .await;
             return Err(err.into());
         }
     };
@@ -434,9 +471,104 @@ async fn reject_or_quarantine(
     }
 }
 
+async fn fallback_or_reject(
+    mut stream: TcpStream,
+    fallback: &FallbackHttpRuntime,
+    reject_delay: Duration,
+    tarpit: &tarpit::TarpitManager,
+) {
+    if fallback.enabled {
+        let _ = write_builtin_fallback_response(&mut stream, fallback).await;
+        return;
+    }
+    reject_or_quarantine(stream, reject_delay, tarpit).await;
+}
+
 async fn quiet_reject(mut stream: TcpStream, delay: Duration) {
     if !delay.is_zero() {
         sleep(delay).await;
     }
     let _ = stream.shutdown().await;
+}
+
+async fn should_route_to_http_fallback(
+    stream: &mut TcpStream,
+    fallback: &FallbackHttpRuntime,
+) -> Result<bool> {
+    if !fallback.enabled {
+        return Ok(false);
+    }
+    let mut buf = [0_u8; 16];
+    let n = match timeout(fallback.probe_timeout, stream.peek(&mut buf)).await {
+        Ok(Ok(n)) => n,
+        Ok(Err(err)) => return Err(err.into()),
+        Err(_) => return Ok(false),
+    };
+    if n == 0 {
+        return Ok(false);
+    }
+    Ok(looks_like_http_probe(&buf[..n]))
+}
+
+fn looks_like_http_probe(prefix: &[u8]) -> bool {
+    let methods: [&[u8]; 10] = [
+        b"GET ",
+        b"POST ",
+        b"HEAD ",
+        b"PUT ",
+        b"PATCH ",
+        b"DELETE ",
+        b"OPTIONS ",
+        b"CONNECT ",
+        b"TRACE ",
+        b"PRI * HTTP/2.0",
+    ];
+    methods.iter().any(|m| prefix.starts_with(m))
+}
+
+async fn route_http_fallback(mut inbound: TcpStream, fallback: &FallbackHttpRuntime) -> Result<()> {
+    if let Some(upstream) = &fallback.upstream {
+        let mut upstream_stream = TcpStream::connect(upstream)
+            .await
+            .with_context(|| format!("connect fallback upstream {upstream}"))?;
+        let _ = copy_bidirectional(&mut inbound, &mut upstream_stream).await?;
+        return Ok(());
+    }
+    write_builtin_fallback_response(&mut inbound, fallback).await
+}
+
+async fn write_builtin_fallback_response(
+    stream: &mut TcpStream,
+    fallback: &FallbackHttpRuntime,
+) -> Result<()> {
+    let body = fallback.body.as_bytes();
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nServer: {}\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        fallback.server,
+        body.len(),
+        fallback.body
+    );
+    stream.write_all(response.as_bytes()).await?;
+    stream.shutdown().await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::looks_like_http_probe;
+
+    #[test]
+    fn detects_common_http_methods() {
+        assert!(looks_like_http_probe(b"GET / HTTP/1.1\r\n"));
+        assert!(looks_like_http_probe(b"POST /submit HTTP/1.1\r\n"));
+        assert!(looks_like_http_probe(
+            b"CONNECT example.com:443 HTTP/1.1\r\n"
+        ));
+    }
+
+    #[test]
+    fn ignores_non_http_prefixes() {
+        assert!(!looks_like_http_probe(b"\x16\x03\x01\x02\x00"));
+        assert!(!looks_like_http_probe(b"\x8f\xf2\x00\x11"));
+    }
 }

@@ -102,7 +102,33 @@ pub struct RemoteConfig {
     #[serde(default = "default_tarpit_hold_secs")]
     pub tarpit_hold_secs: u64,
     #[serde(default)]
+    pub fallback_http: RemoteFallbackHttpConfig,
+    #[serde(default)]
     pub egress: EgressConfig,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RemoteFallbackHttpConfig {
+    #[serde(default)]
+    pub mode: ProbeDefenseMode,
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub upstream: Option<String>,
+    #[serde(default = "default_fallback_probe_timeout_ms")]
+    pub probe_timeout_ms: u64,
+    #[serde(default = "default_fallback_server")]
+    pub server: String,
+    #[serde(default = "default_fallback_body")]
+    pub body: String,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ProbeDefenseMode {
+    #[default]
+    Silent,
+    HttpFallback,
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -225,7 +251,21 @@ impl Default for RemoteConfig {
             cold_start_delay_ms: default_cold_start_delay_ms(),
             tarpit_max: default_tarpit_max(),
             tarpit_hold_secs: default_tarpit_hold_secs(),
+            fallback_http: RemoteFallbackHttpConfig::default(),
             egress: EgressConfig::default(),
+        }
+    }
+}
+
+impl Default for RemoteFallbackHttpConfig {
+    fn default() -> Self {
+        Self {
+            mode: ProbeDefenseMode::Silent,
+            enabled: false,
+            upstream: None,
+            probe_timeout_ms: default_fallback_probe_timeout_ms(),
+            server: default_fallback_server(),
+            body: default_fallback_body(),
         }
     }
 }
@@ -280,6 +320,12 @@ fn parse_config(content: &str) -> Result<EspejismoConfig> {
         config.shared.obfuscation.min_chunk <= config.shared.obfuscation.max_chunk,
         "shared.obfuscation.min_chunk must be <= max_chunk"
     );
+    if let Some(upstream) = &config.remote.fallback_http.upstream {
+        anyhow::ensure!(
+            !upstream.trim().is_empty(),
+            "remote.fallback_http.upstream must not be empty when provided"
+        );
+    }
     Ok(config)
 }
 
@@ -374,6 +420,18 @@ fn default_tarpit_max() -> usize {
 
 fn default_tarpit_hold_secs() -> u64 {
     300
+}
+
+fn default_fallback_probe_timeout_ms() -> u64 {
+    250
+}
+
+fn default_fallback_server() -> String {
+    "nginx".to_string()
+}
+
+fn default_fallback_body() -> String {
+    "<html><head><title>It works</title></head><body><h1>It works</h1></body></html>".to_string()
 }
 
 fn default_log_level() -> String {

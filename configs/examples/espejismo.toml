@@ -47,6 +47,15 @@ cold_start_delay_ms = 35
 tarpit_max = 1024
 tarpit_hold_secs = 300
 
+[remote.fallback_http]
+mode = "silent"
+# mode = "http_fallback"
+# enabled = true # legacy switch, kept for backward compatibility
+upstream = "127.0.0.1:8080"
+probe_timeout_ms = 250
+server = "nginx"
+body = "<html><head><title>It works</title></head><body><h1>It works</h1></body></html>"
+
 [remote.egress]
 deny_private_ips = false
 allow_hosts = []

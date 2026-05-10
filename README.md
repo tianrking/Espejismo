@@ -215,6 +215,15 @@ cold_start_delay_ms = 35
 tarpit_max = 1024
 tarpit_hold_secs = 300
 
+[remote.fallback_http]
+mode = "silent"
+# mode = "http_fallback"
+# enabled = true # legacy switch, kept for backward compatibility
+upstream = "127.0.0.1:8080"
+probe_timeout_ms = 250
+server = "nginx"
+body = "<html><head><title>It works</title></head><body><h1>It works</h1></body></html>"
+
 [remote.egress]
 deny_private_ips = false
 allow_hosts = []
@@ -328,13 +337,19 @@ More detail lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - `espejismo-remote --tarpit-max` controls the bounded silent tarpit size used
   when `reject_delay_ms = 0`.
 - `espejismo-remote --tarpit-hold-secs` controls how long invalid sockets are
-  retained in the bounded silent tarpit.
+  retained in the tarpit before close.
+- `[remote.fallback_http]` controls active-probe behavior. Use
+  `mode = "silent"` for bounded silent handling, or `mode = "http_fallback"`
+  to route HTTP probe prefixes to either a configured
+  `upstream` TCP endpoint (for example local nginx) or an internal 200 OK page.
 - `--tunnel-buffer` controls the in-process encrypted transport buffer used
   below yamux.
 - `espejismo-remote --cold-start-delay-ms` applies a small startup delay after
   a valid handshake and before yamux begins.
 - The PSK accepts `hex:...`, `base64:...`, or a raw UTF-8 string.
-- Invalid handshakes are closed quietly and without application data.
+- Invalid handshakes are closed quietly by default. With
+  `[remote.fallback_http].enabled = true`, probes receive HTTP-looking fallback
+  responses instead.
 - The tarpit is intentionally silent: it holds sockets briefly and never sends
   drip bytes to unknown peers.
 

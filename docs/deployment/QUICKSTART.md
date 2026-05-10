@@ -144,6 +144,10 @@ The most important knobs are:
 - `local.socks5_listen`: local SOCKS5 listener.
 - `local.http_listen`: local HTTP proxy listener.
 - `remote.listen`: remote public listener.
+- `remote.fallback_http.mode`: use `silent` for quiet handling, or
+  `http_fallback` to route common HTTP probe prefixes to fallback.
+- `remote.fallback_http.upstream`: optional local TCP endpoint (for example
+  `127.0.0.1:8080`) that receives fallback probe traffic.
 - `remote.egress.deny_private_ips`: block private, loopback, link-local, and
   special egress targets.
 - `remote.egress.allow_ports` / `block_ports`: outbound port policy.
