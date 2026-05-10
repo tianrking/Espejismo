@@ -37,11 +37,6 @@ jobs:
             target: armv7-unknown-linux-gnueabihf
             archive: tar.gz
             use_cross: true
-          - name: darwin-amd64
-            os: macos-13
-            target: x86_64-apple-darwin
-            archive: tar.gz
-            use_cross: false
           - name: darwin-arm64
             os: macos-14
             target: aarch64-apple-darwin
