@@ -86,7 +86,7 @@ cold_start_delay_ms = 20
 allow_ports = [${HTTP_PORT}, ${UDP_PORT}]
 EOF
 
-CONFIG_B64="$(base64 -w0 "${CONFIG_FILE}" 2>/dev/null || base64 "${CONFIG_FILE}" | tr -d '\n')"
+CONFIG_B64="$(base64 <"${CONFIG_FILE}" | tr -d '\n')"
 PROFILE_URL="$(cargo run --quiet --bin espejismo-local -- --config "${CONFIG_FILE}" --print-client-profile --profile-name smoke)"
 case "${PROFILE_URL}" in
   espejismo://import/*) ;;

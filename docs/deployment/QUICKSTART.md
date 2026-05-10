@@ -36,17 +36,17 @@ Pinned release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=v0.1.0 bash
+  | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=v0.0.1 bash
 ```
 
 Custom archive URL, useful for private releases or self-hosted packages:
 
 ```bash
 curl -fsSL https://example.com/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_ARCHIVE_URL=https://example.com/espejismo-linux-x86_64.tar.gz bash
+  | sudo ESPEJISMO_ARCHIVE_URL=https://example.com/espejismo-linux-amd64.tar.gz bash
 ```
 
-The installer downloads `espejismo-linux-x86_64.tar.gz`, installs
+The installer downloads `espejismo-linux-amd64.tar.gz`, installs
 `espejismo-remote` and `espejismo-local` into `/usr/local/bin`, writes
 `/etc/espejismo/espejismo.toml`, creates an `espejismo` system user, installs a
 systemd unit, and starts `espejismo-remote`.
@@ -143,7 +143,9 @@ The most important knobs are:
 - `shared.obfuscation.profile`: sender-side traffic shape. Use `low_latency`,
   `balanced`, `high_entropy`, or `stealth`.
 - `shared.stealth.frame_size` / `shared.stealth.tick_ms`: fixed frame size and
-  constant send cadence when `profile = "stealth"`.
+  base pacing when `profile = "stealth"`. The transport starts with a short
+  random padding warmup, sends data or padding on a paced cadence, and slows
+  idle padding toward heartbeat-like intervals.
 - `local.server`: remote server address.
 - `local.socks5_listen`: local SOCKS5 listener.
 - `local.http_listen`: local HTTP proxy listener.

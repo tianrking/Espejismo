@@ -59,7 +59,7 @@ async fn parse_and_respond<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let text = std::str::from_utf8(&header).context("HTTP proxy header is not UTF-8")?;
+    let text = std::str::from_utf8(header).context("HTTP proxy header is not UTF-8")?;
     let mut lines = text.split("\r\n");
     let request_line = lines.next().context("missing HTTP request line")?;
     let mut parts = request_line.split_whitespace();
@@ -173,10 +173,5 @@ fn find_header_end(data: &[u8], search_from: usize) -> Option<usize> {
         return None;
     }
     let start = search_from.min(data.len().saturating_sub(4));
-    for i in start..=data.len() - 4 {
-        if &data[i..i + 4] == b"\r\n\r\n" {
-            return Some(i);
-        }
-    }
-    None
+    (start..=data.len() - 4).find(|&i| &data[i..i + 4] == b"\r\n\r\n")
 }

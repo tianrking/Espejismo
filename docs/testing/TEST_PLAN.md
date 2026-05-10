@@ -21,6 +21,7 @@ Run:
 
 ```bash
 cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo check --workspace --all-targets --locked
 cargo test --workspace --all-targets
 ./scripts/e2e_smoke.sh
@@ -68,6 +69,7 @@ path, and body. This proves both directions of the proxy path are working.
 Current unit tests cover:
 
 - Variable-length authenticated handshake completion.
+- Stealth handshake completion and fixed-size frame roundtrip behavior.
 - Client puzzle solving and verification.
 - Replay cache duplicate rejection.
 - Replay cache expiry.

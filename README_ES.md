@@ -18,39 +18,139 @@ y puzzles de cliente — todo en Rust seguro sin TUN/TAP ni dependencias del sis
 
 ## Arquitectura
 
+### Vista del Sistema
+
 ```mermaid
-graph LR
-    subgraph Client["espejismo-local (Cliente)"]
+flowchart LR
+    subgraph Local["espejismo-local"]
         APP["Aplicacion"]
-        SOCKS["SOCKS5 :6680"]
-        HTTP["HTTP Proxy :6681"]
+        SOCKS["Ingreso SOCKS5<br/>TCP CONNECT + UDP ASSOCIATE"]
+        HTTP["Ingreso proxy HTTP<br/>CONNECT + HTTP absolute-form"]
+        AUTH["Auth local opcional"]
+        YMUX_C["Sesion cliente yamux<br/>streams logicos"]
+        ENC_C["Adaptador de transporte cifrado"]
     end
 
-    subgraph Core["espejismo-core (Protocolo)"]
-        HS["Handshake<br/>HMAC-SHA256 + X25519"]
-        FRAME["Frames Cifrados<br/>XChaCha20-Poly1305"]
-        PAD["Padding Adaptativo"]
-        YAMUX["Multiplexacion yamux"]
+    subgraph Wire["Conexion TCP publica"]
+        FLOW["Flujo de bytes protegido con AEAD<br/>perfil estandar o stealth"]
     end
 
-    subgraph Server["espejismo-remote (Servidor)"]
-        REPLAY["Proteccion Replay"]
-        EGRESS["Politica de Salida"]
+    subgraph Remote["espejismo-remote"]
+        PROBE["Guardia de probes<br/>fallback HTTP o tarpit silencioso"]
+        HS["Verificador de handshake<br/>HMAC + X25519 + puzzle + cache replay"]
+        ENC_R["Adaptador de transporte cifrado"]
+        YMUX_R["Sesion servidor yamux"]
+        REQ["Parser de solicitudes de tunel"]
+        POLICY["Politica de salida<br/>ACL de host + puerto"]
         DEST["Destino TCP / UDP"]
     end
 
-    APP --> SOCKS
-    APP --> HTTP
-    SOCKS --> HS
-    HTTP --> HS
-    HS --> FRAME
-    FRAME --> PAD
-    PAD --> YAMUX
-    YAMUX -->|"Tunel Cifrado"| REPLAY
-    REPLAY --> FRAME
-    FRAME --> EGRESS
-    EGRESS --> DEST
+    APP --> SOCKS --> AUTH --> YMUX_C
+    APP --> HTTP --> AUTH
+    YMUX_C --> ENC_C --> FLOW --> PROBE --> HS --> ENC_R --> YMUX_R
+    YMUX_R --> REQ --> POLICY --> DEST
 ```
+
+El detalle importante de la estructura en capas es que yamux gestiona los
+streams logicos, mientras `spawn_frame_transport` proporciona a yamux un
+objeto `AsyncRead + AsyncWrite` normal respaldado por frames cifrados. Las
+solicitudes del proxy local se convierten en streams yamux; el socket fisico
+transporta solo el transporte cifrado.
+
+### Pila de Protocolo
+
+```text
+Trafico de aplicacion
+  -> parser de proxy SOCKS5 / HTTP
+  -> auth de proxy local opcional
+  -> stream logico yamux
+  -> transporte de frames cifrados
+  -> socket TCP
+  -> handshake remoto / defensas replay / probe
+  -> manejador de streams yamux
+  -> politica de salida
+  -> conexion TCP o rele UDP de un solo disparo
+```
+
+### Handshake
+
+El modo estandar comienza con un hello de cliente autenticado de longitud
+variable:
+
+```text
+[ HMAC-SHA256 32 ][ timestamp UTC 8 ][ nonce 24 ][ clave publica X25519 32 ]
+[ version de protocolo 2 ][ capacidades 8 ][ nonce puzzle 8 ]
+[ longitud padding 2 ][ padding 0..N ]
+```
+
+El cliente resuelve un puzzle acotado de SHA-256 con ceros iniciales sobre el
+cuerpo antes de calcular el HMAC. El remoto verifica el puzzle, comprueba la
+desviacion de timestamp, valida el HMAC en tiempo constante, y registra la
+clave publica efimera en una cache de replay acotada. Las claves de sesion se
+derivan con X25519 y HKDF-SHA256.
+
+Cuando `profile = "stealth"`, el intercambio hello se envuelve en dos bloques
+de tamano fijo que coinciden con `shared.stealth.frame_size`. La carga util
+del bloque esta enmascarada con un flujo XOR derivado de HMAC y padding
+aleatorio, por lo que el handshake no expone la longitud del hello en modo
+plain ni el hello del servidor de tamano fijo.
+
+### Transporte de Frames
+
+Los perfiles estandar usan frames AEAD con longitud prefijada enmascarada:
+
+```text
+[ longitud cifrada enmascarada 4 ][ XChaCha20-Poly1305(tipo || payload) ]
+```
+
+`low_latency`, `balanced`, y `high_entropy` ajustan la aleatorizacion de
+fragmentos, jitter, y padding adaptativo alrededor de ese formato de frame
+estandar.
+
+El modo stealth usa frames AEAD de tamano fijo sin cabecera de longitud:
+
+```text
+[ XChaCha20-Poly1305 texto cifrado exactamente shared.stealth.frame_size bytes ]
+
+texto plano antes del cifrado:
+[ tipo 1 ][ payload_len 2 ][ payload ][ padding aleatorio hasta tamano fijo ]
+```
+
+La bomba de subida envia un calentamiento corto de padding aleatorio tras el
+handshake stealth, luego escribe frames de datos o padding en un calendario
+dosificado. Si no hay datos de aplicacion en cola, la cadencia de inactividad
+decae desde el `tick_ms` base hacia intervalos mas lentos tipo heartbeat; los
+datos reales reinician la cadencia. Se aplica un pequeno jitter pre-escritura
+para que los frames de datos y padding no tengan un comportamiento de
+planificador identico.
+
+### Comportamiento de Probe y Fallback
+
+Los pares desconocidos o invalidos no reciben error de protocolo. Dependiendo
+de la configuracion remota, son retenidos en un tarpit silencioso acotado o,
+para probes con aspecto HTTP, enrutados a un upstream de fallback configurado.
+Si no hay upstream configurado, el fallback integrado devuelve una pequena
+respuesta HTTP 200 con cabeceras `Date`, `Last-Modified`, `ETag`,
+`Content-Length`, `Connection`, y `Server` dinamicas. Un upstream real como
+Nginx/Caddy sigue siendo el fallback de produccion preferido porque hereda una
+huella de servidor web completa y natural.
+
+### Lo que Stealth Ayuda a Mitigar
+
+| Senal observable | Mitigacion en este codigo | Salvedad restante |
+| --- | --- | --- |
+| Tamano del handshake en plain | Stealth envuelve hello/respuesta en bloques enmascarados de tamano fijo | Los primeros dos bloques siguen siendo metadatos de inicio de conexion |
+| Distribucion de tamano de frames | Todos los frames de datos, cierre, y padding stealth usan un tamano | Los flujos de tamano fijo pueden ser inusuales por si mismos |
+| Comportamiento de rafaga/silencio | Los frames de padding continuan cuando no hay datos de aplicacion en cola | La cadencia de inactividad decae deliberadamente para reducir huellas de flujo constante |
+| Asimetria de direccion | Ambos lados ejecutan el mismo comportamiento de transporte stealth | La planificacion del kernel y la congestion pueden diferir por direccion |
+| Clasificacion de payload | AEAD oculta el tipo y contenido del frame | El volumen de trafico, endpoint, y duracion siguen siendo visibles |
+| Probes HTTP activos | Fallback a upstream opcional o respuesta integrada dinamica | El fallback integrado es una comodidad, no un sustituto de un sitio web real |
+
+Stealth es un perfil de conformacion de trafico, no una garantia matematica de
+indetectabilidad. Reduce varias huellas de protocolo obvias, pero los
+observadores de red pueden seguir modelando metadatos como la reputacion del
+endpoint, duracion de la conexion, volumen total de bytes, comportamiento de
+reintento, y efectos de congestion.
 
 ## Plataformas Soportadas
 
@@ -270,26 +370,10 @@ cargo run --bin espejismo-local -- --print-example-config-base64
 
 ## Handshake
 
-El primer paquete del cliente tiene longitud intencionalmente variable:
-
-```text
-[ HMAC-SHA256 32 ][ timestamp UTC 8 ][ nonce 24 ][ clave publica X25519 32 ][ longitud padding 2 ][ padding 0..N ]
-```
-
-El cuerpo del paquete actual tambien incluye un nonce de puzzle de 8 bytes antes
-de la longitud del padding:
-
-```text
-[ HMAC-SHA256 32 ][ timestamp UTC 8 ][ nonce 24 ][ clave publica X25519 32 ][ nonce puzzle 8 ][ longitud padding 2 ][ padding 0..N ]
-```
-
-El cliente resuelve un puzzle acotado de SHA-256 con ceros iniciales sobre el
-cuerpo antes de calcular el HMAC. El servidor remoto verifica primero el puzzle,
-luego comprueba la desviacion de timestamp, valida el HMAC en tiempo constante,
-y mantiene una cache en memoria acotada de las claves publicas efimeras vistas
-recientemente.
-
-Mas detalles en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+El protocolo de handshake se describe en detalle en la seccion
+[Arquitectura](#arquitectura) anterior, cubriendo los modos plain y stealth.
+Los detalles internos adicionales del protocolo y la especificacion del formato
+en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Notas
 
@@ -322,8 +406,10 @@ Mas detalles en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   y los limites de fragmentos varian los tamanios de frames cifrados antes de
   agregar padding.
 - `[shared.stealth]` se usa cuando `profile = "stealth"`: cada frame cifrado
-  mide exactamente `frame_size` bytes y cada lado envia un frame cada `tick_ms`
-  milisegundos, usando padding cuando no hay datos reales.
+  mide exactamente `frame_size` bytes. El transporte comienza con un
+  calentamiento corto de padding aleatorio, envia datos o padding en una
+  cadencia dosificada, y gradualmente reduce el padding de inactividad hacia
+  intervalos tipo heartbeat antes de que los datos reales lo reinicien.
 - `--puzzle-bits` configura la dificultad del puzzle del cliente. Valores limitados
   a 24 bits.
 - `espejismo-local --handshake-padding` controla el padding aleatorio maximo en
@@ -339,12 +425,18 @@ Mas detalles en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   usado cuando `reject_delay_ms = 0`.
 - `espejismo-remote --tarpit-hold-secs` controla cuanto tiempo se retienen los
   sockets invalidos en el tarpit silencioso acotado.
+- `[remote.fallback_http]` controla el comportamiento ante probes activos. Usar
+  `mode = "silent"` para manejo silencioso acotado, o `mode = "http_fallback"`
+  para enrutar prefijos de probe HTTP a un endpoint TCP `upstream` configurado
+  (por ejemplo nginx local) o a una pagina 200 OK interna.
 - `--tunnel-buffer` controla el buffer de transporte cifrado en proceso usado
   por debajo de yamux.
 - `espejismo-remote --cold-start-delay-ms` aplica un pequeno retraso de inicio
   tras un handshake valido y antes de que comience yamux.
 - La PSK acepta `hex:...`, `base64:...`, o una cadena UTF-8 cruda.
-- Los handshakes invalidos se cierran silenciosamente y sin datos de aplicacion.
+- Los handshakes invalidos se cierran silenciosamente por defecto. Con
+  `[remote.fallback_http].enabled = true`, los probes reciben respuestas de
+  fallback con aspecto HTTP en su lugar.
 - El tarpit es intencionalmente silencioso: retiene sockets brevemente y nunca
   envia bytes de goteo a pares desconocidos.
 
@@ -391,26 +483,31 @@ operadores puedan elevar un modulo manteniendo el resto en silencio.
 ## Estado del Proyecto
 
 Ver [docs/development/STATUS.md](docs/development/STATUS.md) para la matriz de
-funcionalidades implementadas y la hoja de ruta restante, incluyendo UDP,
-migracion transparente, empaquetado WASM/navegador, metricas y recarga en tiempo
-de ejecucion.
+funcionalidades implementadas y la hoja de ruta restante, incluyendo migracion
+transparente, empaquetado WASM/navegador, recarga en tiempo de ejecucion, y
+control de multiples perfiles mas rico.
 
 Ver [docs/testing/TEST_PLAN.md](docs/testing/TEST_PLAN.md) para la estrategia
 de pruebas ejecutable y [docs/research/DESIGN_PRINCIPLES.md](docs/research/DESIGN_PRINCIPLES.md)
 para los principios de diseno del protocolo.
 
-## Descargo de Responsabilidad
+## Uso Responsable
 
-Espejismo esta destinado unicamente a establecer conexiones cifradas a su propia
-red domestica o servidores de propiedad privada durante sus viajes. Esta disenado
-para proteger sus datos en redes publicas no confiables (por ejemplo, Wi-Fi de
-hoteles, cafeterias, aeropuertos) enrutando el trafico a traves de un tunel seguro
-hacia infraestructura que usted controla.
+Espejismo esta destinado para acceso cifrado a sistemas que usted posee o esta
+explicitamente autorizado a administrar, como un laboratorio casero, servidor
+privado, o entorno de pruebas interno. No es un servicio, red de anonimato, ni
+herramienta de evasion de autorizacion.
 
-Los usuarios son los unicos responsables de asegurar que el uso de este software
-cumple con todas las leyes y regulaciones locales, estatales, nacionales e
-internacionales aplicables. Los autores no asumen ninguna responsabilidad por uso
-indebido. Este proyecto no fomenta, respalda ni apoya ninguna actividad que viole
-las leyes de ninguna jurisdiccion, incluyendo pero no limitado a las regulaciones
-de la Republica Popular China sobre acceso a redes y transmision de datos
-transfronteriza.
+La conformacion de trafico puede reducir algunas huellas de protocolo, pero no
+hace invisible una conexion. Los operadores deben asumir que los endpoints,
+timing, volumen de bytes, uptime, ruta de enrutamiento, y errores de despliegue
+pueden seguir siendo observables. Usar upstreams de fallback reales, logging
+conservador, PSKs fuertes, y politica de salida restrictiva en produccion.
+
+Usted es responsable de cumplir con todas las leyes aplicables, politicas de red,
+terminos de servicio, controles de exportacion, y limites de autorizacion en su
+jurisdiccion y en cualquier red donde despliegue o use este software. No use
+Espejismo para acceder a sistemas sin permiso, evadir controles de acceso legales,
+o violar regulaciones locales. Este README es documentacion tecnica, no consejo
+legal; consulte a un profesional cualificado si su despliegue tiene riesgo legal
+o de cumplimiento.

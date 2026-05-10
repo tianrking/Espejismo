@@ -19,6 +19,8 @@ espejismo-local --import-profile 'espejismo://import/...' --socks5-listen 127.0.
 ```
 
 Profiles currently carry the local client essentials: profile name, remote
-server address, PSK, local proxy listeners, and optional local proxy auth. Server
-egress/admin/logging policy remains in TOML because those are deployment-side
-operator settings.
+server address, PSK, local proxy listeners, and optional local proxy auth.
+Obfuscation settings, including `profile = "stealth"` and `[shared.stealth]`,
+remain in TOML/CLI config and are not embedded in the import URL. Server
+egress/admin/logging policy also remains in TOML because those are
+deployment-side operator settings.

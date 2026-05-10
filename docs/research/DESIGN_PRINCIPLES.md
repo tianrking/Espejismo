@@ -22,10 +22,12 @@ out of scope.
 
 ## Mask Metadata Without Sacrificing Stability
 
-The encrypted transport still uses length-based super-frames for robust async
+The standard encrypted transport uses length-based super-frames for robust async
 I/O, but the 4-byte length field is masked with an HKDF-derived per-direction
 sequence mask. This removes the plaintext length signal while preserving stable
-framing.
+framing. Stealth mode intentionally trades that variable-length framing for
+fixed-size encrypted blocks and paced padding when the operator chooses the
+stealth profile.
 
 ## Bounded Public-Side Resource Use
 

@@ -19,7 +19,7 @@ pub struct ConfigInput {
     pub base64: Option<String>,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct EspejismoConfig {
     #[serde(default)]
     pub shared: SharedConfig,
@@ -196,18 +196,6 @@ pub struct AdminConfig {
     pub listen: Option<SocketAddr>,
     #[serde(default)]
     pub token: Option<String>,
-}
-
-impl Default for EspejismoConfig {
-    fn default() -> Self {
-        Self {
-            shared: SharedConfig::default(),
-            local: LocalConfig::default(),
-            remote: RemoteConfig::default(),
-            logging: LogConfig::default(),
-            admin: AdminConfig::default(),
-        }
-    }
 }
 
 impl Default for SharedConfig {

@@ -19,7 +19,6 @@ The release workflow builds these packages:
 | `espejismo-linux-386.tar.gz` | Ubuntu + cross | `i686-unknown-linux-gnu` |
 | `espejismo-linux-arm64.tar.gz` | Ubuntu + cross | `aarch64-unknown-linux-gnu` |
 | `espejismo-linux-armv7.tar.gz` | Ubuntu + cross | `armv7-unknown-linux-gnueabihf` |
-| `espejismo-darwin-amd64.tar.gz` | macOS Intel | `x86_64-apple-darwin` |
 | `espejismo-darwin-arm64.tar.gz` | macOS Apple Silicon | `aarch64-apple-darwin` |
 | `espejismo-windows-amd64.zip` | Windows | `x86_64-pc-windows-msvc` |
 | `espejismo-windows-386.zip` | Windows | `i686-pc-windows-msvc` |
