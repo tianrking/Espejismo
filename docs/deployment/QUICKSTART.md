@@ -73,6 +73,8 @@ ESPEJISMO_OBFUSCATION_PROFILE=balanced
 ESPEJISMO_RANDOMIZE_CHUNKS=true
 ESPEJISMO_MIN_CHUNK=1024
 ESPEJISMO_MAX_CHUNK=16384
+ESPEJISMO_STEALTH_FRAME_SIZE=4096
+ESPEJISMO_STEALTH_TICK_MS=50
 ESPEJISMO_OPEN_UFW=1
 ```
 
@@ -139,7 +141,9 @@ The most important knobs are:
 - `shared.max_streams`: concurrent yamux stream limit per physical tunnel.
 - `shared.idle_timeout_secs`: idle stream timeout.
 - `shared.obfuscation.profile`: sender-side traffic shape. Use `low_latency`,
-  `balanced`, or `high_entropy`.
+  `balanced`, `high_entropy`, or `stealth`.
+- `shared.stealth.frame_size` / `shared.stealth.tick_ms`: fixed frame size and
+  constant send cadence when `profile = "stealth"`.
 - `local.server`: remote server address.
 - `local.socks5_listen`: local SOCKS5 listener.
 - `local.http_listen`: local HTTP proxy listener.

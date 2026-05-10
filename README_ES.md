@@ -184,6 +184,10 @@ randomize_chunks = true
 min_chunk = 1024
 max_chunk = 16384
 
+[shared.stealth]
+frame_size = 4096
+tick_ms = 50
+
 [local]
 server = "127.0.0.1:6690"
 socks5_listen = "127.0.0.1:6680"
@@ -314,8 +318,12 @@ Mas detalles en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   padding tras una escritura lenta.
 - `--jitter-ms` aplica un pequeno retraso aleatorio antes de enviar frames.
 - `[shared.obfuscation]` controla la forma del trafico del emisor. `profile` puede
-  ser `low_latency`, `balanced`, o `high_entropy`; `randomize_chunks` y los limites
-  de fragmentos varian los tamanios de frames cifrados antes de agregar padding.
+  ser `low_latency`, `balanced`, `high_entropy`, o `stealth`; `randomize_chunks`
+  y los limites de fragmentos varian los tamanios de frames cifrados antes de
+  agregar padding.
+- `[shared.stealth]` se usa cuando `profile = "stealth"`: cada frame cifrado
+  mide exactamente `frame_size` bytes y cada lado envia un frame cada `tick_ms`
+  milisegundos, usando padding cuando no hay datos reales.
 - `--puzzle-bits` configura la dificultad del puzzle del cliente. Valores limitados
   a 24 bits.
 - `espejismo-local --handshake-padding` controla el padding aleatorio maximo en

@@ -23,11 +23,13 @@ param(
     [int]$TunnelBuffer = 1048576,
     [int]$IdleTimeoutSecs = 300,
     [int]$MaxStreams = 256,
-    [ValidateSet("low_latency", "balanced", "high_entropy")]
+    [ValidateSet("low_latency", "balanced", "high_entropy", "stealth")]
     [string]$ObfuscationProfile = "balanced",
     [bool]$RandomizeChunks = $true,
     [int]$MinChunk = 1024,
     [int]$MaxChunk = 16384,
+    [int]$StealthFrameSize = 4096,
+    [int]$StealthTickMs = 50,
     [int]$HandshakePadding = 256,
     [int]$HandshakeTimeoutMs = 3000,
     [int]$RejectDelayMs = 0,
@@ -168,6 +170,10 @@ profile = $(Quote-Toml $ObfuscationProfile)
 randomize_chunks = $($RandomizeChunks.ToString().ToLowerInvariant())
 min_chunk = $MinChunk
 max_chunk = $MaxChunk
+
+[shared.stealth]
+frame_size = $StealthFrameSize
+tick_ms = $StealthTickMs
 
 [logging]
 level = $(Quote-Toml $LogLevel)

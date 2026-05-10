@@ -1,7 +1,8 @@
+use std::collections::VecDeque;
 use std::time::Duration;
 
 use tokio::io::{duplex, split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
-use tokio::time::timeout;
+use tokio::time::{interval, timeout, MissedTickBehavior};
 use tracing::debug;
 
 use crate::crypto::SessionKeys;
@@ -29,7 +30,7 @@ where
     });
 
     tokio::spawn(async move {
-        if let Err(err) = download_frames(net_reader, app_writer, keys).await {
+        if let Err(err) = download_frames(net_reader, app_writer, keys, options).await {
             debug!(error = %err, "encrypted download pump stopped");
         }
     });
@@ -129,6 +130,9 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
+    if options.is_stealth() {
+        return upload_stealth_frames(app_reader, net_writer, keys, options).await;
+    }
     let mut buf = vec![0_u8; options.normalized_chunk_bounds().1];
     let mut frame_writer = FrameWriter::new(net_writer, keys, options);
     loop {
@@ -152,16 +156,75 @@ where
     }
 }
 
-async fn download_frames<R, W>(
-    net_reader: R,
-    mut app_writer: W,
+async fn upload_stealth_frames<R, W>(
+    mut app_reader: R,
+    net_writer: W,
     keys: SessionKeys,
+    options: FrameOptions,
 ) -> anyhow::Result<()>
 where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut frame_reader = FrameReader::new(net_reader, keys);
+    let capacity = options.stealth_payload_capacity()?;
+    let mut read_buf = vec![0_u8; capacity];
+    let mut pending = VecDeque::with_capacity(capacity * 2);
+    let pending_limit = capacity * 8;
+    let mut frame_writer = FrameWriter::new(net_writer, keys, options.clone());
+    let mut ticker = interval(Duration::from_millis(options.stealth_tick_ms));
+    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
+    let mut app_closed = false;
+
+    loop {
+        tokio::select! {
+            read = app_reader.read(&mut read_buf), if !app_closed && pending.len() < pending_limit => {
+                match read? {
+                    0 => app_closed = true,
+                    n => pending.extend(&read_buf[..n]),
+                }
+            }
+            _ = ticker.tick() => {
+                if !pending.is_empty() {
+                    let len = pending.len().min(capacity);
+                    let payload: Vec<u8> = pending.drain(..len).collect();
+                    frame_writer
+                        .send(Frame {
+                            ty: FrameType::Data,
+                            payload,
+                        })
+                        .await?;
+                } else if app_closed {
+                    frame_writer
+                        .send(Frame {
+                            ty: FrameType::Close,
+                            payload: Vec::new(),
+                        })
+                        .await?;
+                    return Ok(());
+                } else {
+                    frame_writer
+                        .send(Frame {
+                            ty: FrameType::Padding,
+                            payload: Vec::new(),
+                        })
+                        .await?;
+                }
+            }
+        }
+    }
+}
+
+async fn download_frames<R, W>(
+    net_reader: R,
+    mut app_writer: W,
+    keys: SessionKeys,
+    options: FrameOptions,
+) -> anyhow::Result<()>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut frame_reader = FrameReader::new(net_reader, keys, options);
     loop {
         match frame_reader.recv().await? {
             Frame {

@@ -25,6 +25,7 @@ const CLIENT_HELLO_FIXED_BODY_LEN: usize = 8 + 24 + 32 + 2 + 8 + 8 + 2;
 const PUZZLE_NONCE_RANGE: std::ops::Range<usize> = 74..82;
 const SERVER_HELLO_LEN: usize = 32 + 2 + 8 + 32;
 const MAX_HANDSHAKE_PADDING: usize = 1024;
+const STEALTH_HANDSHAKE_NONCE_LEN: usize = 24;
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const CAP_TCP_CONNECT: u64 = 1 << 0;
 pub const CAP_UDP_ASSOCIATE: u64 = 1 << 1;
@@ -37,6 +38,7 @@ pub struct HandshakeConfig {
     pub clock_skew_secs: i64,
     pub max_handshake_padding: usize,
     pub puzzle_difficulty_bits: u8,
+    pub stealth_frame_size: Option<usize>,
 }
 
 impl HandshakeConfig {
@@ -53,7 +55,13 @@ impl HandshakeConfig {
             clock_skew_secs,
             max_handshake_padding,
             puzzle_difficulty_bits,
+            stealth_frame_size: None,
         }
+    }
+
+    pub fn with_stealth_frame_size(mut self, frame_size: Option<usize>) -> Self {
+        self.stealth_frame_size = frame_size;
+        self
     }
 }
 
@@ -87,59 +95,73 @@ pub async fn connect_handshake<S>(stream: &mut S, cfg: &HandshakeConfig) -> Resu
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let secret = StaticSecret::random_from_rng(OsRng);
-    let public = PublicKey::from(&secret);
-    let now = unix_now()?;
-    let mut nonce = [0_u8; 24];
-    OsRng.fill_bytes(&mut nonce);
-    let max_padding = cfg.max_handshake_padding.min(MAX_HANDSHAKE_PADDING);
-    let padding_len = random_padding_len(max_padding);
-    let mut padding = vec![0_u8; padding_len];
-    OsRng.fill_bytes(&mut padding);
+    if let Some(frame_size) = cfg.stealth_frame_size {
+        return connect_stealth_handshake(stream, cfg, frame_size).await;
+    }
+    connect_plain_handshake(stream, cfg).await
+}
 
-    let mut body = Vec::with_capacity(CLIENT_HELLO_FIXED_BODY_LEN + padding_len);
-    body.extend_from_slice(&now.to_be_bytes());
-    body.extend_from_slice(&nonce);
-    body.extend_from_slice(public.as_bytes());
-    body.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
-    body.extend_from_slice(&DEFAULT_CAPABILITIES.to_be_bytes());
-    body.extend_from_slice(&0_u64.to_be_bytes());
-    body.extend_from_slice(&(padding_len as u16).to_be_bytes());
-    body.extend_from_slice(&padding);
-    let body = puzzle::solve(body, PUZZLE_NONCE_RANGE, cfg.puzzle_difficulty_bits);
-    let tag = hmac(&cfg.auth_key, &body)?;
-    let mut hello = Vec::with_capacity(CLIENT_HELLO_TAG_LEN + body.len());
-    hello.extend_from_slice(&tag);
-    hello.extend_from_slice(&body);
-    stream.write_all(&hello).await?;
+async fn connect_plain_handshake<S>(stream: &mut S, cfg: &HandshakeConfig) -> Result<SessionKeys>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let secret = StaticSecret::random_from_rng(OsRng);
+    let client_hello = build_client_hello(cfg, &secret, cfg.max_handshake_padding)?;
+    stream.write_all(&client_hello.wire).await?;
 
     let mut reply = [0_u8; SERVER_HELLO_LEN];
     stream
         .read_exact(&mut reply)
         .await
         .context("server handshake failed")?;
-    let server_public = PublicKey::from(slice_32(&reply[..32])?);
-    let server_version = u16::from_be_bytes(reply[32..34].try_into()?);
-    let server_capabilities = u64::from_be_bytes(reply[34..42].try_into()?);
-    if server_version != PROTOCOL_VERSION {
-        bail!("unsupported server protocol version {server_version}");
-    }
-    if server_capabilities & CAP_TCP_CONNECT == 0 {
-        bail!("server does not support TCP CONNECT");
-    }
-    let expected = server_hmac(
-        &cfg.auth_key,
-        &body,
-        server_public.as_bytes(),
-        server_version,
-        server_capabilities,
-    )?;
-    if expected.ct_eq(&reply[42..]).unwrap_u8() != 1 {
-        bail!("server authentication failed");
-    }
+    finish_client_handshake(
+        cfg,
+        &secret,
+        &client_hello.body,
+        &client_hello.nonce,
+        &reply,
+    )
+}
 
-    let shared = secret.diffie_hellman(&server_public);
-    derive_keys(&cfg.psk, shared.as_bytes(), &nonce, b"client")
+async fn connect_stealth_handshake<S>(
+    stream: &mut S,
+    cfg: &HandshakeConfig,
+    frame_size: usize,
+) -> Result<SessionKeys>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    validate_stealth_handshake_frame(frame_size)?;
+    let secret = StaticSecret::random_from_rng(OsRng);
+    let max_padding = stealth_client_padding_cap(cfg, frame_size)?;
+    let client_hello = build_client_hello(cfg, &secret, max_padding)?;
+    let block = mask_stealth_handshake_block(
+        &cfg.auth_key,
+        b"client-hello",
+        &[],
+        &client_hello.wire,
+        frame_size,
+    )?;
+    stream.write_all(&block).await?;
+
+    let mut reply_block = vec![0_u8; frame_size];
+    stream
+        .read_exact(&mut reply_block)
+        .await
+        .context("stealth server handshake failed")?;
+    let reply_plain = unmask_stealth_handshake_block(
+        &cfg.auth_key,
+        b"server-hello",
+        &client_hello.tag,
+        &reply_block,
+    )?;
+    finish_client_handshake(
+        cfg,
+        &secret,
+        &client_hello.body,
+        &client_hello.nonce,
+        &reply_plain[..SERVER_HELLO_LEN],
+    )
 }
 
 pub async fn accept_handshake<S>(stream: &mut S, cfg: &HandshakeConfig) -> Result<SessionKeys>
@@ -168,6 +190,142 @@ async fn accept_handshake_inner<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
+    let client_hello = if let Some(frame_size) = cfg.stealth_frame_size {
+        read_stealth_client_hello(stream, cfg, frame_size).await?
+    } else {
+        read_plain_client_hello(stream, cfg).await?
+    };
+    verify_client_hello(cfg, &client_hello, replay).await?;
+
+    let client_public_bytes = slice_32(&client_hello.fixed_body[32..64])?;
+    let client_public = PublicKey::from(client_public_bytes);
+    let secret = StaticSecret::random_from_rng(OsRng);
+    let public = PublicKey::from(&secret);
+    let shared = secret.diffie_hellman(&client_public);
+
+    let client_capabilities = u64::from_be_bytes(client_hello.fixed_body[66..74].try_into()?);
+    let server_capabilities = DEFAULT_CAPABILITIES & client_capabilities;
+    let tag = server_hmac(
+        &cfg.auth_key,
+        &client_hello.body,
+        public.as_bytes(),
+        PROTOCOL_VERSION,
+        server_capabilities,
+    )?;
+    let mut reply = Vec::with_capacity(SERVER_HELLO_LEN);
+    reply.extend_from_slice(public.as_bytes());
+    reply.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
+    reply.extend_from_slice(&server_capabilities.to_be_bytes());
+    reply.extend_from_slice(&tag);
+
+    if let Some(frame_size) = cfg.stealth_frame_size {
+        let block = mask_stealth_handshake_block(
+            &cfg.auth_key,
+            b"server-hello",
+            &client_hello.tag,
+            &reply,
+            frame_size,
+        )?;
+        stream.write_all(&block).await?;
+    } else {
+        stream.write_all(&reply).await?;
+    }
+
+    derive_keys(
+        &cfg.psk,
+        shared.as_bytes(),
+        &client_hello.fixed_body[8..32],
+        b"server",
+    )
+}
+
+struct ClientHelloMaterial {
+    tag: [u8; CLIENT_HELLO_TAG_LEN],
+    body: Vec<u8>,
+    nonce: [u8; 24],
+    wire: Vec<u8>,
+}
+
+struct ParsedClientHello {
+    tag: [u8; CLIENT_HELLO_TAG_LEN],
+    fixed_body: [u8; CLIENT_HELLO_FIXED_BODY_LEN],
+    body: Vec<u8>,
+}
+
+fn build_client_hello(
+    cfg: &HandshakeConfig,
+    secret: &StaticSecret,
+    max_padding: usize,
+) -> Result<ClientHelloMaterial> {
+    let public = PublicKey::from(secret);
+    let now = unix_now()?;
+    let mut nonce = [0_u8; 24];
+    OsRng.fill_bytes(&mut nonce);
+    let max_padding = max_padding.min(MAX_HANDSHAKE_PADDING);
+    let padding_len = random_padding_len(max_padding);
+    let mut padding = vec![0_u8; padding_len];
+    OsRng.fill_bytes(&mut padding);
+
+    let mut body = Vec::with_capacity(CLIENT_HELLO_FIXED_BODY_LEN + padding_len);
+    body.extend_from_slice(&now.to_be_bytes());
+    body.extend_from_slice(&nonce);
+    body.extend_from_slice(public.as_bytes());
+    body.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
+    body.extend_from_slice(&DEFAULT_CAPABILITIES.to_be_bytes());
+    body.extend_from_slice(&0_u64.to_be_bytes());
+    body.extend_from_slice(&(padding_len as u16).to_be_bytes());
+    body.extend_from_slice(&padding);
+    let body = puzzle::solve(body, PUZZLE_NONCE_RANGE, cfg.puzzle_difficulty_bits);
+    let tag = hmac(&cfg.auth_key, &body)?;
+    let mut wire = Vec::with_capacity(CLIENT_HELLO_TAG_LEN + body.len());
+    wire.extend_from_slice(&tag);
+    wire.extend_from_slice(&body);
+    Ok(ClientHelloMaterial {
+        tag,
+        body,
+        nonce,
+        wire,
+    })
+}
+
+fn finish_client_handshake(
+    cfg: &HandshakeConfig,
+    secret: &StaticSecret,
+    body: &[u8],
+    nonce: &[u8; 24],
+    reply: &[u8],
+) -> Result<SessionKeys> {
+    let server_public = PublicKey::from(slice_32(&reply[..32])?);
+    let server_version = u16::from_be_bytes(reply[32..34].try_into()?);
+    let server_capabilities = u64::from_be_bytes(reply[34..42].try_into()?);
+    if server_version != PROTOCOL_VERSION {
+        bail!("unsupported server protocol version {server_version}");
+    }
+    if server_capabilities & CAP_TCP_CONNECT == 0 {
+        bail!("server does not support TCP CONNECT");
+    }
+    let expected = server_hmac(
+        &cfg.auth_key,
+        body,
+        server_public.as_bytes(),
+        server_version,
+        server_capabilities,
+    )?;
+    if expected.ct_eq(&reply[42..SERVER_HELLO_LEN]).unwrap_u8() != 1 {
+        bail!("server authentication failed");
+    }
+
+    let shared = secret.diffie_hellman(&server_public);
+    derive_keys(&cfg.psk, shared.as_bytes(), nonce, b"client")
+}
+
+async fn read_plain_client_hello<S>(
+    stream: &mut S,
+    cfg: &HandshakeConfig,
+) -> Result<ParsedClientHello>
+where
+    S: AsyncRead + Unpin,
+{
     let mut tag = [0_u8; CLIENT_HELLO_TAG_LEN];
     let mut fixed_body = [0_u8; CLIENT_HELLO_FIXED_BODY_LEN];
     stream
@@ -191,21 +349,83 @@ where
             .await
             .context("client handshake padding failed")?;
     }
-
     let mut body = Vec::with_capacity(CLIENT_HELLO_FIXED_BODY_LEN + padding_len);
     body.extend_from_slice(&fixed_body);
     body.extend_from_slice(&padding);
-    if !puzzle::verify(&body, cfg.puzzle_difficulty_bits) {
+    Ok(ParsedClientHello {
+        tag,
+        fixed_body,
+        body,
+    })
+}
+
+async fn read_stealth_client_hello<S>(
+    stream: &mut S,
+    cfg: &HandshakeConfig,
+    frame_size: usize,
+) -> Result<ParsedClientHello>
+where
+    S: AsyncRead + Unpin,
+{
+    validate_stealth_handshake_frame(frame_size)?;
+    let mut block = vec![0_u8; frame_size];
+    stream
+        .read_exact(&mut block)
+        .await
+        .context("stealth client handshake failed")?;
+    let plain = unmask_stealth_handshake_block(&cfg.auth_key, b"client-hello", &[], &block)?;
+    parse_stealth_client_hello(cfg, &plain, frame_size)
+}
+
+fn parse_stealth_client_hello(
+    cfg: &HandshakeConfig,
+    plain: &[u8],
+    frame_size: usize,
+) -> Result<ParsedClientHello> {
+    let min_len = CLIENT_HELLO_TAG_LEN + CLIENT_HELLO_FIXED_BODY_LEN;
+    if plain.len() < min_len {
+        bail!("short stealth client handshake");
+    }
+    let tag = slice_32(&plain[..CLIENT_HELLO_TAG_LEN])?;
+    let fixed_body: [u8; CLIENT_HELLO_FIXED_BODY_LEN] = plain
+        [CLIENT_HELLO_TAG_LEN..CLIENT_HELLO_TAG_LEN + CLIENT_HELLO_FIXED_BODY_LEN]
+        .try_into()
+        .map_err(|_| anyhow!("expected fixed client hello body"))?;
+    let padding_len = u16::from_be_bytes(fixed_body[82..84].try_into()?) as usize;
+    let max_padding = stealth_client_padding_cap(cfg, frame_size)?;
+    if padding_len > max_padding {
+        bail!("handshake padding exceeds configured stealth limit");
+    }
+    let total = CLIENT_HELLO_TAG_LEN + CLIENT_HELLO_FIXED_BODY_LEN + padding_len;
+    if total > plain.len() {
+        bail!("short stealth client handshake padding");
+    }
+    let mut body = Vec::with_capacity(CLIENT_HELLO_FIXED_BODY_LEN + padding_len);
+    body.extend_from_slice(&fixed_body);
+    body.extend_from_slice(&plain[CLIENT_HELLO_TAG_LEN + CLIENT_HELLO_FIXED_BODY_LEN..total]);
+    Ok(ParsedClientHello {
+        tag,
+        fixed_body,
+        body,
+    })
+}
+
+async fn verify_client_hello(
+    cfg: &HandshakeConfig,
+    client_hello: &ParsedClientHello,
+    replay: Option<Arc<Mutex<ReplayCache>>>,
+) -> Result<()> {
+    if !puzzle::verify(&client_hello.body, cfg.puzzle_difficulty_bits) {
         bail!("client puzzle verification failed");
     }
-    let expected = hmac(&cfg.auth_key, &body)?;
-    if expected.ct_eq(&tag).unwrap_u8() != 1 {
+    let expected = hmac(&cfg.auth_key, &client_hello.body)?;
+    if expected.ct_eq(&client_hello.tag).unwrap_u8() != 1 {
         bail!("client authentication failed");
     }
 
-    let timestamp = i64::from_be_bytes(fixed_body[..8].try_into()?);
-    let client_version = u16::from_be_bytes(fixed_body[64..66].try_into()?);
-    let client_capabilities = u64::from_be_bytes(fixed_body[66..74].try_into()?);
+    let timestamp = i64::from_be_bytes(client_hello.fixed_body[..8].try_into()?);
+    let client_version = u16::from_be_bytes(client_hello.fixed_body[64..66].try_into()?);
+    let client_capabilities = u64::from_be_bytes(client_hello.fixed_body[66..74].try_into()?);
     if client_version != PROTOCOL_VERSION {
         bail!("unsupported client protocol version {client_version}");
     }
@@ -217,32 +437,109 @@ where
         bail!("handshake timestamp outside allowed window");
     }
 
-    let client_public_bytes = slice_32(&fixed_body[32..64])?;
+    let client_public_bytes = slice_32(&client_hello.fixed_body[32..64])?;
     if let Some(replay) = replay {
         replay
             .lock()
             .await
             .check_and_insert(now, client_public_bytes)?;
     }
-    let client_public = PublicKey::from(client_public_bytes);
-    let secret = StaticSecret::random_from_rng(OsRng);
-    let public = PublicKey::from(&secret);
-    let shared = secret.diffie_hellman(&client_public);
+    Ok(())
+}
 
-    let server_capabilities = DEFAULT_CAPABILITIES & client_capabilities;
-    let tag = server_hmac(
-        &cfg.auth_key,
-        &body,
-        public.as_bytes(),
-        PROTOCOL_VERSION,
-        server_capabilities,
-    )?;
-    stream.write_all(public.as_bytes()).await?;
-    stream.write_all(&PROTOCOL_VERSION.to_be_bytes()).await?;
-    stream.write_all(&server_capabilities.to_be_bytes()).await?;
-    stream.write_all(&tag).await?;
+fn stealth_client_padding_cap(cfg: &HandshakeConfig, frame_size: usize) -> Result<usize> {
+    validate_stealth_handshake_frame(frame_size)?;
+    let available = frame_size
+        .checked_sub(
+            STEALTH_HANDSHAKE_NONCE_LEN + CLIENT_HELLO_TAG_LEN + CLIENT_HELLO_FIXED_BODY_LEN,
+        )
+        .context("shared.stealth.frame_size is too small for client handshake")?;
+    Ok(cfg
+        .max_handshake_padding
+        .min(MAX_HANDSHAKE_PADDING)
+        .min(available))
+}
 
-    derive_keys(&cfg.psk, shared.as_bytes(), &fixed_body[8..32], b"server")
+fn validate_stealth_handshake_frame(frame_size: usize) -> Result<()> {
+    let min_client =
+        STEALTH_HANDSHAKE_NONCE_LEN + CLIENT_HELLO_TAG_LEN + CLIENT_HELLO_FIXED_BODY_LEN;
+    let min_server = STEALTH_HANDSHAKE_NONCE_LEN + SERVER_HELLO_LEN;
+    if frame_size < min_client.max(min_server) {
+        bail!("shared.stealth.frame_size is too small for stealth handshake");
+    }
+    Ok(())
+}
+
+fn mask_stealth_handshake_block(
+    key: &[u8; 32],
+    label: &[u8],
+    context: &[u8],
+    clear: &[u8],
+    frame_size: usize,
+) -> Result<Vec<u8>> {
+    validate_stealth_handshake_frame(frame_size)?;
+    if clear.len() + STEALTH_HANDSHAKE_NONCE_LEN > frame_size {
+        bail!("stealth handshake payload exceeds frame size");
+    }
+    let mut nonce = [0_u8; STEALTH_HANDSHAKE_NONCE_LEN];
+    OsRng.fill_bytes(&mut nonce);
+    let payload_len = frame_size - STEALTH_HANDSHAKE_NONCE_LEN;
+    let mut payload = vec![0_u8; payload_len];
+    OsRng.fill_bytes(&mut payload);
+    payload[..clear.len()].copy_from_slice(clear);
+    xor_hmac_stream(key, label, &nonce, context, &mut payload)?;
+
+    let mut block = Vec::with_capacity(frame_size);
+    block.extend_from_slice(&nonce);
+    block.extend_from_slice(&payload);
+    Ok(block)
+}
+
+fn unmask_stealth_handshake_block(
+    key: &[u8; 32],
+    label: &[u8],
+    context: &[u8],
+    block: &[u8],
+) -> Result<Vec<u8>> {
+    if block.len() <= STEALTH_HANDSHAKE_NONCE_LEN {
+        bail!("short stealth handshake block");
+    }
+    let nonce: [u8; STEALTH_HANDSHAKE_NONCE_LEN] = block[..STEALTH_HANDSHAKE_NONCE_LEN]
+        .try_into()
+        .map_err(|_| anyhow!("expected stealth handshake nonce"))?;
+    let mut payload = block[STEALTH_HANDSHAKE_NONCE_LEN..].to_vec();
+    xor_hmac_stream(key, label, &nonce, context, &mut payload)?;
+    Ok(payload)
+}
+
+fn xor_hmac_stream(
+    key: &[u8; 32],
+    label: &[u8],
+    nonce: &[u8; STEALTH_HANDSHAKE_NONCE_LEN],
+    context: &[u8],
+    data: &mut [u8],
+) -> Result<()> {
+    let mut offset = 0;
+    let mut counter = 0_u32;
+    while offset < data.len() {
+        let mut mac =
+            <HmacSha256 as Mac>::new_from_slice(key).map_err(|_| anyhow!("invalid HMAC key"))?;
+        mac.update(b"stealth-handshake:");
+        mac.update(label);
+        mac.update(nonce);
+        mac.update(context);
+        mac.update(&counter.to_be_bytes());
+        let block = mac.finalize().into_bytes();
+        for byte in block {
+            if offset == data.len() {
+                break;
+            }
+            data[offset] ^= byte;
+            offset += 1;
+        }
+        counter = counter.wrapping_add(1);
+    }
+    Ok(())
 }
 
 fn derive_keys(psk: &[u8], shared: &[u8; 32], nonce: &[u8], role: &[u8]) -> Result<SessionKeys> {
@@ -393,6 +690,23 @@ mod tests {
     async fn client_and_server_complete_variable_length_handshake() {
         let cfg = HandshakeConfig::new(b"test-secret-that-is-long-enough".to_vec(), 30, 128, 4);
         let (mut client, mut server) = duplex(4096);
+        let client_cfg = cfg.clone();
+        let server_cfg = cfg.clone();
+
+        let client_task =
+            tokio::spawn(async move { connect_handshake(&mut client, &client_cfg).await });
+        let server_task =
+            tokio::spawn(async move { accept_handshake(&mut server, &server_cfg).await });
+
+        client_task.await.unwrap().unwrap();
+        server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn client_and_server_complete_stealth_handshake() {
+        let cfg = HandshakeConfig::new(b"test-secret-that-is-long-enough".to_vec(), 30, 128, 4)
+            .with_stealth_frame_size(Some(4096));
+        let (mut client, mut server) = duplex(8192);
         let client_cfg = cfg.clone();
         let server_cfg = cfg.clone();
 

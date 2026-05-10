@@ -9,7 +9,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::egress::EgressPolicy;
 use crate::ingress::ProxyAuth;
-use crate::protocol::framing::ObfuscationProfile;
+use crate::protocol::framing::{
+    ObfuscationProfile, DEFAULT_STEALTH_FRAME_SIZE, DEFAULT_STEALTH_TICK_MS,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct ConfigInput {
@@ -56,6 +58,8 @@ pub struct SharedConfig {
     pub max_streams: u32,
     #[serde(default)]
     pub obfuscation: ObfuscationConfig,
+    #[serde(default)]
+    pub stealth: StealthConfig,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -68,6 +72,14 @@ pub struct ObfuscationConfig {
     pub min_chunk: usize,
     #[serde(default = "default_max_chunk")]
     pub max_chunk: usize,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StealthConfig {
+    #[serde(default = "default_stealth_frame_size")]
+    pub frame_size: usize,
+    #[serde(default = "default_stealth_tick_ms")]
+    pub tick_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -213,6 +225,7 @@ impl Default for SharedConfig {
             idle_timeout_secs: default_idle_timeout_secs(),
             max_streams: default_max_streams(),
             obfuscation: ObfuscationConfig::default(),
+            stealth: StealthConfig::default(),
         }
     }
 }
@@ -224,6 +237,15 @@ impl Default for ObfuscationConfig {
             randomize_chunks: default_randomize_chunks(),
             min_chunk: default_min_chunk(),
             max_chunk: default_max_chunk(),
+        }
+    }
+}
+
+impl Default for StealthConfig {
+    fn default() -> Self {
+        Self {
+            frame_size: default_stealth_frame_size(),
+            tick_ms: default_stealth_tick_ms(),
         }
     }
 }
@@ -320,6 +342,20 @@ fn parse_config(content: &str) -> Result<EspejismoConfig> {
         config.shared.obfuscation.min_chunk <= config.shared.obfuscation.max_chunk,
         "shared.obfuscation.min_chunk must be <= max_chunk"
     );
+    if config.shared.obfuscation.profile == ObfuscationProfile::Stealth {
+        anyhow::ensure!(
+            config.shared.stealth.frame_size <= 64 * 1024,
+            "shared.stealth.frame_size must be <= 65536"
+        );
+        anyhow::ensure!(
+            config.shared.stealth.frame_size >= 140,
+            "shared.stealth.frame_size must be large enough for stealth handshake"
+        );
+        anyhow::ensure!(
+            config.shared.stealth.tick_ms > 0,
+            "shared.stealth.tick_ms must be greater than 0"
+        );
+    }
     if let Some(upstream) = &config.remote.fallback_http.upstream {
         anyhow::ensure!(
             !upstream.trim().is_empty(),
@@ -460,4 +496,12 @@ fn default_min_chunk() -> usize {
 
 fn default_max_chunk() -> usize {
     16 * 1024
+}
+
+fn default_stealth_frame_size() -> usize {
+    DEFAULT_STEALTH_FRAME_SIZE
+}
+
+fn default_stealth_tick_ms() -> u64 {
+    DEFAULT_STEALTH_TICK_MS
 }

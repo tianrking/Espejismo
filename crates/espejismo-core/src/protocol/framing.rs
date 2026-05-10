@@ -1,7 +1,7 @@
 use std::cmp;
 use std::time::Duration;
 
-use anyhow::{bail, Result};
+use anyhow::{bail, ensure, Result};
 use rand::rngs::OsRng;
 use rand::Rng;
 use rand::RngCore;
@@ -13,6 +13,10 @@ use crate::crypto::{decrypt, encrypt, length_mask, SessionKeys};
 
 const MAX_FRAME: usize = 64 * 1024;
 const DATA_CHUNK: usize = 16 * 1024;
+const AEAD_TAG_LEN: usize = 16;
+const STEALTH_HEADER_LEN: usize = 3;
+pub const DEFAULT_STEALTH_FRAME_SIZE: usize = 4096;
+pub const DEFAULT_STEALTH_TICK_MS: u64 = 50;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -50,6 +54,13 @@ pub enum ObfuscationProfile {
     #[default]
     Balanced,
     HighEntropy,
+    Stealth,
+}
+
+impl ObfuscationProfile {
+    pub fn is_stealth(self) -> bool {
+        self == Self::Stealth
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -63,6 +74,8 @@ pub struct FrameOptions {
     pub randomize_chunks: bool,
     pub min_chunk: usize,
     pub max_chunk: usize,
+    pub stealth_frame_size: usize,
+    pub stealth_tick_ms: u64,
 }
 
 impl Default for FrameOptions {
@@ -77,12 +90,22 @@ impl Default for FrameOptions {
             randomize_chunks: true,
             min_chunk: 1024,
             max_chunk: DATA_CHUNK,
+            stealth_frame_size: DEFAULT_STEALTH_FRAME_SIZE,
+            stealth_tick_ms: DEFAULT_STEALTH_TICK_MS,
         }
     }
 }
 
 impl FrameOptions {
+    pub fn is_stealth(&self) -> bool {
+        self.obfuscation_profile.is_stealth()
+    }
+
     pub fn normalized_chunk_bounds(&self) -> (usize, usize) {
+        if self.is_stealth() {
+            let capacity = self.stealth_payload_capacity().unwrap_or(1);
+            return (capacity, capacity);
+        }
         if !self.randomize_chunks {
             return (DATA_CHUNK, DATA_CHUNK);
         }
@@ -98,6 +121,27 @@ impl FrameOptions {
         } else {
             rand::thread_rng().gen_range(min..=max)
         }
+    }
+
+    pub fn validate_stealth(&self) -> Result<()> {
+        ensure!(
+            self.stealth_frame_size > AEAD_TAG_LEN + STEALTH_HEADER_LEN,
+            "shared.stealth.frame_size must leave room for frame metadata"
+        );
+        ensure!(
+            self.stealth_frame_size <= MAX_FRAME,
+            "shared.stealth.frame_size must be <= {MAX_FRAME}"
+        );
+        ensure!(
+            self.stealth_tick_ms > 0,
+            "shared.stealth.tick_ms must be greater than 0"
+        );
+        Ok(())
+    }
+
+    pub fn stealth_payload_capacity(&self) -> Result<usize> {
+        self.validate_stealth()?;
+        Ok(self.stealth_frame_size - AEAD_TAG_LEN - STEALTH_HEADER_LEN)
     }
 }
 
@@ -122,6 +166,7 @@ pub struct FrameReader<R> {
     reader: R,
     rx_seq: u64,
     keys: SessionKeys,
+    options: FrameOptions,
 }
 
 impl<S> FrameCodec<S>
@@ -140,7 +185,7 @@ where
     }
 
     pub async fn send(&mut self, frame: Frame) -> Result<()> {
-        if frame.ty != FrameType::Padding {
+        if !self.options.is_stealth() && frame.ty != FrameType::Padding {
             self.maybe_send_padding().await?;
         }
         let elapsed = write_one(
@@ -161,7 +206,13 @@ where
 
     pub async fn recv(&mut self) -> Result<Frame> {
         loop {
-            let frame = read_one(&mut self.stream, &self.keys, &mut self.rx_seq).await?;
+            let frame = read_one(
+                &mut self.stream,
+                &self.keys,
+                &mut self.rx_seq,
+                &self.options,
+            )
+            .await?;
             if frame.ty != FrameType::Padding {
                 return Ok(frame);
             }
@@ -215,7 +266,7 @@ where
     }
 
     pub async fn send(&mut self, frame: Frame) -> Result<()> {
-        if frame.ty != FrameType::Padding {
+        if !self.options.is_stealth() && frame.ty != FrameType::Padding {
             self.maybe_send_padding().await?;
         }
         let elapsed = write_one(
@@ -265,17 +316,24 @@ impl<R> FrameReader<R>
 where
     R: AsyncRead + Unpin,
 {
-    pub fn new(reader: R, keys: SessionKeys) -> Self {
+    pub fn new(reader: R, keys: SessionKeys, options: FrameOptions) -> Self {
         Self {
             reader,
             rx_seq: 0,
             keys,
+            options,
         }
     }
 
     pub async fn recv(&mut self) -> Result<Frame> {
         loop {
-            let frame = read_one(&mut self.reader, &self.keys, &mut self.rx_seq).await?;
+            let frame = read_one(
+                &mut self.reader,
+                &self.keys,
+                &mut self.rx_seq,
+                &self.options,
+            )
+            .await?;
             if frame.ty != FrameType::Padding {
                 return Ok(frame);
             }
@@ -337,6 +395,9 @@ where
     S: AsyncWrite + Unpin,
 {
     maybe_jitter(options).await;
+    if options.is_stealth() {
+        return write_stealth_one(stream, keys, tx_seq, options, frame).await;
+    }
     let started = Instant::now();
     let seq = *tx_seq;
     let mut plain = Vec::with_capacity(frame.payload.len() + 1);
@@ -353,10 +414,18 @@ where
     Ok(started.elapsed())
 }
 
-async fn read_one<S>(stream: &mut S, keys: &SessionKeys, rx_seq: &mut u64) -> Result<Frame>
+async fn read_one<S>(
+    stream: &mut S,
+    keys: &SessionKeys,
+    rx_seq: &mut u64,
+    options: &FrameOptions,
+) -> Result<Frame>
 where
     S: AsyncRead + Unpin,
 {
+    if options.is_stealth() {
+        return read_stealth_one(stream, keys, rx_seq, options).await;
+    }
     let seq = *rx_seq;
     let masked_len = stream.read_u32().await?;
     let len = (masked_len ^ length_mask(&keys.rx_len_mask, seq)?) as usize;
@@ -376,6 +445,70 @@ where
     })
 }
 
+async fn write_stealth_one<S>(
+    stream: &mut S,
+    keys: &SessionKeys,
+    tx_seq: &mut u64,
+    options: &FrameOptions,
+    frame: Frame,
+) -> Result<Duration>
+where
+    S: AsyncWrite + Unpin,
+{
+    let started = Instant::now();
+    let capacity = options.stealth_payload_capacity()?;
+    if frame.payload.len() > capacity {
+        bail!("stealth frame payload too large");
+    }
+
+    let seq = *tx_seq;
+    let plain_len = options.stealth_frame_size - AEAD_TAG_LEN;
+    let mut plain = vec![0_u8; plain_len];
+    OsRng.fill_bytes(&mut plain);
+    plain[0] = frame.ty as u8;
+    plain[1..3].copy_from_slice(&(frame.payload.len() as u16).to_be_bytes());
+    plain[STEALTH_HEADER_LEN..STEALTH_HEADER_LEN + frame.payload.len()]
+        .copy_from_slice(&frame.payload);
+
+    let encrypted = encrypt(&keys.tx, seq, &keys.nonce_tag, &plain)?;
+    ensure!(
+        encrypted.len() == options.stealth_frame_size,
+        "stealth encrypted frame size mismatch"
+    );
+    *tx_seq += 1;
+    stream.write_all(&encrypted).await?;
+    Ok(started.elapsed())
+}
+
+async fn read_stealth_one<S>(
+    stream: &mut S,
+    keys: &SessionKeys,
+    rx_seq: &mut u64,
+    options: &FrameOptions,
+) -> Result<Frame>
+where
+    S: AsyncRead + Unpin,
+{
+    options.validate_stealth()?;
+    let seq = *rx_seq;
+    let mut encrypted = vec![0_u8; options.stealth_frame_size];
+    stream.read_exact(&mut encrypted).await?;
+    let plain = decrypt(&keys.rx, seq, &keys.nonce_tag, &encrypted)?;
+    *rx_seq += 1;
+    if plain.len() < STEALTH_HEADER_LEN {
+        bail!("short stealth plaintext frame");
+    }
+    let payload_len = u16::from_be_bytes([plain[1], plain[2]]) as usize;
+    let capacity = options.stealth_payload_capacity()?;
+    if payload_len > capacity || STEALTH_HEADER_LEN + payload_len > plain.len() {
+        bail!("invalid stealth payload length {payload_len}");
+    }
+    Ok(Frame {
+        ty: FrameType::try_from(plain[0])?,
+        payload: plain[STEALTH_HEADER_LEN..STEALTH_HEADER_LEN + payload_len].to_vec(),
+    })
+}
+
 async fn maybe_jitter(options: &FrameOptions) {
     if options.jitter_ms == 0 {
         return;
@@ -389,6 +522,7 @@ async fn maybe_jitter(options: &FrameOptions) {
             let second = rand::thread_rng().gen_range(0..=upper);
             cmp::max(first, second)
         }
+        ObfuscationProfile::Stealth => 0,
     };
     if delay > 0 {
         sleep(Duration::from_millis(delay)).await;
@@ -402,6 +536,9 @@ fn random_padding(len: usize) -> Vec<u8> {
 }
 
 fn should_send_padding(options: &FrameOptions, disabled_until: Option<Instant>) -> bool {
+    if options.is_stealth() {
+        return false;
+    }
     if options.max_padding == 0 || options.padding_chance_percent == 0 {
         return false;
     }
@@ -420,4 +557,58 @@ fn observe_backpressure(options: &FrameOptions, elapsed: Duration) -> Option<Ins
         return Some(Instant::now() + Duration::from_millis(options.backpressure_cooldown_ms));
     }
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use tokio::io::duplex;
+
+    use super::{Frame, FrameOptions, FrameReader, FrameType, FrameWriter, ObfuscationProfile};
+    use crate::crypto::{accept_handshake, connect_handshake, HandshakeConfig};
+
+    #[tokio::test]
+    async fn stealth_frames_roundtrip_data_and_ignore_padding() {
+        let cfg = HandshakeConfig::new(b"test-secret-that-is-long-enough".to_vec(), 30, 128, 4);
+        let (mut client, mut server) = duplex(8192);
+        let client_cfg = cfg.clone();
+        let server_cfg = cfg.clone();
+        let client_task = tokio::spawn(async move {
+            let keys = connect_handshake(&mut client, &client_cfg).await?;
+            anyhow::Ok((client, keys))
+        });
+        let server_task = tokio::spawn(async move {
+            let keys = accept_handshake(&mut server, &server_cfg).await?;
+            anyhow::Ok((server, keys))
+        });
+        let (client, client_keys) = client_task.await.unwrap().unwrap();
+        let (server, server_keys) = server_task.await.unwrap().unwrap();
+
+        let options = FrameOptions {
+            obfuscation_profile: ObfuscationProfile::Stealth,
+            stealth_frame_size: 512,
+            stealth_tick_ms: 10,
+            ..FrameOptions::default()
+        };
+        let mut writer = FrameWriter::new(client, client_keys, options.clone());
+        let mut reader = FrameReader::new(server, server_keys, options);
+
+        writer
+            .send(Frame {
+                ty: FrameType::Padding,
+                payload: Vec::new(),
+            })
+            .await
+            .unwrap();
+        writer
+            .send(Frame {
+                ty: FrameType::Data,
+                payload: b"hello stealth".to_vec(),
+            })
+            .await
+            .unwrap();
+
+        let frame = reader.recv().await.unwrap();
+        assert_eq!(frame.ty, FrameType::Data);
+        assert_eq!(frame.payload, b"hello stealth");
+    }
 }

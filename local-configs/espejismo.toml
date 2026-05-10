@@ -1,6 +1,13 @@
 [shared]
 psk = "xxx-change-me-xxx"
 
+[shared.obfuscation]
+profile = "low_latency"
+
+[shared.stealth]
+frame_size = 4096
+tick_ms = 50
+
 [local]
 server = "xxx.xxx.xxx.xxx:6690"
 socks5_listen = "127.0.0.1:6680"

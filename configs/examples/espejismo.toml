@@ -17,6 +17,10 @@ randomize_chunks = true
 min_chunk = 1024
 max_chunk = 16384
 
+[shared.stealth]
+frame_size = 4096
+tick_ms = 50
+
 [local]
 server = "127.0.0.1:6690"
 socks5_listen = "127.0.0.1:6680"

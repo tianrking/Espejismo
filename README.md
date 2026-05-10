@@ -185,6 +185,10 @@ randomize_chunks = true
 min_chunk = 1024
 max_chunk = 16384
 
+[shared.stealth]
+frame_size = 4096
+tick_ms = 50
+
 [local]
 server = "127.0.0.1:6690"
 socks5_listen = "127.0.0.1:6680"
@@ -321,8 +325,11 @@ More detail lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   slow write.
 - `--jitter-ms` applies a small randomized delay before outgoing frames.
 - `[shared.obfuscation]` controls sender-side traffic shape. `profile` can be
-  `low_latency`, `balanced`, or `high_entropy`; `randomize_chunks` and the
-  chunk bounds vary encrypted frame sizes before padding is added.
+  `low_latency`, `balanced`, `high_entropy`, or `stealth`; `randomize_chunks`
+  and the chunk bounds vary encrypted frame sizes before padding is added.
+- `[shared.stealth]` is used when `profile = "stealth"`: every encrypted frame
+  is exactly `frame_size` bytes and each side sends one frame every `tick_ms`
+  milliseconds, using padding frames when no real data is queued.
 - `--puzzle-bits` configures the client puzzle difficulty. Values are capped at
   24 bits.
 - `espejismo-local --handshake-padding` controls the maximum random padding in
