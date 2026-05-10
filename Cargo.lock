@@ -340,6 +340,7 @@ dependencies = [
  "clap",
  "espejismo-core",
  "futures",
+ "rand",
  "tokio",
  "tokio-yamux",
  "tracing",

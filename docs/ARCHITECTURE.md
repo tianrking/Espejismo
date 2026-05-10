@@ -34,7 +34,7 @@ bit 1 enables SOCKS5 UDP ASSOCIATE datagram relay.
 ## Frame Pipeline
 
 After the handshake, both sides use HKDF-derived XChaCha20-Poly1305 keys. Frames
-are length-prefixed encrypted super-frames:
+normally use length-prefixed encrypted super-frames:
 
 ```text
 [ masked ciphertext length 4 ][ AEAD(frame type || payload) ]
@@ -50,6 +50,29 @@ corrupted byte stream.
 `spawn_frame_transport` bridges the frame codec into a Tokio `DuplexStream`.
 This gives upper layers a normal `AsyncRead + AsyncWrite` object while keeping
 AEAD, padding, jitter, and fail-fast behavior inside the protocol core.
+
+When `[shared.obfuscation].profile = "stealth"`, the transport switches to
+fixed-size encrypted frames:
+
+```text
+[ AEAD ciphertext exactly shared.stealth.frame_size bytes ]
+```
+
+The plaintext inside each stealth frame is `type || payload_len || payload ||
+random_padding`, padded before encryption so data, close, and padding frames
+share one wire size. The stealth upload pump sends a short random padding
+warmup after handshake completion, then emits data or padding on a paced
+schedule. Idle padding decays toward slower heartbeat-like intervals and active
+payload resets the cadence.
+
+## Stealth Handshake Wrapper
+
+Plain mode uses the variable-length first packet described above. Stealth mode
+wraps the client hello and server hello in fixed-size blocks that match the
+configured stealth frame size. Each block starts with a random 24-byte nonce and
+masks the hello plus random padding with an HMAC-derived XOR stream keyed by the
+PSK auth key. This removes the plain-mode client/server hello size signature
+without changing the underlying X25519/HMAC/puzzle handshake semantics.
 
 ## Multiplexing Pipeline
 
@@ -99,6 +122,12 @@ When `reject_delay_ms = 0`, invalid sockets are moved into a global bounded
 silent tarpit pool. The pool has a hard capacity and time-to-live with oldest
 entry eviction, so file descriptor and memory usage remain bounded. The tarpit
 does not send drip bytes to unknown peers.
+
+If HTTP fallback is enabled, HTTP-looking probes can be forwarded to a configured
+upstream. Without an upstream, the built-in fallback returns a small HTTP 200
+response with dynamic Date, Last-Modified, ETag, Content-Length, Connection, and
+Server headers. A real upstream web server remains the recommended production
+fallback because it naturally supplies a fuller fingerprint.
 
 ## Next Layer: Migration
 

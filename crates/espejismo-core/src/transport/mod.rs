@@ -1,12 +1,17 @@
 use std::collections::VecDeque;
 use std::time::Duration;
 
+use rand::Rng;
 use tokio::io::{duplex, split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
-use tokio::time::{interval, timeout, MissedTickBehavior};
+use tokio::time::{sleep, timeout};
 use tracing::debug;
 
 use crate::crypto::SessionKeys;
 use crate::protocol::framing::{Frame, FrameOptions, FrameReader, FrameType, FrameWriter};
+
+const STEALTH_WARMUP_MIN_FRAMES: usize = 2;
+const STEALTH_WARMUP_MAX_FRAMES: usize = 5;
+const STEALTH_IDLE_DECAY_FRAMES: u64 = 8;
 
 pub fn spawn_frame_transport<S>(
     stream: S,
@@ -171,9 +176,22 @@ where
     let mut pending = VecDeque::with_capacity(capacity * 2);
     let pending_limit = capacity * 8;
     let mut frame_writer = FrameWriter::new(net_writer, keys, options.clone());
-    let mut ticker = interval(Duration::from_millis(options.stealth_tick_ms));
-    ticker.set_missed_tick_behavior(MissedTickBehavior::Delay);
     let mut app_closed = false;
+    let mut idle_frames = 0_u64;
+
+    let warmup_frames =
+        rand::thread_rng().gen_range(STEALTH_WARMUP_MIN_FRAMES..=STEALTH_WARMUP_MAX_FRAMES);
+    for _ in 0..warmup_frames {
+        stealth_pre_write_delay(&options).await;
+        frame_writer
+            .send(Frame {
+                ty: FrameType::Padding,
+                payload: Vec::new(),
+            })
+            .await?;
+        sleep(stealth_tick_delay(&options, idle_frames)).await;
+        idle_frames += 1;
+    }
 
     loop {
         tokio::select! {
@@ -183,7 +201,8 @@ where
                     n => pending.extend(&read_buf[..n]),
                 }
             }
-            _ = ticker.tick() => {
+            _ = sleep(stealth_tick_delay(&options, idle_frames)) => {
+                stealth_pre_write_delay(&options).await;
                 if !pending.is_empty() {
                     let len = pending.len().min(capacity);
                     let payload: Vec<u8> = pending.drain(..len).collect();
@@ -193,6 +212,7 @@ where
                             payload,
                         })
                         .await?;
+                    idle_frames = 0;
                 } else if app_closed {
                     frame_writer
                         .send(Frame {
@@ -208,9 +228,32 @@ where
                             payload: Vec::new(),
                         })
                         .await?;
+                    idle_frames = idle_frames.saturating_add(1);
                 }
             }
         }
+    }
+}
+
+fn stealth_tick_delay(options: &FrameOptions, idle_frames: u64) -> Duration {
+    let base = options.stealth_tick_ms.max(1);
+    let multiplier = match idle_frames / STEALTH_IDLE_DECAY_FRAMES {
+        0 => 1,
+        1 => 4,
+        2 => 10,
+        _ => 20,
+    };
+    let target = base.saturating_mul(multiplier).min(1000);
+    let lower = target.saturating_mul(3).saturating_div(4).max(1);
+    let upper = target.saturating_mul(5).saturating_div(4).max(lower);
+    Duration::from_millis(rand::thread_rng().gen_range(lower..=upper))
+}
+
+async fn stealth_pre_write_delay(options: &FrameOptions) {
+    let upper = (options.stealth_tick_ms / 5).clamp(1, 10);
+    let delay = rand::thread_rng().gen_range(0..=upper);
+    if delay > 0 {
+        sleep(Duration::from_millis(delay)).await;
     }
 }
 

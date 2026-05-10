@@ -18,39 +18,131 @@ safe Rust with no TUN/TAP or system-level dependencies.
 
 ## Architecture
 
+### System View
+
 ```mermaid
-graph LR
-    subgraph Client["espejismo-local (Client)"]
+flowchart LR
+    subgraph Local["espejismo-local"]
         APP["Application"]
-        SOCKS["SOCKS5 :6680"]
-        HTTP["HTTP Proxy :6681"]
+        SOCKS["SOCKS5 ingress<br/>TCP CONNECT + UDP ASSOCIATE"]
+        HTTP["HTTP proxy ingress<br/>CONNECT + absolute-form HTTP"]
+        AUTH["Optional local auth"]
+        YMUX_C["yamux client session<br/>logical streams"]
+        ENC_C["Encrypted transport adapter"]
     end
 
-    subgraph Core["espejismo-core (Protocol)"]
-        HS["Handshake<br/>HMAC-SHA256 + X25519"]
-        FRAME["Encrypted Frames<br/>XChaCha20-Poly1305"]
-        PAD["Adaptive Padding"]
-        YAMUX["yamux Multiplexing"]
+    subgraph Wire["Public TCP connection"]
+        FLOW["AEAD-protected byte stream<br/>standard or stealth profile"]
     end
 
-    subgraph Server["espejismo-remote (Server)"]
-        REPLAY["Replay Protection"]
-        EGRESS["Egress Policy"]
-        DEST["TCP / UDP Destination"]
+    subgraph Remote["espejismo-remote"]
+        PROBE["Probe guard<br/>HTTP fallback or silent tarpit"]
+        HS["Handshake verifier<br/>HMAC + X25519 + puzzle + replay cache"]
+        ENC_R["Encrypted transport adapter"]
+        YMUX_R["yamux server session"]
+        REQ["Tunnel request parser"]
+        POLICY["Egress policy<br/>host + port ACL"]
+        DEST["TCP / UDP destination"]
     end
 
-    APP --> SOCKS
-    APP --> HTTP
-    SOCKS --> HS
-    HTTP --> HS
-    HS --> FRAME
-    FRAME --> PAD
-    PAD --> YAMUX
-    YAMUX -->|"Encrypted Tunnel"| REPLAY
-    REPLAY --> FRAME
-    FRAME --> EGRESS
-    EGRESS --> DEST
+    APP --> SOCKS --> AUTH --> YMUX_C
+    APP --> HTTP --> AUTH
+    YMUX_C --> ENC_C --> FLOW --> PROBE --> HS --> ENC_R --> YMUX_R
+    YMUX_R --> REQ --> POLICY --> DEST
 ```
+
+The important layering detail is that yamux owns logical streams, while
+`spawn_frame_transport` provides yamux with a normal `AsyncRead + AsyncWrite`
+object backed by encrypted frames. Local proxy requests become yamux streams;
+the physical socket carries only the encrypted transport.
+
+### Protocol Stack
+
+```text
+Application traffic
+  -> SOCKS5 / HTTP proxy parser
+  -> optional local proxy auth
+  -> yamux logical stream
+  -> encrypted frame transport
+  -> TCP socket
+  -> remote handshake / replay / probe defenses
+  -> yamux stream handler
+  -> egress policy
+  -> TCP connect or one-shot UDP relay
+```
+
+### Handshake
+
+Standard mode starts with a variable-length authenticated client hello:
+
+```text
+[ HMAC-SHA256 32 ][ UTC timestamp 8 ][ nonce 24 ][ X25519 public key 32 ]
+[ protocol version 2 ][ capabilities 8 ][ puzzle nonce 8 ]
+[ padding length 2 ][ padding 0..N ]
+```
+
+The client solves a bounded SHA-256 leading-zero puzzle over the body before
+computing the HMAC. The remote verifies the puzzle, checks timestamp skew,
+validates the HMAC in constant time, and records the ephemeral public key in a
+bounded replay cache. Session keys are derived with X25519 and HKDF-SHA256.
+
+When `profile = "stealth"`, the hello exchange is wrapped in two fixed-size
+blocks that match `shared.stealth.frame_size`. The block payload is masked with
+an HMAC-derived XOR stream and random padding, so the handshake does not expose
+the plain-mode hello length or the fixed-size server hello.
+
+### Frame Transport
+
+Standard profiles use masked length-prefixed AEAD frames:
+
+```text
+[ masked ciphertext length 4 ][ XChaCha20-Poly1305(type || payload) ]
+```
+
+`low_latency`, `balanced`, and `high_entropy` tune chunk randomization, jitter,
+and adaptive padding around that standard frame format.
+
+Stealth mode uses fixed-size AEAD frames without a length header:
+
+```text
+[ XChaCha20-Poly1305 ciphertext exactly shared.stealth.frame_size bytes ]
+
+plaintext before encryption:
+[ type 1 ][ payload_len 2 ][ payload ][ random padding to fixed size ]
+```
+
+The upload pump sends a short random padding warmup after the stealth handshake,
+then writes data or padding frames on a paced schedule. If no application data
+is queued, the idle cadence decays from the base `tick_ms` toward slower
+heartbeat-like intervals; real data resets the cadence. A small pre-write jitter
+is applied so data and padding frames do not have perfectly identical scheduler
+behavior.
+
+### Probe And Fallback Behavior
+
+Unknown or invalid peers receive no protocol error. Depending on remote config,
+they are either held in a bounded silent tarpit or, for HTTP-looking probes,
+routed to a configured fallback upstream. If no upstream is configured, the
+built-in fallback returns a small HTTP 200 response with dynamic `Date`,
+`Last-Modified`, `ETag`, `Content-Length`, `Connection`, and `Server` headers.
+A real Nginx/Caddy upstream is still the preferred production fallback because
+it inherits a complete and natural web-server fingerprint.
+
+### What Stealth Helps With
+
+| Observable signal | Mitigation in this codebase | Remaining caveat |
+| --- | --- | --- |
+| Plain handshake size | Stealth wraps hello/reply in fixed-size masked blocks | First two blocks are still connection-start metadata |
+| Frame size distribution | All stealth data, close, and padding frames use one size | Fixed-size flows can themselves be unusual |
+| Burst/silence behavior | Padding frames continue when no app data is queued | Idle cadence deliberately decays to reduce constant-stream fingerprints |
+| Direction asymmetry | Both sides run the same stealth transport behavior | Kernel scheduling and congestion can still differ by direction |
+| Payload classification | AEAD hides frame type and content | Traffic volume, endpoint, and duration remain visible |
+| Active HTTP probes | Optional upstream fallback or dynamic built-in response | Built-in fallback is a convenience, not a substitute for a real website |
+
+Stealth is a traffic-shaping profile, not a mathematical guarantee of
+undetectability. It reduces several obvious protocol fingerprints, but network
+observers can still model metadata such as endpoint reputation, connection
+duration, total byte volume, retry behavior, and congestion effects.
 
 ## Platform Support
 
@@ -279,25 +371,10 @@ cargo run --bin espejismo-local -- --print-example-config-base64
 
 ## Handshake
 
-The client first packet is intentionally variable length:
-
-```text
-[ HMAC-SHA256 32 ][ UTC timestamp 8 ][ nonce 24 ][ X25519 public key 32 ][ padding length 2 ][ padding 0..N ]
-```
-
-The current packet body also includes an 8-byte puzzle nonce before the padding
-length:
-
-```text
-[ HMAC-SHA256 32 ][ UTC timestamp 8 ][ nonce 24 ][ X25519 public key 32 ][ puzzle nonce 8 ][ padding length 2 ][ padding 0..N ]
-```
-
-The client solves a bounded SHA-256 leading-zero puzzle over the body before it
-computes the HMAC. The remote verifies the puzzle first, then checks the
-timestamp skew, validates the HMAC in constant time, and keeps a bounded
-in-memory replay cache of recently seen ephemeral public keys.
-
-More detail lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+The handshake protocol is described in detail in the [Architecture](#architecture)
+section above, covering both plain and stealth modes. Additional protocol
+internals and wire format specification live in
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ## Notes
 
@@ -328,8 +405,9 @@ More detail lives in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   `low_latency`, `balanced`, `high_entropy`, or `stealth`; `randomize_chunks`
   and the chunk bounds vary encrypted frame sizes before padding is added.
 - `[shared.stealth]` is used when `profile = "stealth"`: every encrypted frame
-  is exactly `frame_size` bytes and each side sends one frame every `tick_ms`
-  milliseconds, using padding frames when no real data is queued.
+  is exactly `frame_size` bytes. The transport starts with a short random
+  padding warmup, sends data or padding on a paced cadence, and gradually slows
+  idle padding toward heartbeat-like intervals before real data resets it.
 - `--puzzle-bits` configures the client puzzle difficulty. Values are capped at
   24 bits.
 - `espejismo-local --handshake-padding` controls the maximum random padding in
@@ -403,23 +481,30 @@ raise one module while keeping the rest quiet.
 ## Project Status
 
 See [docs/development/STATUS.md](docs/development/STATUS.md) for the implemented
-feature matrix and the remaining roadmap, including UDP, transparent migration,
-WASM/browser packaging, metrics, and runtime reload.
+feature matrix and the remaining roadmap, including transparent migration,
+WASM/browser packaging, runtime reload, and richer multi-profile control.
 
 See [docs/testing/TEST_PLAN.md](docs/testing/TEST_PLAN.md) for the executable
 test strategy and [docs/research/DESIGN_PRINCIPLES.md](docs/research/DESIGN_PRINCIPLES.md)
 for the protocol design principles.
 
-## Disclaimer
+## Responsible Use
 
-Espejismo is intended solely for establishing encrypted connections to your own
-home network or privately-owned servers while traveling. It is designed to protect
-your data on untrusted public networks (e.g., hotel Wi-Fi, coffee shops, airports)
-by routing traffic through a secure tunnel to infrastructure you control.
+Espejismo is intended for encrypted access to systems you own or are explicitly
+authorized to administer, such as a home lab, private server, or internal test
+environment. It is not a service, anonymity network, or authorization bypass
+tool.
 
-Users are solely responsible for ensuring that their use of this software complies
-with all applicable local, state, national, and international laws and regulations.
-The authors assume no liability for misuse. This project does not encourage, endorse,
-or support any activity that violates the laws of any jurisdiction, including but
-not limited to the regulations of the People's Republic of China regarding network
-access and cross-border data transmission.
+Traffic shaping can reduce some protocol fingerprints, but it does not make a
+connection invisible. Operators should assume that endpoints, timing, byte
+volume, uptime, routing path, and deployment mistakes may still be observable.
+Use real fallback upstreams, conservative logging, strong PSKs, and restrictive
+egress policy in production.
+
+You are responsible for complying with all applicable laws, network policies,
+terms of service, export controls, and authorization boundaries in your
+jurisdiction and in any network where you deploy or use this software. Do not use
+Espejismo to access systems without permission, evade lawful access controls, or
+violate local regulations. This README is technical documentation, not legal
+advice; consult qualified counsel if your deployment has legal or compliance
+risk.
