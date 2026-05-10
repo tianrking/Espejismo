@@ -1,8 +1,32 @@
+# Local client template for espejismo-local.
+# Generate a fresh PSK with one of:
+#   openssl rand -base64 32
+#   openssl rand -hex 32
+# Then use either:
+#   psk = "base64:<base64-output>"
+#   psk = "hex:<hex-output>"
+# Random example only, do not reuse in production:
+#   psk = "base64:lyw2uoPxsUwor9wkoXsk5SyNQefVhpLIvvWWeguPT4k="
+
 [shared]
 psk = "xxx-change-me-xxx"
+clock_skew_secs = 30
+puzzle_bits = 12
+max_padding = 64
+jitter_ms = 0
+padding_chance_percent = 35
+backpressure_threshold_ms = 40
+backpressure_cooldown_ms = 1000
+tunnel_buffer = 1048576
+idle_timeout_secs = 300
+max_streams = 256
 
 [shared.obfuscation]
+# Daily use: low_latency. Maximum traffic shaping: stealth.
 profile = "low_latency"
+randomize_chunks = true
+min_chunk = 1024
+max_chunk = 16384
 
 [shared.stealth]
 frame_size = 4096
@@ -12,7 +36,19 @@ tick_ms = 50
 server = "xxx.xxx.xxx.xxx:6690"
 socks5_listen = "127.0.0.1:6680"
 http_listen = "127.0.0.1:6681"
+handshake_padding = 256
+
+# Uncomment if you expose the local proxy beyond trusted loopback.
+# [local.auth]
+# username = "local-user"
+# password = "local-pass"
 
 [logging]
 level = "info"
 format = "compact"
+ansi = true
+# file = "/var/log/espejismo/espejismo-local.log"
+
+[admin]
+# listen = "127.0.0.1:9090"
+# token = "change-me-admin-token"
