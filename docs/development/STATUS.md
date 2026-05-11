@@ -13,7 +13,8 @@
   metrics.
 - Per-user rolling byte quotas and aggregate relay bandwidth limits.
 - Configurable compact, pretty, or JSON logging with optional file output.
-- Read-only admin HTTP endpoint with health, status, and Prometheus-style metrics.
+- Admin HTTP endpoint with health, status, Prometheus-style metrics, and reload.
+- Remote runtime config reload/apply through the authenticated admin endpoint.
 - Server-side egress policy for host/port allow and block rules.
 - Variable-length authenticated first packet.
 - Protocol version and capability negotiation in the authenticated handshake.
@@ -43,7 +44,7 @@
 - Transparent migration of already-active yamux streams across a new physical tunnel.
 - Browser extension packaging.
 - WASM transport crate. The current runtime uses Tokio TCP and is native-first.
-- Runtime config reload, richer multi-profile control plane, and log rotation policy.
+- Richer multi-profile control plane and log rotation policy.
 - OS-specific TCP_INFO congestion telemetry. Current backpressure is portable write-latency based.
 
 ## Architecture Direction

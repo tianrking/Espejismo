@@ -397,8 +397,9 @@ internals and wire format specification live in
   `json`; `file` writes logs to a path instead of stderr.
 - `--log-level`, `--log-format`, `--log-file`, and `--no-log-ansi` override the
   logging config for either binary.
-- `[admin]` enables a read-only HTTP admin endpoint with `/healthz`, `/status`,
-  and `/metrics`. Use `token` outside trusted loopback-only environments.
+- `[admin]` enables an HTTP admin endpoint with `/healthz`, `/status`,
+  `/metrics`, and remote-side runtime `/reload`/`/apply`. Use `token` outside
+  trusted loopback-only environments.
 - `[remote.egress]` controls server-side outbound policy with host and port
   allow/block lists.
 - `local.server` and `--server` accept either `ip:port` or `domain:port`; the

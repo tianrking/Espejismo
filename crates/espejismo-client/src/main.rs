@@ -127,6 +127,7 @@ async fn main() -> Result<()> {
                 role: "local".to_string(),
                 metrics: metrics.clone(),
                 token: runtime.admin_token.clone(),
+                reload: None,
             },
         );
     }

@@ -194,6 +194,34 @@ curl --silent --show-error --max-time 5 \
   "http://${REMOTE_ADMIN_ADDR}/metrics" \
   | grep -q 'user="smoke"'
 
+python3 - "${CONFIG_FILE}" "${HTTP_PORT}" "${UDP_PORT}" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+http_port = sys.argv[2]
+udp_port = sys.argv[3]
+text = path.read_text()
+text = text.replace(
+    f"allow_ports = [{http_port}, {udp_port}]",
+    f"allow_ports = [{udp_port}]",
+)
+path.write_text(text)
+PY
+
+curl --silent --show-error --max-time 5 \
+  -X POST \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  --data-binary "@${CONFIG_FILE}" \
+  "http://${REMOTE_ADMIN_ADDR}/apply" \
+  | grep -q '"applied": true'
+
+RELOAD_BLOCK_STATUS="$(curl --silent --output /dev/null --write-out "%{http_code}" --max-time 5 \
+  --proxy-user "${PROXY_USER}:${PROXY_PASS}" \
+  --socks5-hostname "${SOCKS5_ADDR}" \
+  "http://${HTTP_ADDR}:${HTTP_PORT}/probe/reload-block/${PROBE_TOKEN}" || true)"
+test "${RELOAD_BLOCK_STATUS}" != "200"
+
 ADMIN_AUTH_STATUS="$(curl --silent --output /dev/null --write-out "%{http_code}" --max-time 5 \
   "http://${LOCAL_ADMIN_ADDR}/status" || true)"
 test "${ADMIN_AUTH_STATUS}" = "401"

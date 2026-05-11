@@ -9,10 +9,10 @@ pub mod profile;
 pub mod protocol;
 pub mod transport;
 
-pub use admin::{spawn_admin_server, AdminState};
+pub use admin::{spawn_admin_server, AdminAction, AdminState};
 pub use config::{
-    load_config, AdminConfig, ConfigInput, EgressConfig, EspejismoConfig, LogConfig, LogFormat,
-    ObfuscationConfig, ProbeDefenseMode,
+    load_config, parse_config, AdminConfig, ConfigInput, EgressConfig, EspejismoConfig, LogConfig,
+    LogFormat, ObfuscationConfig, ProbeDefenseMode,
 };
 pub use crypto::{
     accept_handshake, accept_handshake_with_replay, accept_handshake_with_users, connect_handshake,

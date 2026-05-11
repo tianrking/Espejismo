@@ -341,6 +341,7 @@ dependencies = [
  "espejismo-core",
  "futures",
  "rand",
+ "serde_json",
  "tokio",
  "tokio-yamux",
  "tracing",

@@ -1,18 +1,29 @@
+use std::future::Future;
 use std::net::SocketAddr;
+use std::pin::Pin;
+use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use serde::Serialize;
+use serde_json::json;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, info};
 
 use crate::metrics::Metrics;
 
+pub type AdminAction = Arc<
+    dyn Fn(Option<String>) -> Pin<Box<dyn Future<Output = Result<serde_json::Value>> + Send>>
+        + Send
+        + Sync,
+>;
+
 #[derive(Clone)]
 pub struct AdminState {
     pub role: String,
     pub metrics: Metrics,
     pub token: Option<String>,
+    pub reload: Option<AdminAction>,
 }
 
 #[derive(Serialize)]
@@ -67,17 +78,23 @@ async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<(
     let path = parts.next().unwrap_or("/");
     let headers: Vec<&str> = lines.filter(|line| !line.is_empty()).collect();
 
-    if method != "GET" {
-        write_response(&mut stream, 405, "text/plain", b"method not allowed").await?;
-        return Ok(());
-    }
     if !authorized(&headers, state.token.as_deref()) {
         write_response(&mut stream, 401, "text/plain", b"unauthorized").await?;
         return Ok(());
     }
 
-    match path {
-        "/status" => {
+    let content_length = content_length(&headers)?;
+    let mut body = vec![0_u8; content_length];
+    if content_length > 0 {
+        if content_length > 1024 * 1024 {
+            write_response(&mut stream, 413, "text/plain", b"request body too large").await?;
+            return Ok(());
+        }
+        stream.read_exact(&mut body).await?;
+    }
+
+    match (method, path) {
+        ("GET", "/status") => {
             let response = StatusResponse {
                 role: state.role.clone(),
                 version: env!("CARGO_PKG_VERSION"),
@@ -86,7 +103,7 @@ async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<(
             let body = serde_json::to_vec_pretty(&response)?;
             write_response(&mut stream, 200, "application/json", &body).await?;
         }
-        "/metrics" => {
+        ("GET", "/metrics") => {
             let body = state.metrics.render_prometheus(&state.role);
             write_response(
                 &mut stream,
@@ -96,11 +113,68 @@ async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<(
             )
             .await?;
         }
-        "/healthz" => {
+        ("GET", "/healthz") => {
             write_response(&mut stream, 200, "text/plain", b"ok\n").await?;
         }
-        _ => {
+        ("POST", "/reload") => {
+            let Some(reload) = state.reload else {
+                write_response(
+                    &mut stream,
+                    503,
+                    "application/json",
+                    br#"{"error":"reload unavailable"}"#,
+                )
+                .await?;
+                return Ok(());
+            };
+            match reload(None).await {
+                Ok(value) => {
+                    let body = serde_json::to_vec_pretty(&value)?;
+                    write_response(&mut stream, 200, "application/json", &body).await?;
+                }
+                Err(err) => {
+                    let body = serde_json::to_vec_pretty(&json!({
+                        "ok": false,
+                        "error": err.to_string(),
+                    }))?;
+                    write_response(&mut stream, 500, "application/json", &body).await?;
+                }
+            }
+        }
+        ("POST", "/apply") => {
+            let Some(reload) = state.reload else {
+                write_response(
+                    &mut stream,
+                    503,
+                    "application/json",
+                    br#"{"error":"apply unavailable"}"#,
+                )
+                .await?;
+                return Ok(());
+            };
+            let body = String::from_utf8(body).context("apply body is not UTF-8")?;
+            match reload(Some(body)).await {
+                Ok(value) => {
+                    let body = serde_json::to_vec_pretty(&value)?;
+                    write_response(&mut stream, 200, "application/json", &body).await?;
+                }
+                Err(err) => {
+                    let body = serde_json::to_vec_pretty(&json!({
+                        "ok": false,
+                        "error": err.to_string(),
+                    }))?;
+                    write_response(&mut stream, 500, "application/json", &body).await?;
+                }
+            }
+        }
+        ("POST", _) => {
             write_response(&mut stream, 404, "text/plain", b"not found").await?;
+        }
+        ("GET", _) => {
+            write_response(&mut stream, 404, "text/plain", b"not found").await?;
+        }
+        _ => {
+            write_response(&mut stream, 405, "text/plain", b"method not allowed").await?;
         }
     }
     Ok(())
@@ -120,6 +194,18 @@ fn authorized(headers: &[&str], token: Option<&str>) -> bool {
     })
 }
 
+fn content_length(headers: &[&str]) -> Result<usize> {
+    let Some(value) = headers.iter().find_map(|line| {
+        line.split_once(':').and_then(|(name, value)| {
+            name.eq_ignore_ascii_case("content-length")
+                .then_some(value.trim())
+        })
+    }) else {
+        return Ok(0);
+    };
+    value.parse().context("invalid content-length")
+}
+
 async fn write_response(
     stream: &mut TcpStream,
     code: u16,
@@ -131,7 +217,10 @@ async fn write_response(
         401 => "Unauthorized",
         404 => "Not Found",
         405 => "Method Not Allowed",
+        413 => "Payload Too Large",
         431 => "Request Header Fields Too Large",
+        500 => "Internal Server Error",
+        503 => "Service Unavailable",
         _ => "Error",
     };
     let header = format!(

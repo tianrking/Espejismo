@@ -7,17 +7,18 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use espejismo_core::config::{encode_config_base64, example_config};
 use espejismo_core::{
-    accept_handshake_with_users, init_logging, load_config, parse_psk, read_tunnel_request,
-    spawn_admin_server, spawn_frame_transport, AdminState, ConfigInput, EgressPolicy,
-    EspejismoConfig, FrameOptions, HandshakeConfig, HandshakeUser, LogConfig, LogFormat, Metrics,
-    ProbeDefenseMode, ReplayCache, TunnelRequest,
+    accept_handshake_with_users, init_logging, load_config, parse_config, parse_psk,
+    read_tunnel_request, spawn_admin_server, spawn_frame_transport, AdminAction, AdminState,
+    ConfigInput, EgressPolicy, EspejismoConfig, FrameOptions, HandshakeConfig, HandshakeUser,
+    LogConfig, LogFormat, Metrics, ProbeDefenseMode, ReplayCache, TunnelRequest,
 };
 use futures::StreamExt;
 use rand::seq::SliceRandom;
 use rand::Rng;
+use serde_json::json;
 use tokio::io::{copy_bidirectional, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{lookup_host, TcpListener, TcpStream, UdpSocket};
-use tokio::sync::Semaphore;
+use tokio::sync::{RwLock, Semaphore};
 use tokio::time::{sleep, timeout, Duration};
 use tokio_yamux::{Config as YamuxConfig, Session, StreamHandle};
 use tracing::{debug, info};
@@ -27,7 +28,7 @@ mod tarpit;
 
 use limits::{UserLimitConfig, UserLimitRegistry};
 
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Clone)]
 #[command(name = "espejismo-remote")]
 struct Args {
     #[arg(long)]
@@ -89,18 +90,25 @@ struct Args {
 #[derive(Clone)]
 struct RemoteRuntime {
     listen: SocketAddr,
+    settings: Arc<RwLock<RemoteSettings>>,
+    replay_window_secs: i64,
+    tunnel_buffer: usize,
+    tarpit_max: usize,
+    tarpit_hold: Duration,
+    admin_listen: Option<SocketAddr>,
+    admin_token: Option<String>,
+    reload_source: Option<ConfigInput>,
+    reload_args: Args,
+}
+
+#[derive(Clone)]
+struct RemoteSettings {
     users: Arc<Vec<HandshakeUser>>,
     frames: FrameOptions,
     handshake_timeout: Duration,
     reject_delay: Duration,
-    replay_window_secs: i64,
-    tunnel_buffer: usize,
     cold_start_delay: Duration,
-    tarpit_max: usize,
-    tarpit_hold: Duration,
     fallback_http: FallbackHttpRuntime,
-    admin_listen: Option<SocketAddr>,
-    admin_token: Option<String>,
     egress: EgressPolicy,
     idle_timeout: Duration,
     max_streams: u32,
@@ -129,21 +137,24 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut config = load_config(ConfigInput {
+    let config_input = ConfigInput {
         path: args.config.clone(),
         base64: args.config_base64.clone(),
-    })?;
+    };
+    let mut config = load_config(config_input.clone())?;
     apply_log_overrides(&mut config.logging, &args)?;
     let _log_guard = init_logging(&config.logging)?;
-    let runtime = build_runtime(config, &args)?;
+    let runtime = build_runtime(config, &args, config_input)?;
     let metrics = Metrics::default();
     if let Some(addr) = runtime.admin_listen {
+        let reload = runtime.reload_action();
         spawn_admin_server(
             addr,
             AdminState {
                 role: "remote".to_string(),
                 metrics: metrics.clone(),
                 token: runtime.admin_token.clone(),
+                reload,
             },
         );
     }
@@ -239,7 +250,33 @@ fn build_handshake_users(
     Ok(users)
 }
 
-fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<RemoteRuntime> {
+fn build_runtime(
+    config: EspejismoConfig,
+    args: &Args,
+    reload_source: ConfigInput,
+) -> Result<RemoteRuntime> {
+    let settings = build_remote_settings(&config, args)?;
+    Ok(RemoteRuntime {
+        listen: args.listen.unwrap_or(config.remote.listen),
+        settings: Arc::new(RwLock::new(settings)),
+        replay_window_secs: args
+            .replay_window_secs
+            .unwrap_or(config.remote.replay_window_secs),
+        tunnel_buffer: args.tunnel_buffer.unwrap_or(config.shared.tunnel_buffer),
+        tarpit_max: args.tarpit_max.unwrap_or(config.remote.tarpit_max),
+        tarpit_hold: Duration::from_secs(
+            args.tarpit_hold_secs
+                .unwrap_or(config.remote.tarpit_hold_secs),
+        ),
+        admin_listen: args.admin_listen.or(config.admin.listen),
+        admin_token: args.admin_token.clone().or(config.admin.token),
+        reload_source: (reload_source.path.is_some() || reload_source.base64.is_some())
+            .then_some(reload_source),
+        reload_args: args.clone(),
+    })
+}
+
+fn build_remote_settings(config: &EspejismoConfig, args: &Args) -> Result<RemoteSettings> {
     let stealth_frame_size = config.shared.stealth.frame_size;
     let stealth_tick_ms = config.shared.stealth.tick_ms;
     let obfuscation_profile = config.shared.obfuscation.profile;
@@ -248,8 +285,7 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<RemoteRuntime> 
         .then_some(stealth_frame_size);
     let limits = build_user_limits(&config);
 
-    Ok(RemoteRuntime {
-        listen: args.listen.unwrap_or(config.remote.listen),
+    Ok(RemoteSettings {
         users: Arc::new(build_handshake_users(&config, args, stealth_handshake)?),
         frames: FrameOptions {
             max_padding: args.max_padding.unwrap_or(config.shared.max_padding),
@@ -279,32 +315,21 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<RemoteRuntime> 
                 .unwrap_or(config.remote.reject_delay_ms)
                 .min(10_000),
         ),
-        replay_window_secs: args
-            .replay_window_secs
-            .unwrap_or(config.remote.replay_window_secs),
-        tunnel_buffer: args.tunnel_buffer.unwrap_or(config.shared.tunnel_buffer),
         cold_start_delay: Duration::from_millis(
             args.cold_start_delay_ms
                 .unwrap_or(config.remote.cold_start_delay_ms),
-        ),
-        tarpit_max: args.tarpit_max.unwrap_or(config.remote.tarpit_max),
-        tarpit_hold: Duration::from_secs(
-            args.tarpit_hold_secs
-                .unwrap_or(config.remote.tarpit_hold_secs),
         ),
         fallback_http: FallbackHttpRuntime {
             enabled: matches!(
                 config.remote.fallback_http.mode,
                 ProbeDefenseMode::HttpFallback
             ) || config.remote.fallback_http.enabled,
-            upstream: config.remote.fallback_http.upstream,
+            upstream: config.remote.fallback_http.upstream.clone(),
             probe_timeout: Duration::from_millis(config.remote.fallback_http.probe_timeout_ms),
-            server: config.remote.fallback_http.server,
-            body: config.remote.fallback_http.body,
+            server: config.remote.fallback_http.server.clone(),
+            body: config.remote.fallback_http.body.clone(),
         },
-        admin_listen: args.admin_listen.or(config.admin.listen),
-        admin_token: args.admin_token.clone().or(config.admin.token),
-        egress: config.remote.egress.into(),
+        egress: config.remote.egress.clone().into(),
         idle_timeout: Duration::from_secs(config.shared.idle_timeout_secs),
         max_streams: config.shared.max_streams,
         limits,
@@ -324,6 +349,41 @@ fn build_user_limits(config: &EspejismoConfig) -> UserLimitRegistry {
     }))
 }
 
+impl RemoteRuntime {
+    fn reload_action(&self) -> Option<AdminAction> {
+        let source = self.reload_source.clone();
+        let settings = self.settings.clone();
+        let args = self.reload_args.clone();
+        let action: AdminAction = Arc::new(move |body: Option<String>| {
+            let source = source.clone();
+            let settings = settings.clone();
+            let args = args.clone();
+            Box::pin(async move {
+                let mut config = if let Some(body) = body {
+                    parse_config(&body)?
+                } else {
+                    load_config(
+                        source
+                            .context("reload requires --config or --config-base64; use /apply")?,
+                    )?
+                };
+                apply_log_overrides(&mut config.logging, &args)?;
+                let next = build_remote_settings(&config, &args)?;
+                let user_count = next.users.len();
+                *settings.write().await = next;
+                Ok(json!({
+                    "ok": true,
+                    "applied": true,
+                    "users": user_count,
+                    "applies_to": "new physical tunnels and newly opened logical streams",
+                    "restart_required_for": ["listen", "admin.listen", "logging.file"]
+                }))
+            })
+        });
+        Some(action)
+    }
+}
+
 async fn handle_peer(
     mut inbound: TcpStream,
     runtime: RemoteRuntime,
@@ -331,15 +391,16 @@ async fn handle_peer(
     tarpit: tarpit::TarpitManager,
     metrics: Metrics,
 ) -> Result<()> {
-    if should_route_to_http_fallback(&mut inbound, &runtime.fallback_http).await? {
-        route_http_fallback(inbound, &runtime.fallback_http).await?;
+    let settings = runtime.settings.read().await.clone();
+    if should_route_to_http_fallback(&mut inbound, &settings.fallback_http).await? {
+        route_http_fallback(inbound, &settings.fallback_http).await?;
         return Ok(());
     }
 
     metrics.inc_active_physical();
     let keys = match timeout(
-        runtime.handshake_timeout,
-        accept_handshake_with_users(&mut inbound, &runtime.users, replay),
+        settings.handshake_timeout,
+        accept_handshake_with_users(&mut inbound, &settings.users, replay),
     )
     .await
     {
@@ -353,8 +414,8 @@ async fn handle_peer(
             metrics.dec_active_physical();
             fallback_or_reject(
                 inbound,
-                &runtime.fallback_http,
-                runtime.reject_delay,
+                &settings.fallback_http,
+                settings.reject_delay,
                 &tarpit,
             )
             .await;
@@ -365,8 +426,8 @@ async fn handle_peer(
             metrics.dec_active_physical();
             fallback_or_reject(
                 inbound,
-                &runtime.fallback_http,
-                runtime.reject_delay,
+                &settings.fallback_http,
+                settings.reject_delay,
                 &tarpit,
             )
             .await;
@@ -374,16 +435,20 @@ async fn handle_peer(
         }
     };
 
-    if !runtime.cold_start_delay.is_zero() {
-        sleep(runtime.cold_start_delay).await;
+    if !settings.cold_start_delay.is_zero() {
+        sleep(settings.cold_start_delay).await;
     }
 
     let user = keys.user;
     info!(user = %user, "authenticated tunnel accepted");
-    let transport =
-        spawn_frame_transport(inbound, keys.keys, runtime.frames, runtime.tunnel_buffer);
+    let transport = spawn_frame_transport(
+        inbound,
+        keys.keys,
+        settings.frames.clone(),
+        runtime.tunnel_buffer,
+    );
     let mut session = Session::new_server(transport, YamuxConfig::default());
-    let stream_limit = Arc::new(Semaphore::new(runtime.max_streams as usize));
+    let stream_limit = Arc::new(Semaphore::new(settings.max_streams as usize));
     while let Some(stream) = session.next().await {
         let stream = match stream {
             Ok(stream) => stream,
@@ -393,9 +458,9 @@ async fn handle_peer(
             }
         };
 
-        if runtime.max_streams == 0 {
+        if settings.max_streams == 0 {
             debug!(
-                max = runtime.max_streams,
+                max = settings.max_streams,
                 "rejecting stream: stream limit disabled"
             );
             continue;
@@ -407,9 +472,10 @@ async fn handle_peer(
             .await
             .map_err(|err| anyhow::anyhow!("stream limit closed: {err}"))?;
         let metrics = metrics.clone();
-        let egress = runtime.egress.clone();
-        let limits = runtime.limits.clone();
-        let idle = runtime.idle_timeout;
+        let current = runtime.settings.read().await.clone();
+        let egress = current.egress.clone();
+        let limits = current.limits.clone();
+        let idle = current.idle_timeout;
         let user = user.clone();
         tokio::spawn(async move {
             let _stream_permit = stream_permit;

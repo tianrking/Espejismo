@@ -353,7 +353,7 @@ pub fn load_config_base64(encoded: &str) -> Result<EspejismoConfig> {
     parse_config(&content).context("parse base64 TOML config")
 }
 
-fn parse_config(content: &str) -> Result<EspejismoConfig> {
+pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     let config: EspejismoConfig = toml::from_str(content)?;
     if let Some(auth) = &config.local.auth {
         auth.validate()?;
