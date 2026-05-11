@@ -5,7 +5,8 @@ Espejismo is distributed as two native binaries plus configuration:
 - `espejismo-local`: local SOCKS5/HTTP proxy.
 - `espejismo-remote`: remote tunnel endpoint.
 - `configs/espejismo.toml`: starter shared configuration.
-- `README.md` and `CHANGELOG.md`: top-level usage and release notes.
+- `README.md`, `README_ES.md`, and `CHANGELOG.md`: top-level usage and
+  release notes.
 - `scripts/setup-windows.ps1`: Windows config generator and launcher.
 - `scripts/install-ubuntu-remote.sh`: Ubuntu remote installer for one-line
   server deployment.

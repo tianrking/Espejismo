@@ -162,14 +162,12 @@ reintento, y efectos de congestion.
 | macOS | Apple Silicon (arm64) | Soportado |
 | Windows | amd64, 386, arm64 | Soportado |
 
-## Compilacion
+## Descarga
 
-```bash
-cargo build --release
-```
+Los usuarios normales no necesitan Rust ni Cargo. Descarga el archivo de release
+para tu plataforma, extraelo, y ejecuta los binarios dentro de `bin/`.
 
-CI multiplataforma verifica Linux, macOS y Windows. El workflow de release genera
-artefactos empaquetados para:
+Artefactos de release:
 
 - `linux-amd64`
 - `linux-386`
@@ -188,81 +186,110 @@ Cada archivo contiene:
 - README, changelog, notas de arquitectura, despliegue, CLI, usuarios,
   actualizaciones, estado y testing
 
-Crear paquete para el host Unix-like actual:
+## Inicio Rapido Para Usuarios
+
+### Servidor Linux
+
+Descarga y extrae el release de Linux en el servidor, luego ejecuta:
 
 ```bash
-./scripts/package-release.sh
+./bin/espejismo-remote --config configs/espejismo.toml
 ```
 
-Crear paquete en Windows PowerShell:
-
-```powershell
-.\scripts\package-release.ps1
-```
-
-Tambien se puede pasar un target triple de Rust instalado:
-
-```bash
-rustup target add x86_64-unknown-linux-gnu
-./scripts/package-release.sh x86_64-unknown-linux-gnu
-```
-
-## Inicio Rapido
-
-### Linux/macOS
-
-Terminal 1 — servidor remoto:
-
-```bash
-ESPEJISMO_PSK='change-me-long-random-secret' \
-cargo run --bin espejismo-remote -- --listen 0.0.0.0:6690
-```
-
-Terminal 2 — cliente local:
-
-```bash
-ESPEJISMO_PSK='change-me-long-random-secret' \
-cargo run --bin espejismo-local -- \
-  --socks5-listen 127.0.0.1:6680 \
-  --http-listen 127.0.0.1:6681 \
-  --server 127.0.0.1:6690
-```
-
-### Windows PowerShell
-
-Terminal 1 — servidor remoto:
-
-```powershell
-$env:ESPEJISMO_PSK = "change-me-long-random-secret"
-cargo run --bin espejismo-remote -- --listen 127.0.0.1:6690
-```
-
-Terminal 2 — cliente local:
-
-```powershell
-$env:ESPEJISMO_PSK = "change-me-long-random-secret"
-cargo run --bin espejismo-local -- --socks5-listen 127.0.0.1:6680 --http-listen 127.0.0.1:6681 --server 127.0.0.1:6690
-```
-
-Luego apunta un cliente SOCKS5 a `127.0.0.1:6680` o un cliente de proxy HTTP
-a `127.0.0.1:6681`.
-
-### Instalacion Remota en Ubuntu con Un Comando
+O instala el endpoint remoto en Ubuntu con un comando:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
   | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=latest bash
 ```
 
-Ver [docs/deployment/QUICKSTART.md](docs/deployment/QUICKSTART.md) para todas
-las variables del instalador y la configuracion del cliente Windows.
+### Cliente macOS
+
+Descarga y extrae el release de macOS, edita `configs/espejismo.toml` para que
+`local.server` apunte al servidor remoto, y ejecuta:
+
+```bash
+./bin/espejismo-local --config configs/espejismo.toml
+```
+
+Usa estos endpoints de proxy local:
+
+```text
+SOCKS5:     127.0.0.1:6680
+HTTP proxy: 127.0.0.1:6681
+```
+
+### Cliente Windows
+
+Descarga y extrae el release de Windows, luego ejecuta PowerShell desde el
+directorio extraido:
+
+```powershell
+.\bin\espejismo-local.exe --config .\configs\espejismo.toml
+```
+
+O genera una configuracion local desde un perfil de importacion:
+
+```powershell
+.\scripts\setup-windows.ps1 -Mode local -ProfileUrl "espejismo://import/..."
+```
+
+### Importacion de Configuracion en Una Linea
+
+Ambos binarios pueden usar una configuracion base64 de una sola linea, util
+para paneles o despliegues por copiar/pegar:
+
+```bash
+CONFIG_B64="$(./bin/espejismo-local --config configs/espejismo.toml --print-config-base64)"
+./bin/espejismo-local --config-base64 "$CONFIG_B64"
+./bin/espejismo-local --decode-config-base64 "$CONFIG_B64" > espejismo.toml
+```
+
+### Comprobar Actualizaciones
+
+```bash
+./bin/espejismo-local --check-update
+./bin/espejismo-remote --check-update
+```
+
+Ver [docs/deployment/QUICKSTART.md](docs/deployment/QUICKSTART.md) para flujos
+detallados de despliegue en Linux, macOS, y Windows.
+
+## Compilacion Para Desarrolladores
+
+Los desarrolladores que clonan el repositorio necesitan Rust/Cargo.
+
+```bash
+git clone https://github.com/tianrking/Espejismo.git
+cd Espejismo
+cargo build --release
+```
+
+Ejecutar desde codigo fuente durante desarrollo:
+
+```bash
+cargo run --bin espejismo-remote -- --config configs/examples/espejismo.toml
+cargo run --bin espejismo-local -- --config configs/examples/espejismo.toml
+```
+
+Crear un paquete local:
+
+```bash
+./scripts/package-release.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\package-release.ps1
+```
 
 ## Configuracion
 
 Generar una configuracion TOML inicial:
 
 ```bash
-cargo run --bin espejismo-local -- --print-example-config > espejismo.toml
+./bin/espejismo-local --print-example-config > espejismo.toml
 ```
 
 La misma configuracion sirve para ambos binarios; cada uno lee su seccion correspondiente.
@@ -353,8 +380,8 @@ block_ports = []
 Ejecutar desde un archivo:
 
 ```bash
-cargo run --bin espejismo-remote -- --config espejismo.toml
-cargo run --bin espejismo-local -- --config espejismo.toml
+./bin/espejismo-remote --config espejismo.toml
+./bin/espejismo-local --config espejismo.toml
 ```
 
 Ejecutar desde un release empaquetado:
@@ -382,29 +409,29 @@ importaciones de un solo comando:
 
 ```bash
 CONFIG_B64="$(base64 -w0 espejismo.toml)"
-cargo run --bin espejismo-remote -- --config-base64 "$CONFIG_B64"
-cargo run --bin espejismo-local -- --config-base64 "$CONFIG_B64"
+./bin/espejismo-remote --config-base64 "$CONFIG_B64"
+./bin/espejismo-local --config-base64 "$CONFIG_B64"
 ```
 
 Espejismo tambien puede convertir configuraciones sin depender de flags
 base64 especificos del shell:
 
 ```bash
-CONFIG_B64="$(cargo run --bin espejismo-local -- --config espejismo.toml --print-config-base64)"
-cargo run --bin espejismo-local -- --decode-config-base64 "$CONFIG_B64" > espejismo.toml
+CONFIG_B64="$(./bin/espejismo-local --config espejismo.toml --print-config-base64)"
+./bin/espejismo-local --decode-config-base64 "$CONFIG_B64" > espejismo.toml
 ```
 
 Imprimir un ejemplo directamente en base64:
 
 ```bash
-cargo run --bin espejismo-local -- --print-example-config-base64
+./bin/espejismo-local --print-example-config-base64
 ```
 
 Comprobar si hay un release mas nuevo:
 
 ```bash
-cargo run --bin espejismo-local -- --check-update
-cargo run --bin espejismo-remote -- --check-update
+./bin/espejismo-local --check-update
+./bin/espejismo-remote --check-update
 ```
 
 ## Handshake

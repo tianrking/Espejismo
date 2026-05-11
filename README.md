@@ -154,14 +154,12 @@ duration, total byte volume, retry behavior, and congestion effects.
 | macOS | Apple Silicon (arm64) | Supported |
 | Windows | amd64, 386, arm64 | Supported |
 
-## Build
+## Download
 
-```bash
-cargo build --release
-```
+Normal users do not need Rust or Cargo. Download a release archive for your
+platform, extract it, and run the binaries in `bin/`.
 
-Cross-platform CI checks Linux, macOS, and Windows. The release workflow builds
-packaged artifacts for:
+Release artifacts:
 
 - `linux-amd64`
 - `linux-386`
@@ -179,81 +177,110 @@ Each archive contains:
 - `configs/espejismo.toml`
 - README, architecture, deployment, user, update, status, and testing notes
 
-Create a package for the current Unix-like host:
+## Quick Start For Users
+
+### Linux Server
+
+Download and extract the Linux release archive on the server, then run:
 
 ```bash
-./scripts/package-release.sh
+./bin/espejismo-remote --config configs/espejismo.toml
 ```
 
-Create a package on Windows PowerShell:
-
-```powershell
-.\scripts\package-release.ps1
-```
-
-You can also pass an installed Rust target triple:
-
-```bash
-rustup target add x86_64-unknown-linux-gnu
-./scripts/package-release.sh x86_64-unknown-linux-gnu
-```
-
-## Quick Start
-
-### Linux/macOS
-
-Terminal 1 — remote:
-
-```bash
-ESPEJISMO_PSK='change-me-long-random-secret' \
-cargo run --bin espejismo-remote -- --listen 0.0.0.0:6690
-```
-
-Terminal 2 — local:
-
-```bash
-ESPEJISMO_PSK='change-me-long-random-secret' \
-cargo run --bin espejismo-local -- \
-  --socks5-listen 127.0.0.1:6680 \
-  --http-listen 127.0.0.1:6681 \
-  --server remote.example.com:6690
-```
-
-### Windows PowerShell
-
-Terminal 1 — remote:
-
-```powershell
-$env:ESPEJISMO_PSK = "change-me-long-random-secret"
-cargo run --bin espejismo-remote -- --listen 127.0.0.1:6690
-```
-
-Terminal 2 — local:
-
-```powershell
-$env:ESPEJISMO_PSK = "change-me-long-random-secret"
-cargo run --bin espejismo-local -- --socks5-listen 127.0.0.1:6680 --http-listen 127.0.0.1:6681 --server 127.0.0.1:6690
-```
-
-Then point a SOCKS5-capable client at `127.0.0.1:6680` or an HTTP proxy client
-at `127.0.0.1:6681`.
-
-### One-Line Ubuntu Remote Install
+Or install the remote endpoint on Ubuntu with one command:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
   | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=latest bash
 ```
 
-See [docs/deployment/QUICKSTART.md](docs/deployment/QUICKSTART.md) for all
-installer variables and Windows client setup.
+### macOS Client
+
+Download and extract the macOS release archive, edit `configs/espejismo.toml`
+so `local.server` points to your remote server, then run:
+
+```bash
+./bin/espejismo-local --config configs/espejismo.toml
+```
+
+Use these local proxy endpoints:
+
+```text
+SOCKS5:     127.0.0.1:6680
+HTTP proxy: 127.0.0.1:6681
+```
+
+### Windows Client
+
+Download and extract the Windows release archive, then run PowerShell from the
+extracted directory:
+
+```powershell
+.\bin\espejismo-local.exe --config .\configs\espejismo.toml
+```
+
+Or generate a local config from an import profile:
+
+```powershell
+.\scripts\setup-windows.ps1 -Mode local -ProfileUrl "espejismo://import/..."
+```
+
+### One-Line Config Import
+
+Both binaries can run from a one-line base64 config, useful for panels and
+copy/paste deployment:
+
+```bash
+CONFIG_B64="$(./bin/espejismo-local --config configs/espejismo.toml --print-config-base64)"
+./bin/espejismo-local --config-base64 "$CONFIG_B64"
+./bin/espejismo-local --decode-config-base64 "$CONFIG_B64" > espejismo.toml
+```
+
+### Update Check
+
+```bash
+./bin/espejismo-local --check-update
+./bin/espejismo-remote --check-update
+```
+
+See [docs/deployment/QUICKSTART.md](docs/deployment/QUICKSTART.md) for detailed
+Linux, macOS, and Windows deployment flows.
+
+## Developer Build
+
+Developers who clone the repository need Rust/Cargo.
+
+```bash
+git clone https://github.com/tianrking/Espejismo.git
+cd Espejismo
+cargo build --release
+```
+
+Run from source during development:
+
+```bash
+cargo run --bin espejismo-remote -- --config configs/examples/espejismo.toml
+cargo run --bin espejismo-local -- --config configs/examples/espejismo.toml
+```
+
+Create a local release package:
+
+```bash
+./scripts/package-release.sh
+```
+
+Windows PowerShell:
+
+```powershell
+.\scripts\package-release.ps1
+```
 
 ## Configuration
 
 Generate a starter TOML config:
 
 ```bash
-cargo run --bin espejismo-local -- --print-example-config > espejismo.toml
+./bin/espejismo-local --print-example-config > espejismo.toml
 ```
 
 The same config can be used by both binaries; each one reads the relevant
@@ -344,8 +371,8 @@ block_ports = []
 Run from a file:
 
 ```bash
-cargo run --bin espejismo-remote -- --config espejismo.toml
-cargo run --bin espejismo-local -- --config espejismo.toml
+./bin/espejismo-remote --config espejismo.toml
+./bin/espejismo-local --config espejismo.toml
 ```
 
 Run from a packaged release:
@@ -372,28 +399,28 @@ Run from base64-encoded TOML, useful for deployment panels or one-line imports:
 
 ```bash
 CONFIG_B64="$(base64 -w0 espejismo.toml)"
-cargo run --bin espejismo-remote -- --config-base64 "$CONFIG_B64"
-cargo run --bin espejismo-local -- --config-base64 "$CONFIG_B64"
+./bin/espejismo-remote --config-base64 "$CONFIG_B64"
+./bin/espejismo-local --config-base64 "$CONFIG_B64"
 ```
 
 Espejismo can also convert configs without shell-specific base64 flags:
 
 ```bash
-CONFIG_B64="$(cargo run --bin espejismo-local -- --config espejismo.toml --print-config-base64)"
-cargo run --bin espejismo-local -- --decode-config-base64 "$CONFIG_B64" > espejismo.toml
+CONFIG_B64="$(./bin/espejismo-local --config espejismo.toml --print-config-base64)"
+./bin/espejismo-local --decode-config-base64 "$CONFIG_B64" > espejismo.toml
 ```
 
 You can print an example directly as base64:
 
 ```bash
-cargo run --bin espejismo-local -- --print-example-config-base64
+./bin/espejismo-local --print-example-config-base64
 ```
 
 Check for a newer release:
 
 ```bash
-cargo run --bin espejismo-local -- --check-update
-cargo run --bin espejismo-remote -- --check-update
+./bin/espejismo-local --check-update
+./bin/espejismo-remote --check-update
 ```
 
 ## Handshake
