@@ -36,7 +36,7 @@ Pinned release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=v0.0.2 bash
+  | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=v0.0.3 bash
 ```
 
 Custom archive URL, useful for private releases or self-hosted packages:

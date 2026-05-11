@@ -52,12 +52,12 @@ wait_for_port "${HTTP_ADDR}" "${HTTP_PORT}" "http fixture"
 cargo run --quiet --bin espejismo-local -- \
   --check-update \
   --update-url "http://${HTTP_ADDR}:${HTTP_PORT}/release/latest" \
-  | grep -q "update available: 0.0.2 -> v99.0.0"
+  | grep -q "update available: 0.0.3 -> v99.0.0"
 
 cargo run --quiet --bin espejismo-remote -- \
   --check-update \
   --update-url "http://${HTTP_ADDR}:${HTTP_PORT}/release/latest" \
-  | grep -q "update available: 0.0.2 -> v99.0.0"
+  | grep -q "update available: 0.0.3 -> v99.0.0"
 
 python3 "${ROOT}/scripts/probe_udp_server.py" --host "${HTTP_ADDR}" --port "${UDP_PORT}" >/tmp/espejismo-udp.log 2>&1 &
 UDP_PID=$!

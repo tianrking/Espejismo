@@ -16,7 +16,7 @@ y no confiables. Ingreso local via SOCKS5, HTTP, y TUN nativo opcional, secreto
 directo con X25519, frames cifrados con XChaCha20-Poly1305, multiplexacion yamux,
 padding adaptativo, pacing amigable con TCP, y puzzles de cliente.
 
-Version actual: `v0.0.2`.
+Version actual: `v0.0.3`.
 
 ## Arquitectura
 
