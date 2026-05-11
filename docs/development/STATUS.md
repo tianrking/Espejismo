@@ -5,6 +5,8 @@
 - Native Rust workspace with separate local, remote, and shared core crates.
 - SOCKS5 local proxy ingress with optional username/password authentication.
 - SOCKS5 UDP ASSOCIATE relay for request/response datagrams.
+- UDP underlay packet codec and reliability core with sequence numbers, ACKs,
+  cumulative delivery, and retransmission scheduling.
 - HTTP proxy ingress with optional Basic proxy authentication, CONNECT, and
   absolute-form HTTP forwarding.
 - Shared TOML configuration and base64 configuration import.
@@ -47,6 +49,7 @@
 - WASM transport crate. The current runtime uses Tokio TCP and is native-first.
 - Richer multi-profile control plane and log rotation policy.
 - OS-specific TCP_INFO congestion telemetry. Current backpressure is portable write-latency based.
+- UDP underlay socket integration and congestion controller wiring.
 
 ## Architecture Direction
 
