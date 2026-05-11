@@ -1,5 +1,3 @@
-#![cfg_attr(test, allow(dead_code))]
-
 use std::net::{IpAddr, Ipv4Addr};
 use std::process::Command;
 
@@ -9,6 +7,11 @@ use espejismo_core::split_authority;
 use tokio::net::lookup_host;
 use tracing::{debug, info, warn};
 
+use super::macos_parse::{
+    parse_default_route, parse_host_route, parse_network_services, parse_service_dns, DnsRestore,
+    HostRoute,
+};
+
 #[derive(Debug)]
 pub struct MacosRouteGuard {
     tun_name: String,
@@ -16,18 +19,6 @@ pub struct MacosRouteGuard {
     protected_routes: Vec<ProtectedRoute>,
     dns_restore: Vec<ServiceDnsRestore>,
     active: bool,
-}
-
-#[derive(Clone, Debug)]
-struct DefaultRoute {
-    gateway: Ipv4Addr,
-    interface: String,
-}
-
-#[derive(Clone, Debug)]
-struct HostRoute {
-    gateway: Option<Ipv4Addr>,
-    interface: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -40,12 +31,6 @@ struct ProtectedRoute {
 struct ServiceDnsRestore {
     service: String,
     dns: DnsRestore,
-}
-
-#[derive(Clone, Debug)]
-enum DnsRestore {
-    Empty,
-    Static(Vec<IpAddr>),
 }
 
 pub async fn install(config: &LocalTunConfig, server: &str) -> Result<MacosRouteGuard> {
@@ -179,33 +164,6 @@ fn read_host_route(ip: Ipv4Addr) -> Result<Option<HostRoute>> {
     }
 }
 
-fn parse_default_route(output: &str) -> Result<DefaultRoute> {
-    let gateway = route_field(output, "gateway")
-        .context("macOS default route has no gateway")?
-        .parse()
-        .context("parse macOS default route gateway")?;
-    let interface = route_field(output, "interface")
-        .context("macOS default route has no interface")?
-        .to_string();
-    Ok(DefaultRoute { gateway, interface })
-}
-
-fn parse_host_route(output: &str) -> Result<HostRoute> {
-    let gateway = route_field(output, "gateway")
-        .map(str::parse)
-        .transpose()
-        .context("parse macOS host route gateway")?;
-    let interface = route_field(output, "interface").map(str::to_string);
-    Ok(HostRoute { gateway, interface })
-}
-
-fn route_field<'a>(output: &'a str, key: &str) -> Option<&'a str> {
-    output.lines().find_map(|line| {
-        let (name, value) = line.trim().split_once(':')?;
-        (name.trim() == key).then_some(value.trim())
-    })
-}
-
 fn add_split_default_routes(tun_name: &str) -> Result<()> {
     add_or_change_net_route_to_interface("0.0.0.0/1", tun_name)?;
     add_or_change_net_route_to_interface("128.0.0.0/1", tun_name)
@@ -275,34 +233,9 @@ fn list_network_services() -> Result<Vec<String>> {
     Ok(parse_network_services(&output))
 }
 
-fn parse_network_services(output: &str) -> Vec<String> {
-    output
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .filter(|line| !line.contains("denotes that a network service is disabled"))
-        .map(|line| line.trim_start_matches("*").trim().to_string())
-        .filter(|line| !line.is_empty())
-        .collect()
-}
-
 fn read_service_dns(service: &str) -> Result<DnsRestore> {
     let output = output("networksetup", &["-getdnsservers", service])?;
     Ok(parse_service_dns(&output))
-}
-
-fn parse_service_dns(output: &str) -> DnsRestore {
-    if output
-        .to_ascii_lowercase()
-        .contains("there aren't any dns servers")
-    {
-        return DnsRestore::Empty;
-    }
-    let servers = output
-        .lines()
-        .filter_map(|line| line.trim().parse::<IpAddr>().ok())
-        .collect();
-    DnsRestore::Static(servers)
 }
 
 fn apply_dns(servers: &[IpAddr]) -> Result<()> {
@@ -366,45 +299,5 @@ fn run(program: &str, args: &[&str]) -> Result<()> {
         Ok(())
     } else {
         anyhow::bail!("{program} {} exited with {status}", args.join(" "))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{parse_default_route, parse_network_services, parse_service_dns, DnsRestore};
-
-    #[test]
-    fn parses_default_route() {
-        let route = parse_default_route(
-            r#"
-   route to: default
-destination: default
-       mask: default
-    gateway: 192.168.1.1
-  interface: en0
-"#,
-        )
-        .unwrap();
-        assert_eq!(route.gateway.to_string(), "192.168.1.1");
-        assert_eq!(route.interface, "en0");
-    }
-
-    #[test]
-    fn parses_network_services() {
-        let services = parse_network_services(
-            "An asterisk (*) denotes that a network service is disabled.\nWi-Fi\n*Thunderbolt Bridge\nUSB 10/100/1000 LAN\n",
-        );
-        assert_eq!(
-            services,
-            vec!["Wi-Fi", "Thunderbolt Bridge", "USB 10/100/1000 LAN"]
-        );
-    }
-
-    #[test]
-    fn parses_empty_dns_marker() {
-        assert!(matches!(
-            parse_service_dns("There aren't any DNS Servers set on Wi-Fi."),
-            DnsRestore::Empty
-        ));
     }
 }

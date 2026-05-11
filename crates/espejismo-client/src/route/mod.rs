@@ -4,8 +4,11 @@ use espejismo_core::config::LocalTunConfig;
 #[cfg(target_os = "linux")]
 mod linux;
 
-#[cfg(any(target_os = "macos", test))]
+#[cfg(target_os = "macos")]
 mod macos;
+
+#[cfg(any(target_os = "macos", test))]
+mod macos_parse;
 
 #[cfg(target_os = "windows")]
 mod windows;
