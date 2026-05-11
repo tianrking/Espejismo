@@ -7,6 +7,13 @@ Espejismo ships two native binaries:
 
 Both binaries accept TOML config from a file or a one-line base64 string:
 
+Check the packaged binary version:
+
+```bash
+espejismo-local --version
+espejismo-remote --version
+```
+
 ```bash
 espejismo-local --config espejismo.toml
 espejismo-remote --config espejismo.toml

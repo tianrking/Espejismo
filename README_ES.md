@@ -17,7 +17,7 @@ directo con X25519, frames cifrados con XChaCha20-Poly1305, multiplexacion
 logica seleccionable, padding adaptativo, pacing amigable con TCP, y puzzles de
 cliente.
 
-Version actual: `v0.0.3`.
+Version actual: `v0.0.4`.
 
 ## Arquitectura
 

@@ -23,6 +23,21 @@ param(
     [int]$TunnelBuffer = 1048576,
     [int]$IdleTimeoutSecs = 300,
     [int]$MaxStreams = 256,
+    [bool]$TcpNoDelay = $true,
+    [int]$TcpKeepaliveSecs = 30,
+    [int]$TcpHeartbeatSecs = 30,
+    [int]$TcpUserTimeoutMs = 30000,
+    [int]$TcpSendBufferBytes = 1048576,
+    [int]$TcpRecvBufferBytes = 1048576,
+    [ValidateSet("yamux", "native")]
+    [string]$MuxMode = "yamux",
+    [int]$NativeMuxInitialWindowBytes = 1048576,
+    [int]$NativeMuxStreamBufferFrames = 128,
+    [int]$NativeMuxIdleTimeoutSecs = 300,
+    [bool]$PacingEnabled = $true,
+    [int64]$PacingMaxBytesPerSec = 0,
+    [int]$PacingBurstBytes = 65536,
+    [int]$PacingMinWriteBytes = 1024,
     [ValidateSet("low_latency", "balanced", "high_entropy", "stealth")]
     [string]$ObfuscationProfile = "balanced",
     [bool]$RandomizeChunks = $true,
@@ -43,6 +58,11 @@ param(
     [string[]]$BlockHosts = @("169.254.169.254", "metadata.google.internal"),
     [int[]]$AllowPorts = @(80, 443),
     [int[]]$BlockPorts = @(25),
+    [int]$TunnelPoolMinConnections = 1,
+    [int]$TunnelPoolMaxConnections = 4,
+    [int]$TunnelPoolInteractiveLanes = 1,
+    [int]$TunnelPoolBulkLanes = 2,
+    [int]$TunnelPoolMaxReconnectAttempts = 3,
     [ValidateSet("compact", "pretty", "json")]
     [string]$LogFormat = "compact",
     [string]$LogLevel = "info",
@@ -165,6 +185,26 @@ tunnel_buffer = $TunnelBuffer
 idle_timeout_secs = $IdleTimeoutSecs
 max_streams = $MaxStreams
 
+[shared.tcp]
+nodelay = $($TcpNoDelay.ToString().ToLowerInvariant())
+keepalive_secs = $TcpKeepaliveSecs
+heartbeat_secs = $TcpHeartbeatSecs
+user_timeout_ms = $TcpUserTimeoutMs
+send_buffer_bytes = $TcpSendBufferBytes
+recv_buffer_bytes = $TcpRecvBufferBytes
+
+[shared.mux]
+mode = $(Quote-Toml $MuxMode)
+native_initial_window_bytes = $NativeMuxInitialWindowBytes
+native_stream_buffer_frames = $NativeMuxStreamBufferFrames
+native_idle_timeout_secs = $NativeMuxIdleTimeoutSecs
+
+[shared.pacing]
+enabled = $($PacingEnabled.ToString().ToLowerInvariant())
+max_bytes_per_sec = $PacingMaxBytesPerSec
+burst_bytes = $PacingBurstBytes
+min_write_bytes = $PacingMinWriteBytes
+
 [shared.obfuscation]
 profile = $(Quote-Toml $ObfuscationProfile)
 randomize_chunks = $($RandomizeChunks.ToString().ToLowerInvariant())
@@ -198,6 +238,13 @@ server = $(Quote-Toml $Server)
 socks5_listen = $(Quote-Toml $Socks5Listen)
 http_listen = $(Quote-Toml $HttpListen)
 handshake_padding = $HandshakePadding
+
+[local.tunnel_pool]
+min_connections = $TunnelPoolMinConnections
+max_connections = $TunnelPoolMaxConnections
+interactive_lanes = $TunnelPoolInteractiveLanes
+bulk_lanes = $TunnelPoolBulkLanes
+max_reconnect_attempts = $TunnelPoolMaxReconnectAttempts
 
 "@
     if ($ProxyUsername -ne "") {

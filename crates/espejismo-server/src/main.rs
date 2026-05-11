@@ -31,7 +31,7 @@ use handler::handle_peer;
 use limits::{UserLimitConfig, UserLimitRegistry};
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "espejismo-remote")]
+#[command(name = "espejismo-remote", version)]
 pub(crate) struct Args {
     #[arg(long)]
     config: Option<String>,

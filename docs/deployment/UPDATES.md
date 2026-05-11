@@ -1,7 +1,7 @@
 # Update Checks
 
 Both binaries can check release metadata and print a human-readable update
-notice. In `v0.0.3`, this is an explicit check command rather than an automatic
+notice. In `v0.0.4`, this is an explicit check command rather than an automatic
 self-replacing updater.
 
 ```bash

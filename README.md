@@ -16,7 +16,7 @@ networks. SOCKS5, HTTP, and optional native TUN local ingress, X25519 forward
 secrecy, XChaCha20-Poly1305 encrypted frames, selectable logical stream
 multiplexing, adaptive padding, TCP-friendly pacing, and client puzzles.
 
-Current release: `v0.0.3`.
+Current release: `v0.0.4`.
 
 ## Architecture
 

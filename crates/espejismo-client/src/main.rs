@@ -26,7 +26,7 @@ mod tunnel;
 use handler::{handle_http_client, handle_socks5_client};
 use tunnel::{TunnelManager, TunnelManagerConfig};
 #[derive(Parser, Debug)]
-#[command(name = "espejismo-local")]
+#[command(name = "espejismo-local", version)]
 struct Args {
     #[arg(long)]
     config: Option<String>,

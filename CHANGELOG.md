@@ -1,9 +1,26 @@
 # Changelog
 
-## Unreleased
+## v0.0.4
+
+`v0.0.4` focuses on production hardening for the TCP-first tunnel path, native
+TUN takeover, native mux alpha hardening, tunnel pool scheduling, and release
+quality gates.
 
 ### Added
 
+- Shared TCP socket tuning: TCP_NODELAY, keepalive, configurable socket buffers,
+  Linux TCP_USER_TIMEOUT, and optional Linux congestion-control selection.
+- TCP-friendly write pacing with rate caps, burst budget, minimum write size,
+  heartbeat frames, and backpressure-aware padding reduction.
+- Enriched admin runtime state through `/status` and `/connections`, including
+  tunnel state, reconnect count, recent errors, egress policy version, config
+  apply time, active streams, physical connections, and per-user bytes.
+- Config diagnostics through `--check-config` for local and remote binaries.
+- Optional native TUN ingress for system-level traffic capture.
+- Linux, Windows, and macOS route/DNS managers for explicit TUN auto-route and
+  auto-DNS takeover, with protected remote-server routes and best-effort restore
+  on shutdown.
+- Fuzz targets for protocol/config parsing and CI clippy enforcement.
 - Replaceable mux wrapper around the current yamux implementation.
 - Local TCP tunnel pool with configurable interactive and bulk physical lanes.
 - Stream priority in tunnel requests so SOCKS5/HTTP interactive traffic and TUN
@@ -22,27 +39,6 @@
   task abort on drop.
 - Configurable per-request tunnel reconnect attempt limit.
 
-## v0.0.3
-
-`v0.0.3` focuses on production hardening for the TCP-first tunnel path, native
-TUN takeover, and release quality gates.
-
-### Added
-
-- Shared TCP socket tuning: TCP_NODELAY, keepalive, configurable socket buffers,
-  Linux TCP_USER_TIMEOUT, and optional Linux congestion-control selection.
-- TCP-friendly write pacing with rate caps, burst budget, minimum write size,
-  heartbeat frames, and backpressure-aware padding reduction.
-- Enriched admin runtime state through `/status` and `/connections`, including
-  tunnel state, reconnect count, recent errors, egress policy version, config
-  apply time, active streams, physical connections, and per-user bytes.
-- Config diagnostics through `--check-config` for local and remote binaries.
-- Optional native TUN ingress for system-level traffic capture.
-- Linux, Windows, and macOS route/DNS managers for explicit TUN auto-route and
-  auto-DNS takeover, with protected remote-server routes and best-effort restore
-  on shutdown.
-- Fuzz targets for protocol/config parsing and CI clippy enforcement.
-
 ### Changed
 
 - Refactored large local, remote, and configuration modules into clearer runtime
@@ -51,7 +47,7 @@ TUN takeover, and release quality gates.
 - Updated deployment, packaging, TUN, CLI, status, testing, English README, and
   Spanish README documentation to match the current TCP-first, cross-platform
   release shape.
-- Smoke tests now verify release update checks against the `0.0.3` binary
+- Smoke tests now verify release update checks against the `0.0.4` binary
   version and exercise platform-aware TUN config diagnostics.
 
 ### Known Limits

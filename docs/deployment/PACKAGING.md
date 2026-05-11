@@ -49,14 +49,14 @@ notes, CLI reference, admin guide, egress guide, logging guide, packaging guide,
 profile guide, users guide, update guide, status, test plan, and deployment
 helper scripts.
 
-## Publishing v0.0.3
+## Publishing v0.0.4
 
 After the version bump and verification commit is merged, create and push the
 release tag:
 
 ```bash
-git tag v0.0.3
-git push origin v0.0.3
+git tag v0.0.4
+git push origin v0.0.4
 ```
 
 The GitHub release workflow runs on `v*` tags and publishes all platform
