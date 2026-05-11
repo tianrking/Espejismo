@@ -82,6 +82,11 @@ max_bytes_per_sec = 0
 burst_bytes = 65536
 min_write_bytes = 1024
 
+[shared.obfuscation]
+profile = "balanced"
+chunk_policy = "balanced"
+randomize_chunks = true
+
 [local]
 server = "${REMOTE_DOMAIN_ADDR}"
 socks5_listen = "${SOCKS5_ADDR}"
@@ -91,6 +96,12 @@ handshake_padding = 256
 [local.auth]
 username = "${PROXY_USER}"
 password = "${PROXY_PASS}"
+
+[local.tunnel_pool]
+min_connections = 1
+max_connections = 4
+interactive_lanes = 1
+bulk_lanes = 2
 
 [logging]
 level = "debug"

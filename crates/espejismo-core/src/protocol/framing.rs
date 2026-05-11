@@ -54,12 +54,41 @@ pub enum ObfuscationProfile {
     #[default]
     Balanced,
     HighEntropy,
+    Bulk,
     Stealth,
 }
 
 impl ObfuscationProfile {
     pub fn is_stealth(self) -> bool {
         self == Self::Stealth
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ChunkPolicy {
+    LowLatency,
+    #[default]
+    Balanced,
+    Bulk,
+    Stealth,
+    Custom,
+}
+
+impl ChunkPolicy {
+    pub fn bounds(
+        self,
+        fallback_min: usize,
+        fallback_max: usize,
+        stealth_capacity: usize,
+    ) -> (usize, usize) {
+        match self {
+            Self::LowLatency => (2 * 1024, 8 * 1024),
+            Self::Balanced => (4 * 1024, 16 * 1024),
+            Self::Bulk => (16 * 1024, 64 * 1024),
+            Self::Stealth => (stealth_capacity, stealth_capacity),
+            Self::Custom => (fallback_min, fallback_max),
+        }
     }
 }
 
@@ -71,6 +100,7 @@ pub struct FrameOptions {
     pub backpressure_threshold_ms: u64,
     pub backpressure_cooldown_ms: u64,
     pub obfuscation_profile: ObfuscationProfile,
+    pub chunk_policy: ChunkPolicy,
     pub randomize_chunks: bool,
     pub min_chunk: usize,
     pub max_chunk: usize,
@@ -92,6 +122,7 @@ impl Default for FrameOptions {
             backpressure_threshold_ms: 40,
             backpressure_cooldown_ms: 1000,
             obfuscation_profile: ObfuscationProfile::Balanced,
+            chunk_policy: ChunkPolicy::Balanced,
             randomize_chunks: true,
             min_chunk: 1024,
             max_chunk: DATA_CHUNK,
@@ -119,13 +150,19 @@ impl FrameOptions {
         if !self.randomize_chunks {
             return (DATA_CHUNK, DATA_CHUNK);
         }
+        let stealth_capacity = self
+            .stealth_payload_capacity()
+            .unwrap_or(DEFAULT_STEALTH_FRAME_SIZE);
+        let (policy_min, policy_max) =
+            self.chunk_policy
+                .bounds(self.min_chunk, self.max_chunk, stealth_capacity);
         let requested_min = if self.pacing_enabled {
-            self.min_chunk.max(self.pacing_min_write_bytes)
+            policy_min.max(self.pacing_min_write_bytes)
         } else {
-            self.min_chunk
+            policy_min
         };
-        let min = requested_min.clamp(1, DATA_CHUNK);
-        let max = self.max_chunk.clamp(min, DATA_CHUNK);
+        let min = requested_min.clamp(1, MAX_FRAME);
+        let max = policy_max.clamp(min, MAX_FRAME);
         (min, max)
     }
 
@@ -578,6 +615,7 @@ async fn maybe_jitter(options: &FrameOptions) {
             let second = rand::thread_rng().gen_range(0..=upper);
             cmp::max(first, second)
         }
+        ObfuscationProfile::Bulk => rand::thread_rng().gen_range(0..=cmp::max(1, upper / 8)),
         ObfuscationProfile::Stealth => 0,
     };
     if delay > 0 {

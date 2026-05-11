@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Replaceable mux wrapper around the current yamux implementation.
+- Local TCP tunnel pool with configurable interactive and bulk physical lanes.
+- Stream priority in tunnel requests so SOCKS5/HTTP interactive traffic and TUN
+  bulk traffic can be scheduled separately.
+- Adaptive chunk policies for low-latency, balanced, bulk, stealth, and custom
+  frame sizing.
+- Per-lane health data in admin status, including reconnect count, last error,
+  open-stream latency, active streams, and bytes.
+- Unix stress smoke script covering single-stream traffic, many small requests,
+  mixed-lane traffic, remote restart recovery, and optional soak loops.
+
 ## v0.0.3
 
 `v0.0.3` focuses on production hardening for the TCP-first tunnel path, native

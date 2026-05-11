@@ -29,6 +29,12 @@ Current release target: `v0.0.3`.
 - Shared TCP socket options: TCP_NODELAY, keepalive, heartbeat frames, socket
   buffers, Linux TCP_USER_TIMEOUT, and optional congestion-control selection.
 - TCP-friendly pacing knobs for burst budget, rate cap, and minimum write size.
+- Local tunnel pool with configurable interactive and bulk physical TCP lanes,
+  health-scored stream placement, per-lane reconnect/error/latency/byte status,
+  and yamux wrapped behind a replaceable mux module.
+- Stream priority field in TCP CONNECT and UDP DATAGRAM tunnel requests.
+- Adaptive chunk policies for low-latency, balanced, bulk, stealth, and custom
+  frame sizing.
 - Optional local native TUN ingress that maps virtual-interface TCP/UDP traffic
   into the existing encrypted TCP/yamux tunnel.
 - Linux, macOS, and Windows TUN route/DNS managers with remote-server route
@@ -53,6 +59,9 @@ Current release target: `v0.0.3`.
 - Local reconnecting tunnel manager for opening new streams after tunnel failure.
 - End-to-end smoke test covering authenticated SOCKS5, authenticated HTTP proxy,
   file config, and base64 config.
+- TCP stress smoke test covering single-stream download-like traffic, many small
+  requests, mixed interactive/bulk requests, remote restart recovery, and
+  optional soak loops.
 - CI for Linux, macOS, and Windows.
 - Release artifact workflow for Linux x86_64/i686/aarch64/armv7, macOS
   aarch64, and Windows x86_64/i686/aarch64.

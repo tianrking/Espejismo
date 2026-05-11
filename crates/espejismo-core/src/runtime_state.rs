@@ -13,6 +13,20 @@ pub struct RuntimeStateSnapshot {
     pub consecutive_failures: u64,
     pub recent_errors: Vec<String>,
     pub egress_policy_version: u64,
+    pub tunnel_lanes: Vec<TunnelLaneSnapshot>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct TunnelLaneSnapshot {
+    pub id: usize,
+    pub lane: String,
+    pub state: String,
+    pub reconnect_count: u64,
+    pub active_streams: u64,
+    pub bytes_client_to_remote: u64,
+    pub bytes_remote_to_client: u64,
+    pub last_open_latency_ms: u64,
+    pub last_error: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -32,6 +46,7 @@ impl Default for RuntimeState {
                 consecutive_failures: 0,
                 recent_errors: Vec::new(),
                 egress_policy_version: 1,
+                tunnel_lanes: Vec::new(),
             })),
         }
     }
@@ -64,6 +79,20 @@ impl RuntimeState {
         let mut inner = self.inner.lock().expect("runtime state lock");
         inner.config_applied_unix_secs = unix_now_secs();
         inner.egress_policy_version = inner.egress_policy_version.saturating_add(1);
+    }
+
+    pub fn update_tunnel_lane(&self, lane: TunnelLaneSnapshot) {
+        let mut inner = self.inner.lock().expect("runtime state lock");
+        if let Some(existing) = inner
+            .tunnel_lanes
+            .iter_mut()
+            .find(|existing| existing.id == lane.id)
+        {
+            *existing = lane;
+        } else {
+            inner.tunnel_lanes.push(lane);
+            inner.tunnel_lanes.sort_by_key(|lane| lane.id);
+        }
     }
 }
 

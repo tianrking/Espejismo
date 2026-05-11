@@ -91,6 +91,23 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
         config.shared.obfuscation.min_chunk <= config.shared.obfuscation.max_chunk,
         "shared.obfuscation.min_chunk must be <= max_chunk"
     );
+    anyhow::ensure!(
+        config.local.tunnel_pool.max_connections > 0,
+        "local.tunnel_pool.max_connections must be greater than 0"
+    );
+    anyhow::ensure!(
+        config.local.tunnel_pool.min_connections <= config.local.tunnel_pool.max_connections,
+        "local.tunnel_pool.min_connections must be <= max_connections"
+    );
+    anyhow::ensure!(
+        config.local.tunnel_pool.interactive_lanes + config.local.tunnel_pool.bulk_lanes > 0,
+        "local.tunnel_pool must configure at least one lane"
+    );
+    anyhow::ensure!(
+        config.local.tunnel_pool.interactive_lanes + config.local.tunnel_pool.bulk_lanes
+            <= config.local.tunnel_pool.max_connections,
+        "local.tunnel_pool interactive_lanes + bulk_lanes must be <= max_connections"
+    );
     if let Some(algorithm) = &config.shared.tcp.congestion_control {
         anyhow::ensure!(
             !algorithm.trim().is_empty(),

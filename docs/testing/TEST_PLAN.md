@@ -26,6 +26,7 @@ cargo check --workspace --all-targets --locked
 cargo test --workspace --all-targets
 cargo check --manifest-path fuzz/Cargo.toml --bins
 ./scripts/e2e_smoke.sh
+REQUESTS=200 CONCURRENCY=32 ./scripts/stress_smoke.sh
 ./scripts/package-release.sh
 ```
 
@@ -65,6 +66,19 @@ The probe sends a unique token through these paths:
 - Egress allow-port policy in the remote test config
 - Per-user metrics labels in remote metrics
 - Profile URL export/import smoke check
+
+## TCP Stress Probe
+
+`scripts/stress_smoke.sh` and `scripts/stress_smoke.ps1` exercise the TCP-first
+performance path after the basic e2e probe passes:
+
+- One download-like stream through SOCKS5.
+- Many small requests with configurable concurrency.
+- Mixed SOCKS5 and HTTP proxy requests so interactive and bulk lanes are both
+  used.
+- Remote endpoint restart followed by new request recovery.
+- Optional soak loop. On Unix-like hosts, set `SOAK_SECS=1800` for a 30-minute
+  run.
 
 The fixture returns JSON containing method, path, probe header, and request
 body. The script checks that the returned JSON contains the expected token,

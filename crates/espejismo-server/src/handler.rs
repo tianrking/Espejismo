@@ -11,11 +11,11 @@ use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tokio::time::{sleep, timeout};
-use tokio_yamux::{Config as YamuxConfig, Session, StreamHandle};
 use tracing::{debug, info};
 
 use crate::fallback::{fallback_or_reject, route_http_fallback, should_route_to_http_fallback};
 use crate::limits::UserLimitRegistry;
+use crate::mux::{server_session, MuxStream};
 use crate::relay::{connect_egress_tcp, limited_copy_bidirectional, relay_udp_datagram};
 use crate::tarpit;
 use crate::RemoteRuntime;
@@ -91,7 +91,7 @@ pub(crate) async fn handle_peer(
         settings.frames.clone(),
         runtime.tunnel_buffer,
     );
-    let mut session = Session::new_server(transport, YamuxConfig::default());
+    let mut session = server_session(transport);
     let stream_limit = Arc::new(Semaphore::new(settings.max_streams as usize));
     while let Some(stream) = session.next().await {
         let stream = match stream {
@@ -137,7 +137,7 @@ pub(crate) async fn handle_peer(
 }
 
 async fn handle_mux_stream(
-    mut stream: StreamHandle,
+    mut stream: MuxStream,
     metrics: Metrics,
     egress: EgressPolicy,
     limits: UserLimitRegistry,
@@ -158,7 +158,7 @@ async fn handle_mux_stream(
 }
 
 async fn handle_mux_stream_inner(
-    stream: &mut StreamHandle,
+    stream: &mut MuxStream,
     metrics: Metrics,
     egress: EgressPolicy,
     limits: UserLimitRegistry,
@@ -166,18 +166,26 @@ async fn handle_mux_stream_inner(
     user: &str,
 ) -> Result<()> {
     match read_tunnel_request(stream).await? {
-        TunnelRequest::TcpConnect { authority } => {
+        TunnelRequest::TcpConnect {
+            authority,
+            priority,
+        } => {
             let mut remote = connect_egress_tcp(&authority, &egress).await?;
-            info!(target = %authority, "mux TCP relay opened");
+            info!(target = %authority, priority = ?priority, "mux TCP relay opened");
             let (client_to_remote, remote_to_client) =
                 limited_copy_bidirectional(stream, &mut remote, idle, &limits, user).await?;
             metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
             metrics.add_user_tunnel_bytes(user, client_to_remote, remote_to_client);
         }
-        TunnelRequest::UdpDatagram { authority, payload } => {
+        TunnelRequest::UdpDatagram {
+            authority,
+            priority,
+            payload,
+        } => {
             limits
                 .account_and_throttle(user, payload.len() as u64)
                 .await?;
+            debug!(target = %authority, priority = ?priority, "mux UDP relay opened");
             let response = relay_udp_datagram(&authority, &payload, &egress, idle).await?;
             limits
                 .account_and_throttle(user, response.len() as u64)

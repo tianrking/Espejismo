@@ -27,7 +27,7 @@ Copy-Item "README.md" "$Out/"
 Copy-Item "README_ES.md" "$Out/"
 Copy-Item "CHANGELOG.md" "$Out/"
 Copy-Item "docs/ARCHITECTURE.md", "docs/deployment/ADMIN.md", "docs/deployment/CLI.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/PACKAGING.md", "docs/deployment/PROFILES.md", "docs/deployment/QUICKSTART.md", "docs/deployment/TUN.md", "docs/deployment/UPDATES.md", "docs/deployment/USERS.md", "docs/development/STATUS.md", "docs/testing/TEST_PLAN.md" "$Out/docs/"
-Copy-Item "scripts/setup-windows.ps1", "scripts/e2e_smoke.ps1", "scripts/stress_smoke.ps1", "scripts/install-ubuntu-remote.sh" "$Out/scripts/"
+Copy-Item "scripts/setup-windows.ps1", "scripts/e2e_smoke.sh", "scripts/e2e_smoke.ps1", "scripts/stress_smoke.sh", "scripts/stress_smoke.ps1", "scripts/install-ubuntu-remote.sh" "$Out/scripts/"
 
 Compress-Archive -Path $Out -DestinationPath "dist/$Pkg.zip" -Force
 Write-Host "created dist/$Pkg.zip"

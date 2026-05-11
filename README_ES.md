@@ -383,8 +383,9 @@ max_streams = 256
 
 [shared.obfuscation]
 profile = "balanced"
+chunk_policy = "balanced"
 randomize_chunks = true
-min_chunk = 1024
+min_chunk = 4096
 max_chunk = 16384
 
 [shared.stealth]
@@ -400,6 +401,12 @@ handshake_padding = 256
 [local.auth]
 username = "local-user"
 password = "local-pass"
+
+[local.tunnel_pool]
+min_connections = 1
+max_connections = 4
+interactive_lanes = 1
+bulk_lanes = 2
 
 [logging]
 level = "info"
@@ -542,6 +549,9 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - `[shared.pacing]` habilita pacing de escritura amigable con TCP.
   `max_bytes_per_sec = 0` mantiene throughput ilimitado y conserva los ajustes
   de burst y coalescing.
+- `[local.tunnel_pool]` mantiene varios tuneles TCP fisicos disponibles. Los
+  nuevos streams se asignan a lanes interactive o bulk segun su salud, para que
+  solicitudes pequenas no queden detras de descargas o flujos TUN grandes.
 - `[[remote.users]]` habilita multiples usuarios remotos independientes, cada
   uno con su propia PSK. Si no hay usuarios configurados, el servidor usa
   `shared.psk`.
@@ -578,10 +588,11 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - `--backpressure-cooldown-ms` controla cuanto tiempo permanece deshabilitado el
   padding tras una escritura lenta.
 - `--jitter-ms` aplica un pequeno retraso aleatorio antes de enviar frames.
-- `[shared.obfuscation]` controla la forma del trafico del emisor. `profile` puede
-  ser `low_latency`, `balanced`, `high_entropy`, o `stealth`; `randomize_chunks`
-  y los limites de fragmentos varian los tamanios de frames cifrados antes de
-  agregar padding.
+- `[shared.obfuscation]` controla la forma del trafico del emisor. `profile`
+  puede ser `low_latency`, `balanced`, `high_entropy`, `bulk`, o `stealth`.
+  `chunk_policy` selecciona chunks cifrados adaptativos: `low_latency` usa 2-8
+  KiB, `balanced` usa 4-16 KiB, `bulk` usa 16-64 KiB, `stealth` usa la capacidad
+  fija del frame stealth, y `custom` usa `min_chunk` / `max_chunk`.
 - `[shared.stealth]` se usa cuando `profile = "stealth"`: cada frame cifrado
   mide exactamente `frame_size` bytes. El transporte comienza con un
   calentamiento corto de padding aleatorio, envia datos o padding en una
@@ -621,17 +632,21 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 ```bash
 ./scripts/e2e_smoke.sh
+REQUESTS=200 CONCURRENCY=32 ./scripts/stress_smoke.sh
 ```
 
 En Windows PowerShell:
 
 ```powershell
 .\scripts\e2e_smoke.ps1
+.\scripts\stress_smoke.ps1 -Requests 200 -Concurrency 16
 ```
 
 El script inicia un servidor HTTP local, `espejismo-remote`, y `espejismo-local`,
 luego realiza verificaciones de SOCKS5 TCP, SOCKS5 UDP, proxy HTTP, HTTP CONNECT,
 admin, metricas e importacion de perfil a traves del tunel yamux cifrado.
+El script stress agrega cobertura de un stream grande, muchas solicitudes
+pequenas concurrentes, mezcla de lanes, reinicio remoto, y soak opcional.
 
 ## Logging
 

@@ -28,8 +28,9 @@ min_write_bytes = 1024
 
 [shared.obfuscation]
 profile = "balanced"
+chunk_policy = "balanced"
 randomize_chunks = true
-min_chunk = 1024
+min_chunk = 4096
 max_chunk = 16384
 
 [shared.stealth]
@@ -45,6 +46,12 @@ handshake_padding = 256
 [local.auth]
 username = "local-user"
 password = "local-pass"
+
+[local.tunnel_pool]
+min_connections = 1
+max_connections = 4
+interactive_lanes = 1
+bulk_lanes = 2
 
 [local.tun]
 enabled = false

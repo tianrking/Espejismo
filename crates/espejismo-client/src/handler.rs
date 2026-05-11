@@ -3,8 +3,8 @@ use std::time::Duration;
 
 use anyhow::Result;
 use espejismo_core::{
-    http_proxy, idle_copy_bidirectional, socks5, write_tcp_connect, write_udp_datagram, Metrics,
-    ProxyAuth,
+    http_proxy, idle_copy_bidirectional, socks5, write_tcp_connect_with_priority,
+    write_udp_datagram_with_priority, Metrics, ProxyAuth, StreamPriority,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
@@ -38,11 +38,16 @@ async fn handle_socks5_client_inner(
 ) -> Result<()> {
     match socks5::accept_request_with_auth(local, auth.as_ref()).await? {
         socks5::SocksRequest::Connect(target) => {
-            let mut stream = tunnel.open_stream().await?;
-            write_tcp_connect(&mut stream, &target.authority()).await?;
+            let priority = StreamPriority::Interactive;
+            let mut stream = tunnel.open_stream(priority).await?;
+            let lane_id = stream.lane_id();
+            write_tcp_connect_with_priority(&mut stream, &target.authority(), priority).await?;
             let (client_to_remote, remote_to_client) =
                 idle_copy_bidirectional(local, &mut stream, idle).await?;
             metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
+            tunnel
+                .record_stream_bytes(lane_id, client_to_remote, remote_to_client)
+                .await;
             Ok(())
         }
         socks5::SocksRequest::UdpAssociate => {
@@ -76,14 +81,19 @@ async fn handle_http_client_inner(
     idle: Duration,
 ) -> Result<()> {
     let target = http_proxy::accept_http_proxy_with_auth(local, auth.as_ref()).await?;
-    let mut stream = tunnel.open_stream().await?;
-    write_tcp_connect(&mut stream, &target.authority).await?;
+    let priority = StreamPriority::Interactive;
+    let mut stream = tunnel.open_stream(priority).await?;
+    let lane_id = stream.lane_id();
+    write_tcp_connect_with_priority(&mut stream, &target.authority, priority).await?;
     if !target.prebuffer.is_empty() {
         stream.write_all(&target.prebuffer).await?;
     }
     let (client_to_remote, remote_to_client) =
         idle_copy_bidirectional(local, &mut stream, idle).await?;
     metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
+    tunnel
+        .record_stream_bytes(lane_id, client_to_remote, remote_to_client)
+        .await;
     Ok(())
 }
 
@@ -117,10 +127,15 @@ async fn relay_udp_packet(
     target: &socks5::SocksTarget,
     payload: &[u8],
 ) -> Result<Vec<u8>> {
-    let mut stream = tunnel.open_stream().await?;
-    write_udp_datagram(&mut stream, &target.authority(), payload).await?;
+    let priority = StreamPriority::Interactive;
+    let mut stream = tunnel.open_stream(priority).await?;
+    let lane_id = stream.lane_id();
+    write_udp_datagram_with_priority(&mut stream, &target.authority(), priority, payload).await?;
     let len = timeout(Duration::from_secs(15), stream.read_u16()).await?? as usize;
     let mut response = vec![0_u8; len];
     timeout(Duration::from_secs(15), stream.read_exact(&mut response)).await??;
+    tunnel
+        .record_stream_bytes(lane_id, payload.len() as u64, response.len() as u64)
+        .await;
     Ok(response)
 }

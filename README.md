@@ -375,8 +375,9 @@ max_streams = 256
 
 [shared.obfuscation]
 profile = "balanced"
+chunk_policy = "balanced"
 randomize_chunks = true
-min_chunk = 1024
+min_chunk = 4096
 max_chunk = 16384
 
 [shared.stealth]
@@ -392,6 +393,12 @@ handshake_padding = 256
 [local.auth]
 username = "local-user"
 password = "local-pass"
+
+[local.tunnel_pool]
+min_connections = 1
+max_connections = 4
+interactive_lanes = 1
+bulk_lanes = 2
 
 [logging]
 level = "info"
@@ -530,6 +537,9 @@ internals and wire format specification live in
   control such as `bbr` or `cubic`.
 - `[shared.pacing]` enables TCP-friendly write pacing. `max_bytes_per_sec = 0`
   keeps throughput unlimited while still allowing burst and coalescing knobs.
+- `[local.tunnel_pool]` keeps multiple physical TCP tunnels available. New
+  streams are assigned to interactive or bulk lanes by health score so small
+  proxy requests do not queue behind large TUN or download flows.
 - `[[remote.users]]` enables multiple independent server users, each with its
   own PSK. If no users are configured, the server falls back to `shared.psk`.
 - `[remote.users.quota]` sets an optional per-user rolling byte quota. `bytes`
@@ -563,8 +573,10 @@ internals and wire format specification live in
   slow write.
 - `--jitter-ms` applies a small randomized delay before outgoing frames.
 - `[shared.obfuscation]` controls sender-side traffic shape. `profile` can be
-  `low_latency`, `balanced`, `high_entropy`, or `stealth`; `randomize_chunks`
-  and the chunk bounds vary encrypted frame sizes before padding is added.
+  `low_latency`, `balanced`, `high_entropy`, `bulk`, or `stealth`.
+  `chunk_policy` selects adaptive encrypted data chunks: `low_latency` uses
+  2-8 KiB, `balanced` uses 4-16 KiB, `bulk` uses 16-64 KiB, `stealth` uses the
+  fixed stealth payload capacity, and `custom` uses `min_chunk` / `max_chunk`.
 - `[shared.stealth]` is used when `profile = "stealth"`: every encrypted frame
   is exactly `frame_size` bytes. The transport starts with a short random
   padding warmup, sends data or padding on a paced cadence, and gradually slows
@@ -603,17 +615,21 @@ internals and wire format specification live in
 
 ```bash
 ./scripts/e2e_smoke.sh
+REQUESTS=200 CONCURRENCY=32 ./scripts/stress_smoke.sh
 ```
 
 On Windows PowerShell:
 
 ```powershell
 .\scripts\e2e_smoke.ps1
+.\scripts\stress_smoke.ps1 -Requests 200 -Concurrency 16
 ```
 
 The script starts a local HTTP server, `espejismo-remote`, and `espejismo-local`,
 then performs SOCKS5 TCP, SOCKS5 UDP, HTTP proxy, HTTP CONNECT, admin, metrics,
 and profile import checks through the encrypted yamux tunnel.
+The stress script adds single-stream, high-concurrency small-request,
+mixed-lane, remote-restart, and optional soak coverage.
 
 ## Logging
 

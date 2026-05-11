@@ -179,12 +179,18 @@ The most important knobs are:
 - `shared.max_streams`: concurrent yamux stream limit per physical tunnel.
 - `shared.idle_timeout_secs`: idle stream timeout.
 - `shared.obfuscation.profile`: sender-side traffic shape. Use `low_latency`,
-  `balanced`, `high_entropy`, or `stealth`.
+  `balanced`, `high_entropy`, `bulk`, or `stealth`.
+- `shared.obfuscation.chunk_policy`: adaptive data chunk sizing. Use
+  `low_latency` for 2-8 KiB chunks, `balanced` for 4-16 KiB chunks, `bulk` for
+  16-64 KiB chunks, `stealth` for fixed stealth capacity, or `custom` to honor
+  `min_chunk` / `max_chunk`.
 - `shared.stealth.frame_size` / `shared.stealth.tick_ms`: fixed frame size and
   base pacing when `profile = "stealth"`. The transport starts with a short
   random padding warmup, sends data or padding on a paced cadence, and slows
   idle padding toward heartbeat-like intervals.
 - `local.server`: remote server address.
+- `local.tunnel_pool`: number of physical TCP tunnel lanes and their
+  interactive/bulk split. New streams are assigned by priority and lane health.
 - `local.socks5_listen`: local SOCKS5 listener.
 - `local.http_listen`: local HTTP proxy listener.
 - `remote.listen`: remote public listener.

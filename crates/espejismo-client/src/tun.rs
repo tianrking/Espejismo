@@ -4,7 +4,10 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use espejismo_core::config::LocalTunConfig;
-use espejismo_core::{idle_copy_bidirectional, write_tcp_connect, write_udp_datagram, Metrics};
+use espejismo_core::{
+    idle_copy_bidirectional, write_tcp_connect_with_priority, write_udp_datagram_with_priority,
+    Metrics, StreamPriority,
+};
 use futures::{SinkExt, StreamExt};
 use netstack_smoltcp::{StackBuilder, TcpListener, UdpSocket};
 use tokio::io::AsyncReadExt;
@@ -121,11 +124,16 @@ async fn handle_tun_tcp(
             metrics.inc_stream_opened();
             let result = async {
                 let authority = authority_from_socket(remote);
-                let mut tunnel_stream = tunnel.open_stream().await?;
-                write_tcp_connect(&mut tunnel_stream, &authority).await?;
+                let priority = StreamPriority::Bulk;
+                let mut tunnel_stream = tunnel.open_stream(priority).await?;
+                let lane_id = tunnel_stream.lane_id();
+                write_tcp_connect_with_priority(&mut tunnel_stream, &authority, priority).await?;
                 let (client_to_remote, remote_to_client) =
                     idle_copy_bidirectional(&mut local_stream, &mut tunnel_stream, idle).await?;
                 metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
+                tunnel
+                    .record_stream_bytes(lane_id, client_to_remote, remote_to_client)
+                    .await;
                 anyhow::Ok(())
             }
             .await;
@@ -174,11 +182,16 @@ async fn relay_udp_authority(
     authority: &str,
     payload: &[u8],
 ) -> Result<Vec<u8>> {
-    let mut stream = tunnel.open_stream().await?;
-    write_udp_datagram(&mut stream, authority, payload).await?;
+    let priority = StreamPriority::Bulk;
+    let mut stream = tunnel.open_stream(priority).await?;
+    let lane_id = stream.lane_id();
+    write_udp_datagram_with_priority(&mut stream, authority, priority, payload).await?;
     let len = timeout(Duration::from_secs(15), stream.read_u16()).await?? as usize;
     let mut response = vec![0_u8; len];
     timeout(Duration::from_secs(15), stream.read_exact(&mut response)).await??;
+    tunnel
+        .record_stream_bytes(lane_id, payload.len() as u64, response.len() as u64)
+        .await;
     Ok(response)
 }
 

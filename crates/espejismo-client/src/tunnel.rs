@@ -1,15 +1,51 @@
+use std::pin::Pin;
 use std::sync::Arc;
-use std::time::Duration;
+use std::task::{Context as TaskContext, Poll};
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use espejismo_core::{
     connect_handshake, connect_tcp_stream, spawn_frame_transport, FrameOptions, HandshakeConfig,
-    Metrics, RuntimeState, TcpConfig,
+    Metrics, RuntimeState, StreamPriority, TcpConfig, TunnelLaneSnapshot, TunnelPoolConfig,
 };
 use futures::StreamExt;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::Mutex;
-use tokio_yamux::{Config as YamuxConfig, Control, Session, StreamHandle};
 use tracing::debug;
+
+use crate::mux::{client_session, MuxControl, MuxStream};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LaneKind {
+    Interactive,
+    Bulk,
+}
+
+impl LaneKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Interactive => "interactive",
+            Self::Bulk => "bulk",
+        }
+    }
+}
+
+#[derive(Default)]
+struct LaneHealth {
+    reconnect_count: u64,
+    active_streams: u64,
+    bytes_client_to_remote: u64,
+    bytes_remote_to_client: u64,
+    last_open_latency_ms: u64,
+    last_error: Option<String>,
+}
+
+struct TunnelLane {
+    id: usize,
+    kind: LaneKind,
+    control: Mutex<Option<MuxControl>>,
+    health: Mutex<LaneHealth>,
+}
 
 pub(crate) struct TunnelManager {
     server: String,
@@ -19,128 +55,267 @@ pub(crate) struct TunnelManager {
     tunnel_buffer: usize,
     metrics: Metrics,
     runtime_state: RuntimeState,
-    control: Arc<Mutex<Option<Control>>>,
+    lanes: Vec<Arc<TunnelLane>>,
+}
+
+pub(crate) struct TunnelManagerConfig {
+    pub(crate) server: String,
+    pub(crate) handshake: HandshakeConfig,
+    pub(crate) frames: FrameOptions,
+    pub(crate) tcp: TcpConfig,
+    pub(crate) tunnel_buffer: usize,
+    pub(crate) pool: TunnelPoolConfig,
+}
+
+pub(crate) struct TunnelStream {
+    inner: MuxStream,
+    lane_id: usize,
+}
+
+impl TunnelStream {
+    pub(crate) fn lane_id(&self) -> usize {
+        self.lane_id
+    }
+}
+
+impl AsyncRead for TunnelStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_read(cx, buf)
+    }
+}
+
+impl AsyncWrite for TunnelStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
 }
 
 impl TunnelManager {
     pub(crate) fn new(
-        server: String,
-        handshake: HandshakeConfig,
-        frames: FrameOptions,
-        tcp: TcpConfig,
-        tunnel_buffer: usize,
+        config: TunnelManagerConfig,
         metrics: Metrics,
         runtime_state: RuntimeState,
     ) -> Self {
+        let mut kinds = Vec::new();
+        for _ in 0..config.pool.interactive_lanes.max(1) {
+            kinds.push(LaneKind::Interactive);
+        }
+        for _ in 0..config.pool.bulk_lanes {
+            kinds.push(LaneKind::Bulk);
+        }
+        kinds.truncate(config.pool.max_connections.max(1));
+        while kinds.len()
+            < config
+                .pool
+                .min_connections
+                .min(config.pool.max_connections)
+                .max(1)
+        {
+            kinds.push(LaneKind::Interactive);
+        }
+        let lanes = kinds
+            .into_iter()
+            .enumerate()
+            .map(|(id, kind)| {
+                Arc::new(TunnelLane {
+                    id,
+                    kind,
+                    control: Mutex::new(None),
+                    health: Mutex::new(LaneHealth::default()),
+                })
+            })
+            .collect();
         Self {
-            server,
-            handshake,
-            frames,
-            tcp,
-            tunnel_buffer,
+            server: config.server,
+            handshake: config.handshake,
+            frames: config.frames,
+            tcp: config.tcp,
+            tunnel_buffer: config.tunnel_buffer,
             metrics,
             runtime_state,
-            control: Arc::new(Mutex::new(None)),
+            lanes,
         }
     }
 
-    pub(crate) async fn open_stream(&self) -> Result<StreamHandle> {
-        let mut guard = self.control.lock().await;
+    pub(crate) async fn open_stream(&self, priority: StreamPriority) -> Result<TunnelStream> {
+        let lane = self
+            .select_lane(priority)
+            .context("no tunnel lanes configured")?;
+        let lane_id = lane.id;
+        let inner = self.open_stream_on_lane(lane).await?;
+        Ok(TunnelStream { inner, lane_id })
+    }
+
+    pub(crate) async fn record_stream_bytes(
+        &self,
+        lane_id: usize,
+        client_to_remote: u64,
+        remote_to_client: u64,
+    ) {
+        if let Some(lane) = self.lanes.iter().find(|lane| lane.id == lane_id) {
+            let mut health = lane.health.lock().await;
+            health.bytes_client_to_remote = health
+                .bytes_client_to_remote
+                .saturating_add(client_to_remote);
+            health.bytes_remote_to_client = health
+                .bytes_remote_to_client
+                .saturating_add(remote_to_client);
+            health.active_streams = health.active_streams.saturating_sub(1);
+            self.publish_lane(lane, &health, "connected");
+        }
+    }
+
+    async fn open_stream_on_lane(&self, lane: Arc<TunnelLane>) -> Result<MuxStream> {
+        let started = Instant::now();
+        let mut guard = lane.control.lock().await;
         if guard.is_none() {
-            *guard = Some(
-                connect_mux(
-                    self.server.clone(),
-                    self.handshake.clone(),
-                    self.frames.clone(),
-                    self.tcp.clone(),
-                    self.tunnel_buffer,
-                    self.metrics.clone(),
-                    self.runtime_state.clone(),
-                )
-                .await?,
-            );
+            *guard = Some(self.connect_lane(lane.clone()).await?);
         }
         if let Some(control) = guard.as_mut() {
             match control.open_stream().await {
-                Ok(stream) => return Ok(stream),
+                Ok(stream) => {
+                    self.record_open_success(&lane, started.elapsed()).await;
+                    return Ok(stream);
+                }
                 Err(err) => {
-                    debug!(error = %err, "yamux stream open failed; reconnecting tunnel");
-                    self.runtime_state
-                        .record_error(format!("yamux stream open failed: {err}"));
+                    self.record_lane_error(&lane, format!("yamux stream open failed: {err}"))
+                        .await;
                     *guard = None;
                 }
             }
         }
-        *guard = Some(
-            connect_mux(
-                self.server.clone(),
-                self.handshake.clone(),
-                self.frames.clone(),
-                self.tcp.clone(),
-                self.tunnel_buffer,
-                self.metrics.clone(),
-                self.runtime_state.clone(),
-            )
-            .await?,
-        );
-        guard
+        *guard = Some(self.connect_lane(lane.clone()).await?);
+        let stream = guard
             .as_mut()
             .context("tunnel reconnect did not install control")?
             .open_stream()
             .await
-            .context("open yamux stream after reconnect")
+            .context("open yamux stream after reconnect")?;
+        self.record_open_success(&lane, started.elapsed()).await;
+        Ok(stream)
     }
-}
 
-async fn connect_mux(
-    server: String,
-    cfg: HandshakeConfig,
-    options: FrameOptions,
-    tcp: TcpConfig,
-    tunnel_buffer: usize,
-    metrics: Metrics,
-    runtime_state: RuntimeState,
-) -> Result<Control> {
-    runtime_state.set_tunnel_state("connecting");
-    apply_reconnect_backoff(&runtime_state).await;
-    let mut upstream = match connect_tcp_stream(server.as_str(), &tcp).await {
-        Ok(stream) => stream,
-        Err(err) => {
-            runtime_state.record_error(format!("connect {server}: {err}"));
-            return Err(err);
-        }
-    };
-    metrics.inc_active_physical();
-    let keys = match connect_handshake(&mut upstream, &cfg).await {
-        Ok(keys) => {
-            metrics.inc_handshake_success();
-            keys
-        }
-        Err(err) => {
-            metrics.inc_handshake_failure();
-            metrics.dec_active_physical();
-            runtime_state.record_error(format!("handshake {server}: {err}"));
-            return Err(err);
-        }
-    };
-    runtime_state.record_connect_success();
-    let transport = spawn_frame_transport(upstream, keys, options, tunnel_buffer);
-    let mut session = Session::new_client(transport, YamuxConfig::default());
-    let control = session.control();
-
-    tokio::spawn(async move {
-        while let Some(event) = session.next().await {
-            if let Err(err) = event {
-                debug!(error = %err, "yamux client session stopped");
-                runtime_state.record_error(format!("yamux client session stopped: {err}"));
-                break;
+    async fn connect_lane(&self, lane: Arc<TunnelLane>) -> Result<MuxControl> {
+        self.runtime_state.set_tunnel_state("connecting");
+        apply_reconnect_backoff(&self.runtime_state).await;
+        let mut upstream = match connect_tcp_stream(self.server.as_str(), &self.tcp).await {
+            Ok(stream) => stream,
+            Err(err) => {
+                self.record_lane_error(&lane, format!("connect {}: {err}", self.server))
+                    .await;
+                return Err(err);
             }
+        };
+        self.metrics.inc_active_physical();
+        let keys = match connect_handshake(&mut upstream, &self.handshake).await {
+            Ok(keys) => {
+                self.metrics.inc_handshake_success();
+                keys
+            }
+            Err(err) => {
+                self.metrics.inc_handshake_failure();
+                self.metrics.dec_active_physical();
+                self.record_lane_error(&lane, format!("handshake {}: {err}", self.server))
+                    .await;
+                return Err(err);
+            }
+        };
+        self.runtime_state.record_connect_success();
+        {
+            let mut health = lane.health.lock().await;
+            health.reconnect_count = health.reconnect_count.saturating_add(1);
+            health.last_error = None;
+            self.publish_lane(&lane, &health, "connected");
         }
-        runtime_state.set_tunnel_state("disconnected");
-        metrics.dec_active_physical();
-    });
+        let transport =
+            spawn_frame_transport(upstream, keys, self.frames.clone(), self.tunnel_buffer);
+        let mut session = client_session(transport);
+        let control = MuxControl::new(session.control());
+        let metrics = self.metrics.clone();
+        let runtime_state = self.runtime_state.clone();
+        let lane_for_task = lane.clone();
+        tokio::spawn(async move {
+            while let Some(event) = session.next().await {
+                if let Err(err) = event {
+                    debug!(lane = lane_for_task.id, error = %err, "yamux client session stopped");
+                    runtime_state.record_error(format!("yamux client session stopped: {err}"));
+                    break;
+                }
+            }
+            runtime_state.set_tunnel_state("disconnected");
+            metrics.dec_active_physical();
+        });
+        Ok(control)
+    }
 
-    Ok(control)
+    fn select_lane(&self, priority: StreamPriority) -> Option<Arc<TunnelLane>> {
+        let preferred = match priority {
+            StreamPriority::Interactive => LaneKind::Interactive,
+            StreamPriority::Bulk => LaneKind::Bulk,
+        };
+        self.lanes
+            .iter()
+            .filter(|lane| lane.kind == preferred)
+            .chain(self.lanes.iter())
+            .min_by_key(|lane| {
+                lane.health
+                    .try_lock()
+                    .map(|health| {
+                        let penalty = u64::from(health.last_error.is_some()) * 1_000;
+                        health.active_streams * 10 + health.last_open_latency_ms + penalty
+                    })
+                    .unwrap_or(u64::MAX / 2)
+            })
+            .cloned()
+    }
+
+    async fn record_open_success(&self, lane: &Arc<TunnelLane>, elapsed: Duration) {
+        let mut health = lane.health.lock().await;
+        health.active_streams = health.active_streams.saturating_add(1);
+        health.last_open_latency_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
+        health.last_error = None;
+        self.publish_lane(lane, &health, "connected");
+    }
+
+    async fn record_lane_error(&self, lane: &Arc<TunnelLane>, error: String) {
+        let mut health = lane.health.lock().await;
+        health.last_error = Some(error.clone());
+        self.publish_lane(lane, &health, "degraded");
+        self.runtime_state.record_error(error);
+    }
+
+    fn publish_lane(&self, lane: &TunnelLane, health: &LaneHealth, state: &str) {
+        self.runtime_state.update_tunnel_lane(TunnelLaneSnapshot {
+            id: lane.id,
+            lane: lane.kind.as_str().to_string(),
+            state: state.to_string(),
+            reconnect_count: health.reconnect_count,
+            active_streams: health.active_streams,
+            bytes_client_to_remote: health.bytes_client_to_remote,
+            bytes_remote_to_client: health.bytes_remote_to_client,
+            last_open_latency_ms: health.last_open_latency_ms,
+            last_error: health.last_error.clone(),
+        });
+    }
 }
 
 async fn apply_reconnect_backoff(runtime_state: &RuntimeState) {

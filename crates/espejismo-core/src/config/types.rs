@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::defaults::*;
 use crate::egress::EgressPolicy;
 use crate::ingress::ProxyAuth;
-use crate::protocol::framing::ObfuscationProfile;
+use crate::protocol::framing::{ChunkPolicy, ObfuscationProfile};
 
 #[derive(Clone, Debug, Default)]
 pub struct ConfigInput {
@@ -95,6 +95,8 @@ pub struct PacingConfig {
 pub struct ObfuscationConfig {
     #[serde(default)]
     pub profile: ObfuscationProfile,
+    #[serde(default)]
+    pub chunk_policy: ChunkPolicy,
     #[serde(default = "default_randomize_chunks")]
     pub randomize_chunks: bool,
     #[serde(default = "default_min_chunk")]
@@ -124,6 +126,20 @@ pub struct LocalConfig {
     pub auth: Option<ProxyAuth>,
     #[serde(default)]
     pub tun: LocalTunConfig,
+    #[serde(default)]
+    pub tunnel_pool: TunnelPoolConfig,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TunnelPoolConfig {
+    #[serde(default = "default_tunnel_pool_min_connections")]
+    pub min_connections: usize,
+    #[serde(default = "default_tunnel_pool_max_connections")]
+    pub max_connections: usize,
+    #[serde(default = "default_tunnel_pool_interactive_lanes")]
+    pub interactive_lanes: usize,
+    #[serde(default = "default_tunnel_pool_bulk_lanes")]
+    pub bulk_lanes: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -339,6 +355,7 @@ impl Default for ObfuscationConfig {
     fn default() -> Self {
         Self {
             profile: ObfuscationProfile::Balanced,
+            chunk_policy: ChunkPolicy::Balanced,
             randomize_chunks: default_randomize_chunks(),
             min_chunk: default_min_chunk(),
             max_chunk: default_max_chunk(),
@@ -364,6 +381,18 @@ impl Default for LocalConfig {
             handshake_padding: default_handshake_padding(),
             auth: None,
             tun: LocalTunConfig::default(),
+            tunnel_pool: TunnelPoolConfig::default(),
+        }
+    }
+}
+
+impl Default for TunnelPoolConfig {
+    fn default() -> Self {
+        Self {
+            min_connections: default_tunnel_pool_min_connections(),
+            max_connections: default_tunnel_pool_max_connections(),
+            interactive_lanes: default_tunnel_pool_interactive_lanes(),
+            bulk_lanes: default_tunnel_pool_bulk_lanes(),
         }
     }
 }

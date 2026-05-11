@@ -30,6 +30,22 @@ pub(super) fn default_tunnel_buffer() -> usize {
     1024 * 1024
 }
 
+pub(super) fn default_tunnel_pool_min_connections() -> usize {
+    1
+}
+
+pub(super) fn default_tunnel_pool_max_connections() -> usize {
+    4
+}
+
+pub(super) fn default_tunnel_pool_interactive_lanes() -> usize {
+    1
+}
+
+pub(super) fn default_tunnel_pool_bulk_lanes() -> usize {
+    2
+}
+
 pub(super) fn default_user_quota_window_secs() -> u64 {
     24 * 60 * 60
 }
@@ -162,7 +178,7 @@ pub(super) fn default_randomize_chunks() -> bool {
 }
 
 pub(super) fn default_min_chunk() -> usize {
-    1024
+    4 * 1024
 }
 
 pub(super) fn default_max_chunk() -> usize {

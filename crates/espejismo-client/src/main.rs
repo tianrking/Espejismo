@@ -11,19 +11,20 @@ use espejismo_core::{
     encode_config_base64, encode_profile_url, init_logging, load_config, load_config_base64,
     parse_psk, print_update_check, report_config_check, spawn_admin_server, AdminState,
     ClientProfile, ConfigInput, EspejismoConfig, FrameOptions, HandshakeConfig, LogOverrides,
-    Metrics, ProxyAuth, RuntimeState, TcpConfig,
+    Metrics, ProxyAuth, RuntimeState, TcpConfig, TunnelPoolConfig,
 };
 use tokio::net::lookup_host;
 use tokio::task::JoinSet;
 use tracing::{debug, info};
 
 mod handler;
+mod mux;
 mod route;
 mod tun;
 mod tunnel;
 
 use handler::{handle_http_client, handle_socks5_client};
-use tunnel::TunnelManager;
+use tunnel::{TunnelManager, TunnelManagerConfig};
 #[derive(Parser, Debug)]
 #[command(name = "espejismo-local")]
 struct Args {
@@ -96,6 +97,14 @@ struct Args {
     #[arg(long)]
     tunnel_buffer: Option<usize>,
     #[arg(long)]
+    tunnel_min_connections: Option<usize>,
+    #[arg(long)]
+    tunnel_max_connections: Option<usize>,
+    #[arg(long)]
+    tunnel_interactive_lanes: Option<usize>,
+    #[arg(long)]
+    tunnel_bulk_lanes: Option<usize>,
+    #[arg(long)]
     log_level: Option<String>,
     #[arg(long)]
     log_format: Option<String>,
@@ -117,6 +126,7 @@ struct LocalRuntime {
     frames: FrameOptions,
     tcp: TcpConfig,
     tunnel_buffer: usize,
+    tunnel_pool: TunnelPoolConfig,
     auth: Option<ProxyAuth>,
     tun: espejismo_core::config::LocalTunConfig,
     admin_listen: Option<SocketAddr>,
@@ -185,11 +195,14 @@ async fn main() -> Result<()> {
     }
 
     let tunnel = Arc::new(TunnelManager::new(
-        runtime.server.clone(),
-        runtime.handshake,
-        runtime.frames,
-        runtime.tcp.clone(),
-        runtime.tunnel_buffer,
+        TunnelManagerConfig {
+            server: runtime.server.clone(),
+            handshake: runtime.handshake,
+            frames: runtime.frames,
+            tcp: runtime.tcp.clone(),
+            tunnel_buffer: runtime.tunnel_buffer,
+            pool: runtime.tunnel_pool.clone(),
+        },
         metrics.clone(),
         runtime_state.clone(),
     ));
@@ -336,6 +349,19 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
         .then_some(stealth_frame_size);
 
     let mut tun = config.local.tun;
+    let mut tunnel_pool = config.local.tunnel_pool;
+    if let Some(value) = args.tunnel_min_connections {
+        tunnel_pool.min_connections = value;
+    }
+    if let Some(value) = args.tunnel_max_connections {
+        tunnel_pool.max_connections = value;
+    }
+    if let Some(value) = args.tunnel_interactive_lanes {
+        tunnel_pool.interactive_lanes = value;
+    }
+    if let Some(value) = args.tunnel_bulk_lanes {
+        tunnel_pool.bulk_lanes = value;
+    }
     if args.tun_enabled {
         tun.enabled = true;
     }
@@ -390,6 +416,7 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
                 .backpressure_cooldown_ms
                 .unwrap_or(config.shared.backpressure_cooldown_ms),
             obfuscation_profile,
+            chunk_policy: config.shared.obfuscation.chunk_policy,
             randomize_chunks: config.shared.obfuscation.randomize_chunks,
             min_chunk: config.shared.obfuscation.min_chunk,
             max_chunk: config.shared.obfuscation.max_chunk,
@@ -403,6 +430,7 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
         },
         tcp: config.shared.tcp.clone(),
         tunnel_buffer: args.tunnel_buffer.unwrap_or(config.shared.tunnel_buffer),
+        tunnel_pool,
         auth: config.local.auth,
         tun,
         admin_listen: args.admin_listen.or(config.admin.listen),
@@ -422,6 +450,19 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args) -> Result<()>
     let tun_mtu = args.tun_mtu.unwrap_or(config.local.tun.mtu);
     let tun_route_enabled = args.tun_auto_route || config.local.tun.route.enabled;
     let tun_dns_enabled = args.tun_auto_dns || config.local.tun.route.dns_enabled;
+    let mut pool = config.local.tunnel_pool.clone();
+    if let Some(value) = args.tunnel_min_connections {
+        pool.min_connections = value;
+    }
+    if let Some(value) = args.tunnel_max_connections {
+        pool.max_connections = value;
+    }
+    if let Some(value) = args.tunnel_interactive_lanes {
+        pool.interactive_lanes = value;
+    }
+    if let Some(value) = args.tunnel_bulk_lanes {
+        pool.bulk_lanes = value;
+    }
     if socks_addr.is_some() && socks_addr == http_addr {
         errors.push(
             "local.socks5_listen and local.http_listen must use different addresses".to_string(),
@@ -482,6 +523,27 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args) -> Result<()>
         println!(
             "OK pacing cap configured: {} bytes/sec",
             config.shared.pacing.max_bytes_per_sec
+        );
+    }
+    if pool.max_connections == 0 {
+        errors.push("local.tunnel_pool.max_connections must be greater than 0".to_string());
+    }
+    if pool.min_connections > pool.max_connections {
+        errors.push("local.tunnel_pool.min_connections must be <= max_connections".to_string());
+    }
+    if pool.interactive_lanes + pool.bulk_lanes == 0 {
+        errors.push("local.tunnel_pool must configure at least one lane".to_string());
+    }
+    if pool.interactive_lanes + pool.bulk_lanes > pool.max_connections {
+        errors.push(
+            "local.tunnel_pool interactive_lanes + bulk_lanes must be <= max_connections"
+                .to_string(),
+        );
+    }
+    if errors.is_empty() {
+        println!(
+            "OK tunnel pool lanes: min={}, max={}, interactive={}, bulk={}",
+            pool.min_connections, pool.max_connections, pool.interactive_lanes, pool.bulk_lanes
         );
     }
     if tun_enabled {

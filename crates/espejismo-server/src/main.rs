@@ -21,6 +21,7 @@ use tracing::{debug, info};
 mod fallback;
 mod handler;
 mod limits;
+mod mux;
 mod relay;
 mod socks5_chain;
 mod tarpit;
@@ -382,6 +383,7 @@ fn build_remote_settings(config: &EspejismoConfig, args: &Args) -> Result<Remote
                 .backpressure_cooldown_ms
                 .unwrap_or(config.shared.backpressure_cooldown_ms),
             obfuscation_profile,
+            chunk_policy: config.shared.obfuscation.chunk_policy,
             randomize_chunks: config.shared.obfuscation.randomize_chunks,
             min_chunk: config.shared.obfuscation.min_chunk,
             max_chunk: config.shared.obfuscation.max_chunk,
