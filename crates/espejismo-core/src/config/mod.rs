@@ -777,3 +777,68 @@ fn default_stealth_frame_size() -> usize {
 fn default_stealth_tick_ms() -> u64 {
     DEFAULT_STEALTH_TICK_MS
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        config_to_toml, encode_config_base64, example_config, load_config_base64, parse_config,
+    };
+
+    #[test]
+    fn example_config_roundtrips_through_toml_and_base64() {
+        let toml = example_config();
+        let config = parse_config(&toml).unwrap();
+        assert_eq!(
+            config.shared.psk.as_deref(),
+            Some("change-me-long-random-secret")
+        );
+        assert_eq!(config.local.server.as_deref(), Some("127.0.0.1:6690"));
+
+        let encoded = encode_config_base64(&config_to_toml(&config).unwrap());
+        let decoded = load_config_base64(&encoded).unwrap();
+        assert_eq!(decoded.local.server, config.local.server);
+    }
+
+    #[test]
+    fn rejects_invalid_tun_prefix_and_mtu() {
+        let bad_prefix = r#"
+            [local.tun]
+            prefix = 33
+        "#;
+        assert!(parse_config(bad_prefix).is_err());
+
+        let bad_mtu = r#"
+            [local.tun]
+            mtu = 500
+        "#;
+        assert!(parse_config(bad_mtu).is_err());
+    }
+
+    #[test]
+    fn rejects_duplicate_users() {
+        let config = r#"
+            [[remote.users]]
+            name = "alice"
+            psk = "change-me-long-random-secret"
+
+            [[remote.users]]
+            name = "alice"
+            psk = "another-long-random-secret"
+        "#;
+
+        let err = parse_config(config).unwrap_err().to_string();
+        assert!(err.contains("duplicate user"));
+    }
+
+    #[test]
+    fn rejects_enabled_dns_route_without_servers() {
+        let config = r#"
+            [local.tun.route]
+            dns_enabled = true
+            dns_servers = []
+        "#;
+
+        let err = parse_config(config).unwrap_err().to_string();
+        assert!(err.contains("dns_servers"));
+    }
+}

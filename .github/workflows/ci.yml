@@ -28,6 +28,8 @@ jobs:
         run: cargo fmt --all --check
       - name: Check
         run: cargo check --workspace --all-targets
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --workspace --all-targets
       - name: End-to-end smoke

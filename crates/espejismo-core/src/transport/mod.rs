@@ -301,3 +301,39 @@ where
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::idle_copy_bidirectional;
+    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+    use tokio::time::Duration;
+
+    #[tokio::test]
+    async fn idle_copy_bidirectional_exits_after_idle_timeout() {
+        let (mut left, _left_peer) = duplex(64);
+        let (mut right, _right_peer) = duplex(64);
+
+        let copied = idle_copy_bidirectional(&mut left, &mut right, Duration::from_millis(5)).await;
+
+        assert_eq!(copied.unwrap(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn idle_copy_bidirectional_copies_one_direction_before_shutdown() {
+        let (mut left, mut left_peer) = duplex(64);
+        let (mut right, mut right_peer) = duplex(64);
+
+        let task = tokio::spawn(async move {
+            idle_copy_bidirectional(&mut left, &mut right, Duration::from_millis(100)).await
+        });
+        left_peer.write_all(b"ping").await.unwrap();
+        left_peer.shutdown().await.unwrap();
+
+        let mut received = [0_u8; 4];
+        right_peer.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, b"ping");
+
+        let copied = task.await.unwrap().unwrap();
+        assert_eq!(copied.0, 4);
+    }
+}

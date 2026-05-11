@@ -1,0 +1,26 @@
+[package]
+name = "espejismo-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+espejismo-core = { path = "../crates/espejismo-core" }
+libfuzzer-sys = "0.4"
+
+[[bin]]
+name = "socks5_udp_packet"
+path = "fuzz_targets/socks5_udp_packet.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "config_toml"
+path = "fuzz_targets/config_toml.rs"
+test = false
+doc = false
+bench = false

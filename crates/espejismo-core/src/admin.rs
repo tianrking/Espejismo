@@ -244,3 +244,37 @@ async fn write_response(
     stream.shutdown().await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{authorized, content_length};
+
+    #[test]
+    fn authorization_accepts_bearer_and_legacy_header() {
+        assert!(authorized(&[], None));
+        assert!(authorized(
+            &["Authorization: Bearer admin-secret"],
+            Some("admin-secret")
+        ));
+        assert!(authorized(
+            &["X-Espejismo-Admin-Token: admin-secret"],
+            Some("admin-secret")
+        ));
+        assert!(!authorized(
+            &["Authorization: Bearer wrong-secret"],
+            Some("admin-secret")
+        ));
+    }
+
+    #[test]
+    fn content_length_defaults_to_zero_and_parses_case_insensitive_header() {
+        assert_eq!(content_length(&[]).unwrap(), 0);
+        assert_eq!(content_length(&["content-length: 42"]).unwrap(), 42);
+        assert_eq!(content_length(&["Content-Length: 7"]).unwrap(), 7);
+    }
+
+    #[test]
+    fn content_length_rejects_invalid_values() {
+        assert!(content_length(&["Content-Length: nope"]).is_err());
+    }
+}

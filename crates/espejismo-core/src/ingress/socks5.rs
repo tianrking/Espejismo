@@ -261,3 +261,48 @@ where
         .await?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{build_udp_packet, parse_udp_packet, SocksTarget};
+
+    #[test]
+    fn udp_packet_roundtrips_domain_target() {
+        let target = SocksTarget {
+            host: "example.com".to_string(),
+            port: 443,
+        };
+        let encoded = build_udp_packet(&target, b"hello").unwrap();
+        let decoded = parse_udp_packet(&encoded).unwrap();
+
+        assert_eq!(decoded.target.host, "example.com");
+        assert_eq!(decoded.target.port, 443);
+        assert_eq!(decoded.payload, b"hello");
+    }
+
+    #[test]
+    fn udp_packet_roundtrips_ipv6_target() {
+        let target = SocksTarget {
+            host: "2001:db8::1".to_string(),
+            port: 53,
+        };
+        let encoded = build_udp_packet(&target, b"dns").unwrap();
+        let decoded = parse_udp_packet(&encoded).unwrap();
+
+        assert_eq!(decoded.target.host, "2001:db8::1");
+        assert_eq!(decoded.target.port, 53);
+        assert_eq!(decoded.payload, b"dns");
+    }
+
+    #[test]
+    fn udp_packet_rejects_fragmentation() {
+        let packet = [0x00, 0x00, 0x01, 0x01, 127, 0, 0, 1, 0, 53];
+        assert!(parse_udp_packet(&packet).is_err());
+    }
+
+    #[test]
+    fn udp_packet_rejects_truncated_domain() {
+        let packet = [0x00, 0x00, 0x00, 0x03, 10, b'e', b'x'];
+        assert!(parse_udp_packet(&packet).is_err());
+    }
+}

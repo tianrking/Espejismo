@@ -24,6 +24,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
 cargo check --workspace --all-targets --locked
 cargo test --workspace --all-targets
+cargo check --manifest-path fuzz/Cargo.toml --bins
 ./scripts/e2e_smoke.sh
 ./scripts/package-release.sh
 ```
@@ -84,6 +85,23 @@ Current unit tests cover:
 - Per-user quota and bandwidth limiter behavior.
 - Update metadata version comparison.
 - SOCKS5 UDP ASSOCIATE packet wrapping for chained UDP egress.
+- Admin authorization and request length parsing.
+- Configuration validation for TUN, DNS route, and duplicate users.
+- Local SOCKS5 UDP parser boundary cases.
+- Transport idle timeout behavior.
+
+## Fuzz Targets
+
+The `fuzz/` crate is intentionally excluded from the main workspace so normal
+CI and release builds stay deterministic. Install `cargo-fuzz`, then run:
+
+```bash
+cargo fuzz run socks5_udp_packet
+cargo fuzz run config_toml
+```
+
+The current targets cover the SOCKS5 UDP packet parser and TOML configuration
+parser/validator.
 
 ## Regression Areas
 

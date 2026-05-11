@@ -7,12 +7,12 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use espejismo_core::config::example_config;
 use espejismo_core::{
-    accept_handshake_with_users, apply_tcp_options, bind_tcp_listener, check_for_update,
+    accept_handshake_with_users, apply_log_overrides, apply_tcp_options, bind_tcp_listener,
     config_to_toml, encode_config_base64, init_logging, load_config, load_config_base64,
-    parse_config, parse_psk, read_tunnel_request, spawn_admin_server, spawn_frame_transport,
-    AdminAction, AdminState, ConfigInput, EgressPolicy, EspejismoConfig, FrameOptions,
-    HandshakeConfig, HandshakeUser, LogConfig, LogFormat, Metrics, ProbeDefenseMode, ReplayCache,
-    RuntimeState, TcpConfig, TunnelRequest,
+    parse_config, parse_psk, print_update_check, read_tunnel_request, report_config_check,
+    spawn_admin_server, spawn_frame_transport, AdminAction, AdminState, ConfigInput, EgressPolicy,
+    EspejismoConfig, FrameOptions, HandshakeConfig, HandshakeUser, LogOverrides, Metrics,
+    ProbeDefenseMode, ReplayCache, RuntimeState, TcpConfig, TunnelRequest,
 };
 use futures::StreamExt;
 use rand::seq::SliceRandom;
@@ -26,9 +26,11 @@ use tokio_yamux::{Config as YamuxConfig, Session, StreamHandle};
 use tracing::{debug, info};
 
 mod limits;
+mod socks5_chain;
 mod tarpit;
 
 use limits::{UserLimitConfig, UserLimitRegistry};
+use socks5_chain::{connect_via_socks5_proxy, relay_udp_via_socks5_proxy};
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "espejismo-remote")]
@@ -173,7 +175,7 @@ async fn main() -> Result<()> {
         println!("{}", encode_config_base64(&config_to_toml(&config)?));
         return Ok(());
     }
-    apply_log_overrides(&mut config.logging, &args)?;
+    apply_log_overrides(&mut config.logging, &log_overrides(&args))?;
     let _log_guard = init_logging(&config.logging)?;
     let runtime = build_runtime(config, &args, config_input)?;
     let metrics = Metrics::default();
@@ -214,44 +216,12 @@ async fn main() -> Result<()> {
     }
 }
 
-fn print_update_check(update_url: Option<&str>) -> Result<()> {
-    let info = check_for_update(env!("CARGO_PKG_VERSION"), update_url)?;
-    if info.update_available {
-        println!(
-            "update available: {} -> {}",
-            info.current_version, info.latest_version
-        );
-        if let Some(url) = info.release_url {
-            println!("release: {url}");
-        }
-    } else {
-        println!("up to date: {}", info.current_version);
-    }
-    Ok(())
-}
-
-fn apply_log_overrides(config: &mut LogConfig, args: &Args) -> Result<()> {
-    if let Some(level) = &args.log_level {
-        config.level = level.clone();
-    }
-    if let Some(format) = &args.log_format {
-        config.format = parse_log_format(format)?;
-    }
-    if let Some(file) = &args.log_file {
-        config.file = Some(file.clone());
-    }
-    if args.no_log_ansi {
-        config.ansi = false;
-    }
-    Ok(())
-}
-
-fn parse_log_format(format: &str) -> Result<LogFormat> {
-    match format {
-        "compact" => Ok(LogFormat::Compact),
-        "pretty" => Ok(LogFormat::Pretty),
-        "json" => Ok(LogFormat::Json),
-        _ => anyhow::bail!("log format must be compact, pretty, or json"),
+fn log_overrides(args: &Args) -> LogOverrides {
+    LogOverrides {
+        level: args.log_level.clone(),
+        format: args.log_format.clone(),
+        file: args.log_file.clone(),
+        no_ansi: args.no_log_ansi,
     }
 }
 
@@ -326,21 +296,6 @@ async fn check_remote_config(config: &EspejismoConfig, args: &Args) -> Result<()
         }
     }
     report_config_check(warnings, errors)
-}
-
-fn report_config_check(warnings: Vec<String>, errors: Vec<String>) -> Result<()> {
-    for warning in &warnings {
-        println!("WARN {warning}");
-    }
-    for error in &errors {
-        println!("ERROR {error}");
-    }
-    if errors.is_empty() {
-        println!("config check passed");
-        Ok(())
-    } else {
-        anyhow::bail!("config check failed with {} error(s)", errors.len())
-    }
 }
 
 fn build_handshake_users(
@@ -422,10 +377,10 @@ fn build_remote_settings(config: &EspejismoConfig, args: &Args) -> Result<Remote
     let stealth_handshake = obfuscation_profile
         .is_stealth()
         .then_some(stealth_frame_size);
-    let limits = build_user_limits(&config);
+    let limits = build_user_limits(config);
 
     Ok(RemoteSettings {
-        users: Arc::new(build_handshake_users(&config, args, stealth_handshake)?),
+        users: Arc::new(build_handshake_users(config, args, stealth_handshake)?),
         frames: FrameOptions {
             max_padding: args.max_padding.unwrap_or(config.shared.max_padding),
             jitter_ms: args.jitter_ms.unwrap_or(config.shared.jitter_ms),
@@ -513,7 +468,7 @@ impl RemoteRuntime {
                             .context("reload requires --config or --config-base64; use /apply")?,
                     )?
                 };
-                apply_log_overrides(&mut config.logging, &args)?;
+                apply_log_overrides(&mut config.logging, &log_overrides(&args))?;
                 let next = build_remote_settings(&config, &args)?;
                 let user_count = next.users.len();
                 *settings.write().await = next;
@@ -824,52 +779,6 @@ async fn connect_egress_tcp(authority: &str, egress: &EgressPolicy) -> Result<Tc
         .with_context(|| format!("connect {authority}"))
 }
 
-async fn connect_via_socks5_proxy(proxy: &str, authority: &str) -> Result<TcpStream> {
-    let (host, port) = espejismo_core::split_authority(authority)?;
-    let mut stream = TcpStream::connect(proxy)
-        .await
-        .with_context(|| format!("connect SOCKS5 proxy {proxy}"))?;
-    stream.write_all(&[0x05, 0x01, 0x00]).await?;
-    let mut method = [0_u8; 2];
-    stream.read_exact(&mut method).await?;
-    anyhow::ensure!(
-        method == [0x05, 0x00],
-        "SOCKS5 proxy rejected no-auth method"
-    );
-    let host_bytes = host.as_bytes();
-    anyhow::ensure!(
-        host_bytes.len() <= u8::MAX as usize,
-        "SOCKS5 proxy target host too long"
-    );
-    let mut request = vec![0x05, 0x01, 0x00, 0x03, host_bytes.len() as u8];
-    request.extend_from_slice(host_bytes);
-    request.extend_from_slice(&port.to_be_bytes());
-    stream.write_all(&request).await?;
-    let mut head = [0_u8; 4];
-    stream.read_exact(&mut head).await?;
-    anyhow::ensure!(
-        head[0] == 0x05 && head[1] == 0x00,
-        "SOCKS5 proxy CONNECT failed"
-    );
-    match head[3] {
-        0x01 => {
-            let mut skip = [0_u8; 6];
-            stream.read_exact(&mut skip).await?;
-        }
-        0x03 => {
-            let len = stream.read_u8().await? as usize;
-            let mut skip = vec![0_u8; len + 2];
-            stream.read_exact(&mut skip).await?;
-        }
-        0x04 => {
-            let mut skip = [0_u8; 18];
-            stream.read_exact(&mut skip).await?;
-        }
-        atyp => anyhow::bail!("SOCKS5 proxy returned unsupported address type {atyp}"),
-    }
-    Ok(stream)
-}
-
 async fn relay_udp_datagram(
     authority: &str,
     payload: &[u8],
@@ -909,109 +818,6 @@ async fn relay_udp_datagram(
     .await??;
     response.truncate(n);
     Ok(response)
-}
-
-async fn relay_udp_via_socks5_proxy(
-    proxy: &str,
-    authority: &str,
-    payload: &[u8],
-    idle: Duration,
-) -> Result<Vec<u8>> {
-    let (host, port) = espejismo_core::split_authority(authority)?;
-    let mut control = TcpStream::connect(proxy)
-        .await
-        .with_context(|| format!("connect SOCKS5 proxy {proxy}"))?;
-    control.write_all(&[0x05, 0x01, 0x00]).await?;
-    let mut method = [0_u8; 2];
-    control.read_exact(&mut method).await?;
-    anyhow::ensure!(
-        method == [0x05, 0x00],
-        "SOCKS5 proxy rejected no-auth method"
-    );
-
-    control
-        .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
-        .await?;
-    let relay = read_socks5_reply_addr(&mut control).await?;
-    let bind = if relay.is_ipv4() {
-        "0.0.0.0:0"
-    } else {
-        "[::]:0"
-    };
-    let socket = UdpSocket::bind(bind).await?;
-    socket.connect(relay).await?;
-
-    let request = encode_socks5_udp_datagram(&host, port, payload)?;
-    socket.send(&request).await?;
-    let mut response = vec![0_u8; 65_535];
-    let n = timeout(
-        idle.min(Duration::from_secs(10)),
-        socket.recv(&mut response),
-    )
-    .await??;
-    decode_socks5_udp_datagram(&response[..n])
-}
-
-async fn read_socks5_reply_addr(stream: &mut TcpStream) -> Result<SocketAddr> {
-    let mut head = [0_u8; 4];
-    stream.read_exact(&mut head).await?;
-    anyhow::ensure!(
-        head[0] == 0x05 && head[1] == 0x00,
-        "SOCKS5 UDP ASSOCIATE failed"
-    );
-    let mut host = match head[3] {
-        0x01 => {
-            let mut ip = [0_u8; 4];
-            stream.read_exact(&mut ip).await?;
-            std::net::IpAddr::from(ip)
-        }
-        0x04 => {
-            let mut ip = [0_u8; 16];
-            stream.read_exact(&mut ip).await?;
-            std::net::IpAddr::from(ip)
-        }
-        atyp => anyhow::bail!("SOCKS5 proxy returned unsupported UDP relay address type {atyp}"),
-    };
-    let port = stream.read_u16().await?;
-    if host.is_unspecified() {
-        host = stream.peer_addr()?.ip();
-    }
-    Ok(SocketAddr::new(host, port))
-}
-
-fn encode_socks5_udp_datagram(host: &str, port: u16, payload: &[u8]) -> Result<Vec<u8>> {
-    let host_bytes = host.as_bytes();
-    anyhow::ensure!(
-        host_bytes.len() <= u8::MAX as usize,
-        "SOCKS5 UDP target host too long"
-    );
-    let mut out = Vec::with_capacity(6 + host_bytes.len() + payload.len());
-    out.extend_from_slice(&[0x00, 0x00, 0x00, 0x03, host_bytes.len() as u8]);
-    out.extend_from_slice(host_bytes);
-    out.extend_from_slice(&port.to_be_bytes());
-    out.extend_from_slice(payload);
-    Ok(out)
-}
-
-fn decode_socks5_udp_datagram(input: &[u8]) -> Result<Vec<u8>> {
-    anyhow::ensure!(input.len() >= 6, "SOCKS5 UDP response too short");
-    anyhow::ensure!(
-        input[0] == 0 && input[1] == 0 && input[2] == 0,
-        "SOCKS5 UDP response has unsupported fragmentation"
-    );
-    let mut offset = 4;
-    match input[3] {
-        0x01 => offset += 4,
-        0x03 => {
-            anyhow::ensure!(input.len() > offset, "SOCKS5 UDP domain length missing");
-            offset += 1 + input[offset] as usize;
-        }
-        0x04 => offset += 16,
-        atyp => anyhow::bail!("SOCKS5 UDP response has unsupported address type {atyp}"),
-    }
-    offset += 2;
-    anyhow::ensure!(input.len() >= offset, "SOCKS5 UDP response truncated");
-    Ok(input[offset..].to_vec())
 }
 
 async fn reject_or_quarantine(
@@ -1193,10 +999,7 @@ fn unix_secs(time: SystemTime) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_builtin_fallback_response, decode_socks5_udp_datagram, encode_socks5_udp_datagram,
-        looks_like_http_probe, FallbackHttpRuntime,
-    };
+    use super::{build_builtin_fallback_response, looks_like_http_probe, FallbackHttpRuntime};
     use tokio::time::Duration;
 
     #[test]
@@ -1231,12 +1034,5 @@ mod tests {
         assert!(response.contains("\r\nLast-Modified: "));
         assert!(response.contains("\r\nETag: "));
         assert!(response.contains("\r\nContent-Length: 15\r\n"));
-    }
-
-    #[test]
-    fn socks5_udp_datagram_codec_roundtrips_payload() {
-        let encoded = encode_socks5_udp_datagram("example.com", 443, b"payload").unwrap();
-        assert_eq!(&encoded[..5], &[0, 0, 0, 3, 11]);
-        assert_eq!(decode_socks5_udp_datagram(&encoded).unwrap(), b"payload");
     }
 }

@@ -4,6 +4,7 @@ members = [
     "crates/espejismo-client",
     "crates/espejismo-server",
 ]
+exclude = ["fuzz"]
 resolver = "2"
 
 [workspace.package]

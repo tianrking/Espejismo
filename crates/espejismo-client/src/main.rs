@@ -7,12 +7,12 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use espejismo_core::config::example_config;
 use espejismo_core::{
-    bind_tcp_listener, check_for_update, config_to_toml, connect_handshake, connect_tcp_stream,
+    apply_log_overrides, bind_tcp_listener, config_to_toml, connect_handshake, connect_tcp_stream,
     decode_profile_url, encode_config_base64, encode_profile_url, http_proxy,
-    idle_copy_bidirectional, init_logging, load_config, load_config_base64, parse_psk, socks5,
-    spawn_admin_server, spawn_frame_transport, write_tcp_connect, write_udp_datagram, AdminState,
-    ClientProfile, ConfigInput, EspejismoConfig, FrameOptions, HandshakeConfig, LogConfig,
-    LogFormat, Metrics, ProxyAuth, RuntimeState, TcpConfig,
+    idle_copy_bidirectional, init_logging, load_config, load_config_base64, parse_psk,
+    print_update_check, report_config_check, socks5, spawn_admin_server, spawn_frame_transport,
+    write_tcp_connect, write_udp_datagram, AdminState, ClientProfile, ConfigInput, EspejismoConfig,
+    FrameOptions, HandshakeConfig, LogOverrides, Metrics, ProxyAuth, RuntimeState, TcpConfig,
 };
 use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -169,7 +169,7 @@ async fn main() -> Result<()> {
         println!("{}", encode_config_base64(&config_to_toml(&config)?));
         return Ok(());
     }
-    apply_log_overrides(&mut config.logging, &args)?;
+    apply_log_overrides(&mut config.logging, &log_overrides(&args))?;
     let _log_guard = init_logging(&config.logging)?;
     let runtime = build_runtime(config, &args)?;
     let metrics = Metrics::default();
@@ -266,7 +266,7 @@ async fn main() -> Result<()> {
     }
 
     anyhow::ensure!(
-        listeners.len() > 0,
+        !listeners.is_empty(),
         "enable at least one local ingress: socks5_listen, http_listen, or local.tun.enabled"
     );
     info!(server = %runtime.server, "local proxy ready with reconnecting yamux tunnel manager");
@@ -311,44 +311,12 @@ async fn shutdown_signal() {
     }
 }
 
-fn print_update_check(update_url: Option<&str>) -> Result<()> {
-    let info = check_for_update(env!("CARGO_PKG_VERSION"), update_url)?;
-    if info.update_available {
-        println!(
-            "update available: {} -> {}",
-            info.current_version, info.latest_version
-        );
-        if let Some(url) = info.release_url {
-            println!("release: {url}");
-        }
-    } else {
-        println!("up to date: {}", info.current_version);
-    }
-    Ok(())
-}
-
-fn apply_log_overrides(config: &mut LogConfig, args: &Args) -> Result<()> {
-    if let Some(level) = &args.log_level {
-        config.level = level.clone();
-    }
-    if let Some(format) = &args.log_format {
-        config.format = parse_log_format(format)?;
-    }
-    if let Some(file) = &args.log_file {
-        config.file = Some(file.clone());
-    }
-    if args.no_log_ansi {
-        config.ansi = false;
-    }
-    Ok(())
-}
-
-fn parse_log_format(format: &str) -> Result<LogFormat> {
-    match format {
-        "compact" => Ok(LogFormat::Compact),
-        "pretty" => Ok(LogFormat::Pretty),
-        "json" => Ok(LogFormat::Json),
-        _ => anyhow::bail!("log format must be compact, pretty, or json"),
+fn log_overrides(args: &Args) -> LogOverrides {
+    LogOverrides {
+        level: args.log_level.clone(),
+        format: args.log_format.clone(),
+        file: args.log_file.clone(),
+        no_ansi: args.no_log_ansi,
     }
 }
 
@@ -555,21 +523,6 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args) -> Result<()>
         errors.push("TUN auto-DNS is currently implemented only on Linux".to_string());
     }
     report_config_check(warnings, errors)
-}
-
-fn report_config_check(warnings: Vec<String>, errors: Vec<String>) -> Result<()> {
-    for warning in &warnings {
-        println!("WARN {warning}");
-    }
-    for error in &errors {
-        println!("ERROR {error}");
-    }
-    if errors.is_empty() {
-        println!("config check passed");
-        Ok(())
-    } else {
-        anyhow::bail!("config check failed with {} error(s)", errors.len())
-    }
 }
 
 #[derive(Clone)]

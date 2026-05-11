@@ -1,4 +1,5 @@
 pub mod admin;
+pub mod cli_support;
 pub mod config;
 pub mod crypto;
 pub mod egress;
@@ -13,6 +14,7 @@ pub mod transport;
 pub mod updater;
 
 pub use admin::{spawn_admin_server, AdminAction, AdminState};
+pub use cli_support::{apply_log_overrides, print_update_check, report_config_check, LogOverrides};
 pub use config::{
     config_to_toml, encode_config_base64, load_config, load_config_base64, parse_config,
     AdminConfig, ConfigInput, EgressConfig, EspejismoConfig, LogConfig, LogFormat,
