@@ -16,7 +16,7 @@ y no confiables. Ingreso local via SOCKS5, HTTP, y TUN nativo opcional, secreto
 directo con X25519, frames cifrados con XChaCha20-Poly1305, multiplexacion yamux,
 padding adaptativo, pacing amigable con TCP, y puzzles de cliente.
 
-Version actual: `v0.0.2`.
+Version actual: `v0.0.3`.
 
 ## Arquitectura
 
@@ -188,6 +188,47 @@ Cada archivo contiene:
 
 ## Inicio Rapido Para Usuarios
 
+Estos comandos usan binarios descargados del release. Los usuarios normales no
+necesitan Rust, Cargo, ni clonar el codigo fuente.
+
+### Inicio Mas Rapido con Binarios
+
+Servidor remoto, Linux/macOS:
+
+```bash
+ESPEJISMO_PSK='change-me-long-random-secret' \
+./bin/espejismo-remote --listen 0.0.0.0:6690
+```
+
+Cliente local, Linux/macOS:
+
+```bash
+ESPEJISMO_PSK='change-me-long-random-secret' \
+./bin/espejismo-local \
+  --server remote.example.com:6690 \
+  --socks5-listen 127.0.0.1:6680 \
+  --http-listen 127.0.0.1:6681
+```
+
+Servidor remoto, Windows PowerShell:
+
+```powershell
+$env:ESPEJISMO_PSK = "change-me-long-random-secret"
+.\bin\espejismo-remote.exe --listen 0.0.0.0:6690
+```
+
+Cliente local, Windows PowerShell:
+
+```powershell
+$env:ESPEJISMO_PSK = "change-me-long-random-secret"
+.\bin\espejismo-local.exe --server remote.example.com:6690 --socks5-listen 127.0.0.1:6680 --http-listen 127.0.0.1:6681
+```
+
+Luego configura las aplicaciones con `127.0.0.1:6680` como proxy SOCKS5 o
+`127.0.0.1:6681` como proxy HTTP. Para produccion, es mejor usar un TOML o un
+perfil `espejismo://import/...` para no dejar secretos ni ajustes en el
+historial del shell.
+
 ### Servidor Linux
 
 Descarga y extrae el release de Linux en el servidor, luego ejecuta:
@@ -257,7 +298,10 @@ detallados de despliegue en Linux, macOS, y Windows.
 
 ## Compilacion Para Desarrolladores
 
-Los desarrolladores que clonan el repositorio necesitan Rust/Cargo.
+Los desarrolladores que clonan el repositorio necesitan Rust/Cargo. Los usuarios
+normales deberian usar los binarios del release en la seccion de descarga.
+
+Compilar todos los binarios:
 
 ```bash
 git clone https://github.com/tianrking/Espejismo.git
@@ -265,11 +309,40 @@ cd Espejismo
 cargo build --release
 ```
 
+Los binarios compilados quedan en:
+
+```text
+target/release/espejismo-local
+target/release/espejismo-remote
+```
+
 Ejecutar desde codigo fuente durante desarrollo:
 
 ```bash
 cargo run --bin espejismo-remote -- --config configs/examples/espejismo.toml
 cargo run --bin espejismo-local -- --config configs/examples/espejismo.toml
+```
+
+Ejecutar desde codigo fuente sin archivo de config:
+
+```bash
+ESPEJISMO_PSK='change-me-long-random-secret' \
+cargo run --bin espejismo-remote -- --listen 0.0.0.0:6690
+
+ESPEJISMO_PSK='change-me-long-random-secret' \
+cargo run --bin espejismo-local -- \
+  --server 127.0.0.1:6690 \
+  --socks5-listen 127.0.0.1:6680 \
+  --http-listen 127.0.0.1:6681
+```
+
+Ejecutar las verificaciones usadas antes del tag:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets
+./scripts/e2e_smoke.sh
 ```
 
 Crear un paquete local:

@@ -36,7 +36,7 @@ Pinned release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=v0.0.2 bash
+  | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=v0.0.3 bash
 ```
 
 Custom archive URL, useful for private releases or self-hosted packages:
@@ -84,6 +84,44 @@ Inspect the service:
 systemctl status espejismo-remote --no-pager
 journalctl -u espejismo-remote -f
 ```
+
+## Direct Binary Start
+
+Downloaded release archives can run without Rust or Cargo.
+
+Remote server, Linux/macOS:
+
+```bash
+ESPEJISMO_PSK='change-me-long-random-secret' \
+./bin/espejismo-remote --listen 0.0.0.0:6690
+```
+
+Local client, Linux/macOS:
+
+```bash
+ESPEJISMO_PSK='change-me-long-random-secret' \
+./bin/espejismo-local \
+  --server remote.example.com:6690 \
+  --socks5-listen 127.0.0.1:6680 \
+  --http-listen 127.0.0.1:6681
+```
+
+Remote server, Windows PowerShell:
+
+```powershell
+$env:ESPEJISMO_PSK = "change-me-long-random-secret"
+.\bin\espejismo-remote.exe --listen 0.0.0.0:6690
+```
+
+Local client, Windows PowerShell:
+
+```powershell
+$env:ESPEJISMO_PSK = "change-me-long-random-secret"
+.\bin\espejismo-local.exe --server remote.example.com:6690 --socks5-listen 127.0.0.1:6680 --http-listen 127.0.0.1:6681
+```
+
+For production deployments, use `--config`, `--config-base64`, or
+`espejismo://import/...` profiles so secrets are not kept in shell history.
 
 ## Windows Local Client
 

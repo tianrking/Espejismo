@@ -1,5 +1,46 @@
 # Changelog
 
+## v0.0.3
+
+`v0.0.3` focuses on production hardening for the TCP-first tunnel path, native
+TUN takeover, and release quality gates.
+
+### Added
+
+- Shared TCP socket tuning: TCP_NODELAY, keepalive, configurable socket buffers,
+  Linux TCP_USER_TIMEOUT, and optional Linux congestion-control selection.
+- TCP-friendly write pacing with rate caps, burst budget, minimum write size,
+  heartbeat frames, and backpressure-aware padding reduction.
+- Enriched admin runtime state through `/status` and `/connections`, including
+  tunnel state, reconnect count, recent errors, egress policy version, config
+  apply time, active streams, physical connections, and per-user bytes.
+- Config diagnostics through `--check-config` for local and remote binaries.
+- Optional native TUN ingress for system-level traffic capture.
+- Linux, Windows, and macOS route/DNS managers for explicit TUN auto-route and
+  auto-DNS takeover, with protected remote-server routes and best-effort restore
+  on shutdown.
+- Fuzz targets for protocol/config parsing and CI clippy enforcement.
+
+### Changed
+
+- Refactored large local, remote, and configuration modules into clearer runtime
+  modules with separate handlers, relay helpers, route managers, tunnel manager,
+  and config type/default files.
+- Updated deployment, packaging, TUN, CLI, status, testing, English README, and
+  Spanish README documentation to match the current TCP-first, cross-platform
+  release shape.
+- Smoke tests now verify release update checks against the `0.0.3` binary
+  version and exercise platform-aware TUN config diagnostics.
+
+### Known Limits
+
+- The stable production underlay remains TCP/yamux. SOCKS5 UDP ASSOCIATE and
+  TUN UDP datagrams are relayed at the application layer over the encrypted TCP
+  tunnel; the physical UDP underlay remains experimental core code.
+- Native route/DNS takeover requires elevated OS privileges and may need manual
+  adjustment on hosts with unusual route tables, VPN clients, or managed DNS
+  policy.
+
 ## v0.0.2
 
 `v0.0.2` turns Espejismo from a minimal encrypted proxy prototype into a more

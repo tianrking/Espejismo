@@ -16,7 +16,7 @@ networks. SOCKS5, HTTP, and optional native TUN local ingress, X25519 forward
 secrecy, XChaCha20-Poly1305 encrypted frames, yamux multiplexing, adaptive
 padding, TCP-friendly pacing, and client puzzles.
 
-Current release: `v0.0.2`.
+Current release: `v0.0.3`.
 
 ## Architecture
 
@@ -179,6 +179,47 @@ Each archive contains:
 
 ## Quick Start For Users
 
+These commands use downloaded release binaries. Normal users do not need Rust,
+Cargo, or a source checkout.
+
+### Fastest Binary Start
+
+Remote server, Linux/macOS:
+
+```bash
+ESPEJISMO_PSK='change-me-long-random-secret' \
+./bin/espejismo-remote --listen 0.0.0.0:6690
+```
+
+Local client, Linux/macOS:
+
+```bash
+ESPEJISMO_PSK='change-me-long-random-secret' \
+./bin/espejismo-local \
+  --server remote.example.com:6690 \
+  --socks5-listen 127.0.0.1:6680 \
+  --http-listen 127.0.0.1:6681
+```
+
+Remote server, Windows PowerShell:
+
+```powershell
+$env:ESPEJISMO_PSK = "change-me-long-random-secret"
+.\bin\espejismo-remote.exe --listen 0.0.0.0:6690
+```
+
+Local client, Windows PowerShell:
+
+```powershell
+$env:ESPEJISMO_PSK = "change-me-long-random-secret"
+.\bin\espejismo-local.exe --server remote.example.com:6690 --socks5-listen 127.0.0.1:6680 --http-listen 127.0.0.1:6681
+```
+
+Then point applications at `127.0.0.1:6680` as a SOCKS5 proxy or
+`127.0.0.1:6681` as an HTTP proxy. For production, prefer a TOML config or an
+`espejismo://import/...` profile so secrets and user settings are not kept in
+shell history.
+
 ### Linux Server
 
 Download and extract the Linux release archive on the server, then run:
@@ -248,7 +289,10 @@ Linux, macOS, and Windows deployment flows.
 
 ## Developer Build
 
-Developers who clone the repository need Rust/Cargo.
+Developers who clone the repository need Rust/Cargo. Normal users should use
+release binaries from the download section instead.
+
+Build all binaries:
 
 ```bash
 git clone https://github.com/tianrking/Espejismo.git
@@ -256,11 +300,40 @@ cd Espejismo
 cargo build --release
 ```
 
+The compiled binaries are written to:
+
+```text
+target/release/espejismo-local
+target/release/espejismo-remote
+```
+
 Run from source during development:
 
 ```bash
 cargo run --bin espejismo-remote -- --config configs/examples/espejismo.toml
 cargo run --bin espejismo-local -- --config configs/examples/espejismo.toml
+```
+
+Run from source without a config file:
+
+```bash
+ESPEJISMO_PSK='change-me-long-random-secret' \
+cargo run --bin espejismo-remote -- --listen 0.0.0.0:6690
+
+ESPEJISMO_PSK='change-me-long-random-secret' \
+cargo run --bin espejismo-local -- \
+  --server 127.0.0.1:6690 \
+  --socks5-listen 127.0.0.1:6680 \
+  --http-listen 127.0.0.1:6681
+```
+
+Run the release checks used before tagging:
+
+```bash
+cargo fmt --all --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace --all-targets
+./scripts/e2e_smoke.sh
 ```
 
 Create a local release package:
