@@ -15,9 +15,8 @@ Endpoints:
 - `GET /status`: JSON status snapshot.
 - `GET /connections`: metrics plus runtime tunnel state for troubleshooting.
 - `GET /metrics`: Prometheus-style text metrics.
-- `POST /reload`: remote only, reload the original `--config` or
-  `--config-base64` source.
-- `POST /apply`: remote only, apply a TOML config supplied as the request body.
+- `POST /reload`: reload the original `--config` or `--config-base64` source.
+- `POST /apply`: apply a TOML config supplied as the request body.
 
 Authentication:
 
@@ -37,14 +36,17 @@ totals.
 reconnect count, consecutive failures, recent errors, egress policy version,
 process start time, and last config apply time.
 
-Runtime apply updates new remote tunnels and newly opened logical streams. A
-restart is still required for process-owned resources such as `remote.listen`,
-`admin.listen`, and log file handles.
+Runtime apply updates new tunnels and newly opened logical streams. A restart is
+still required for process-owned resources such as listener sockets,
+`admin.listen`, TUN device ownership, and log file handles.
 
-Runtime-managed settings include remote users, user quotas, user bandwidth
-limits, egress policy, fallback behavior, handshake timing, frame shaping, and
-stream limits. Existing established streams keep their current resources until
-they naturally close.
+Remote runtime-managed settings include users, quotas, bandwidth limits, egress
+policy, fallback behavior, handshake timing, frame shaping, and stream limits.
+Local runtime-managed settings include `local.server`, local proxy auth,
+TCP/pacing/obfuscation knobs, mux mode, and `local.tunnel_pool`; applying those
+settings rebuilds the tunnel pool without restarting the local process.
+Existing established streams keep their current resources until they naturally
+close.
 
 Keep admin listeners bound to loopback unless they sit behind a trusted local
 firewall or service manager.

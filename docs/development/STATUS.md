@@ -21,10 +21,14 @@ Current release target: `v0.0.4`.
   metrics.
 - Per-user rolling byte quotas and aggregate relay bandwidth limits.
 - Configurable compact, pretty, or JSON logging with optional file output.
-- Admin HTTP endpoint with health, status, Prometheus-style metrics, and reload.
+- Admin HTTP endpoint with health, status, Prometheus-style metrics, reload, and
+  apply on both local and remote binaries.
 - Admin `/connections` and enriched `/status` runtime health with tunnel state,
   reconnect count, recent errors, egress policy version, and config apply time.
-- Remote runtime config reload/apply through the authenticated admin endpoint.
+- Runtime config reload/apply through the authenticated admin endpoint. Remote
+  apply updates users, quotas, egress, fallback, and transport policy; local
+  apply rebuilds the tunnel pool and updates server/auth/pacing/mux settings for
+  new flows.
 - Config diagnostics through `--check-config` for both local and remote.
 - Shared TCP socket options: TCP_NODELAY, keepalive, heartbeat frames, socket
   buffers, Linux TCP_USER_TIMEOUT, and optional congestion-control selection.
@@ -32,8 +36,9 @@ Current release target: `v0.0.4`.
 - Local tunnel pool with configurable interactive and bulk physical TCP lanes,
   health-scored stream placement, per-lane reconnect/error/latency/byte status,
   and logical stream muxing wrapped behind a replaceable module.
-- Native mux alpha with OPEN, DATA, WINDOW_UPDATE, FIN, RST, PING, and GOAWAY
-  frame types, byte-window flow control, bounded per-stream receive queues,
+- Native mux beta with OPEN, DATA, WINDOW_UPDATE, FIN, RST, PING, and GOAWAY
+  frame types, PING RTT measurement, graceful GOAWAY drain, priority-aware data
+  scheduling, byte-window flow control, bounded per-stream receive/send queues,
   max-stream enforcement, and idle GOAWAY shutdown. It is selectable through
   `[shared.mux].mode = "native"` while `yamux` remains the production default.
 - Stream priority field in TCP CONNECT and UDP DATAGRAM tunnel requests.

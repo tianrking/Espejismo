@@ -10,6 +10,7 @@ use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_yamux::{Config as YamuxConfig, Control, Session, StreamHandle};
 
 use crate::config::{MuxConfig, MuxMode};
+use crate::protocol::request::StreamPriority;
 
 #[derive(Clone, Copy, Debug)]
 pub struct MuxRuntimeConfig {
@@ -17,7 +18,9 @@ pub struct MuxRuntimeConfig {
     pub max_streams: usize,
     pub native_initial_window_bytes: usize,
     pub native_stream_buffer_frames: usize,
+    pub native_send_queue_frames: usize,
     pub native_idle_timeout: Duration,
+    pub native_drain_timeout: Duration,
 }
 
 impl MuxRuntimeConfig {
@@ -27,7 +30,9 @@ impl MuxRuntimeConfig {
             max_streams: max_streams.max(1) as usize,
             native_initial_window_bytes: config.native_initial_window_bytes.max(1),
             native_stream_buffer_frames: config.native_stream_buffer_frames.max(1),
+            native_send_queue_frames: config.native_send_queue_frames.max(1),
             native_idle_timeout: Duration::from_secs(config.native_idle_timeout_secs.max(1)),
+            native_drain_timeout: Duration::from_secs(config.native_drain_timeout_secs.max(1)),
         }
     }
 
@@ -36,7 +41,9 @@ impl MuxRuntimeConfig {
             max_streams: self.max_streams,
             initial_window_bytes: self.native_initial_window_bytes,
             stream_buffer_frames: self.native_stream_buffer_frames,
+            send_queue_frames: self.native_send_queue_frames,
             session_idle_timeout: self.native_idle_timeout,
+            drain_timeout: self.native_drain_timeout,
         }
     }
 }
@@ -63,9 +70,24 @@ pub enum ServerMuxSession<T> {
 
 impl MuxControl {
     pub async fn open_stream(&mut self) -> Result<MuxStream> {
+        self.open_stream_with_priority(StreamPriority::Interactive)
+            .await
+    }
+
+    pub async fn open_stream_with_priority(
+        &mut self,
+        priority: StreamPriority,
+    ) -> Result<MuxStream> {
         match self {
             Self::Yamux(control) => Ok(MuxStream::Yamux(control.open_stream().await?)),
-            Self::Native(control) => Ok(MuxStream::Native(control.open_stream().await?)),
+            Self::Native(control) => Ok(MuxStream::Native(control.open_stream(priority).await?)),
+        }
+    }
+
+    pub async fn ping_rtt(&self) -> Result<Option<Duration>> {
+        match self {
+            Self::Yamux(_) => Ok(None),
+            Self::Native(control) => Ok(Some(control.ping_rtt().await?)),
         }
     }
 }

@@ -24,3 +24,10 @@ path = "fuzz_targets/config_toml.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "native_mux_frame"
+path = "fuzz_targets/native_mux_frame.rs"
+test = false
+doc = false
+bench = false

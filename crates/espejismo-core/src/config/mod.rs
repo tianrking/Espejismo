@@ -121,8 +121,16 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
         "shared.mux.native_stream_buffer_frames must be greater than 0"
     );
     anyhow::ensure!(
+        config.shared.mux.native_send_queue_frames > 0,
+        "shared.mux.native_send_queue_frames must be greater than 0"
+    );
+    anyhow::ensure!(
         config.shared.mux.native_idle_timeout_secs > 0,
         "shared.mux.native_idle_timeout_secs must be greater than 0"
+    );
+    anyhow::ensure!(
+        config.shared.mux.native_drain_timeout_secs > 0,
+        "shared.mux.native_drain_timeout_secs must be greater than 0"
     );
     if let Some(algorithm) = &config.shared.tcp.congestion_control {
         anyhow::ensure!(

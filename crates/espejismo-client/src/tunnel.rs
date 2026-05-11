@@ -10,7 +10,7 @@ use espejismo_core::{
 };
 use futures::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 use tracing::debug;
 
 use crate::mux::{client_session, MuxControl, MuxRuntimeConfig, MuxStream};
@@ -37,6 +37,7 @@ struct LaneHealth {
     bytes_client_to_remote: u64,
     bytes_remote_to_client: u64,
     last_open_latency_ms: u64,
+    last_mux_rtt_ms: Option<u64>,
     last_error: Option<String>,
 }
 
@@ -60,6 +61,10 @@ pub(crate) struct TunnelManager {
     lanes: Vec<Arc<TunnelLane>>,
 }
 
+pub(crate) struct TunnelService {
+    inner: RwLock<Arc<TunnelManager>>,
+}
+
 pub(crate) struct TunnelManagerConfig {
     pub(crate) server: String,
     pub(crate) handshake: HandshakeConfig,
@@ -78,6 +83,35 @@ pub(crate) struct TunnelStream {
 impl TunnelStream {
     pub(crate) fn lane_id(&self) -> usize {
         self.lane_id
+    }
+}
+
+impl TunnelService {
+    pub(crate) fn new(manager: TunnelManager) -> Self {
+        Self {
+            inner: RwLock::new(Arc::new(manager)),
+        }
+    }
+
+    pub(crate) async fn replace(&self, manager: TunnelManager) {
+        *self.inner.write().await = Arc::new(manager);
+    }
+
+    pub(crate) async fn open_stream(&self, priority: StreamPriority) -> Result<TunnelStream> {
+        let manager = self.inner.read().await.clone();
+        manager.open_stream(priority).await
+    }
+
+    pub(crate) async fn record_stream_bytes(
+        &self,
+        lane_id: usize,
+        client_to_remote: u64,
+        remote_to_client: u64,
+    ) {
+        let manager = self.inner.read().await.clone();
+        manager
+            .record_stream_bytes(lane_id, client_to_remote, remote_to_client)
+            .await;
     }
 }
 
@@ -166,7 +200,7 @@ impl TunnelManager {
             .select_lane(priority)
             .context("no tunnel lanes configured")?;
         let lane_id = lane.id;
-        let inner = self.open_stream_on_lane(lane).await?;
+        let inner = self.open_stream_on_lane(lane, priority).await?;
         Ok(TunnelStream { inner, lane_id })
     }
 
@@ -189,7 +223,11 @@ impl TunnelManager {
         }
     }
 
-    async fn open_stream_on_lane(&self, lane: Arc<TunnelLane>) -> Result<MuxStream> {
+    async fn open_stream_on_lane(
+        &self,
+        lane: Arc<TunnelLane>,
+        priority: StreamPriority,
+    ) -> Result<MuxStream> {
         let started = Instant::now();
         let mut guard = lane.control.lock().await;
         let max_attempts = self.max_reconnect_attempts.max(1);
@@ -200,7 +238,7 @@ impl TunnelManager {
             let Some(control) = guard.as_mut() else {
                 continue;
             };
-            match control.open_stream().await {
+            match control.open_stream_with_priority(priority).await {
                 Ok(stream) => {
                     self.record_open_success(&lane, started.elapsed()).await;
                     return Ok(stream);
@@ -267,6 +305,11 @@ impl TunnelManager {
             runtime_state.set_tunnel_state("disconnected");
             metrics.dec_active_physical();
         });
+        if let Ok(Some(rtt)) = control.ping_rtt().await {
+            let mut health = lane.health.lock().await;
+            health.last_mux_rtt_ms = Some(rtt.as_millis().min(u64::MAX as u128) as u64);
+            self.publish_lane(&lane, &health, "connected");
+        }
         Ok(control)
     }
 
@@ -316,6 +359,7 @@ impl TunnelManager {
             bytes_client_to_remote: health.bytes_client_to_remote,
             bytes_remote_to_client: health.bytes_remote_to_client,
             last_open_latency_ms: health.last_open_latency_ms,
+            last_mux_rtt_ms: health.last_mux_rtt_ms,
             last_error: health.last_error.clone(),
         });
     }

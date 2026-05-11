@@ -502,7 +502,9 @@ dependencies = [
  "espejismo-core",
  "futures",
  "netstack-smoltcp",
+ "serde_json",
  "tokio",
+ "toml",
  "tracing",
  "tun-rs",
 ]

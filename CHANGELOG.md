@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Native mux beta behavior: PING RTT measurement, graceful GOAWAY drain,
+  priority-aware DATA scheduling, bounded per-stream send queues, parser fuzz
+  target, and JSON mux benchmark output.
+- Local admin runtime reload/apply. `espejismo-local` can rebuild its tunnel
+  pool and update server, local auth, TCP/pacing/obfuscation, mux mode, and
+  tunnel-pool settings for new flows without restarting the process.
+- Release workflow checksum generation and draft GitHub release creation on tag
+  pushes.
+
+### Clarified
+
+- Wire design does not impersonate TLS, HTTP/2, QUIC, or another named protocol;
+  Espejismo keeps its own authenticated encrypted byte stream and avoids stable
+  cleartext markers.
+
 ## v0.0.4
 
 `v0.0.4` focuses on production hardening for the TCP-first tunnel path, native

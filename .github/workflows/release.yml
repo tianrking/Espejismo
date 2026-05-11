@@ -87,7 +87,7 @@ jobs:
           cp README.md "dist/${pkg}/"
           cp README_ES.md "dist/${pkg}/"
           cp CHANGELOG.md "dist/${pkg}/"
-          cp docs/ARCHITECTURE.md docs/deployment/ADMIN.md docs/deployment/CLI.md docs/deployment/EGRESS.md docs/deployment/LOGGING.md docs/deployment/PACKAGING.md docs/deployment/PROFILES.md docs/deployment/QUICKSTART.md docs/deployment/UPDATES.md docs/deployment/USERS.md docs/development/STATUS.md docs/testing/TEST_PLAN.md "dist/${pkg}/docs/"
+          cp docs/ARCHITECTURE.md docs/deployment/ADMIN.md docs/deployment/CLI.md docs/deployment/EGRESS.md docs/deployment/LOGGING.md docs/deployment/PACKAGING.md docs/deployment/PROFILES.md docs/deployment/QUICKSTART.md docs/deployment/TUN.md docs/deployment/UPDATES.md docs/deployment/USERS.md docs/development/STATUS.md docs/testing/TEST_PLAN.md "dist/${pkg}/docs/"
           cp scripts/setup-windows.ps1 scripts/e2e_smoke.ps1 scripts/stress_smoke.ps1 scripts/install-ubuntu-remote.sh "dist/${pkg}/scripts/"
           tar -C dist -czf "dist/${pkg}.tar.gz" "${pkg}"
       - name: Package Windows
@@ -102,7 +102,7 @@ jobs:
           Copy-Item "README.md" "dist/$pkg/"
           Copy-Item "README_ES.md" "dist/$pkg/"
           Copy-Item "CHANGELOG.md" "dist/$pkg/"
-          Copy-Item "docs/ARCHITECTURE.md", "docs/deployment/ADMIN.md", "docs/deployment/CLI.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/PACKAGING.md", "docs/deployment/PROFILES.md", "docs/deployment/QUICKSTART.md", "docs/deployment/UPDATES.md", "docs/deployment/USERS.md", "docs/development/STATUS.md", "docs/testing/TEST_PLAN.md" "dist/$pkg/docs/"
+          Copy-Item "docs/ARCHITECTURE.md", "docs/deployment/ADMIN.md", "docs/deployment/CLI.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/PACKAGING.md", "docs/deployment/PROFILES.md", "docs/deployment/QUICKSTART.md", "docs/deployment/TUN.md", "docs/deployment/UPDATES.md", "docs/deployment/USERS.md", "docs/development/STATUS.md", "docs/testing/TEST_PLAN.md" "dist/$pkg/docs/"
           Copy-Item "scripts/setup-windows.ps1", "scripts/e2e_smoke.ps1", "scripts/stress_smoke.ps1", "scripts/install-ubuntu-remote.sh" "dist/$pkg/scripts/"
           Compress-Archive -Path "dist/$pkg" -DestinationPath "dist/$pkg.zip" -Force
       - name: Upload artifact
@@ -114,10 +114,34 @@ jobs:
             dist/*.zip
           if-no-files-found: error
 
-  github-release:
-    name: publish GitHub release
-    if: startsWith(github.ref, 'refs/tags/')
+  checksums:
+    name: checksums
     needs: artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Generate SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd dist
+          sha256sum *.tar.gz *.zip > SHA256SUMS
+      - name: Upload checksums
+        uses: actions/upload-artifact@v4
+        with:
+          name: espejismo-checksums
+          path: dist/SHA256SUMS
+          if-no-files-found: error
+
+  github-release:
+    name: draft GitHub release
+    if: startsWith(github.ref, 'refs/tags/')
+    needs:
+      - artifacts
+      - checksums
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
@@ -129,3 +153,5 @@ jobs:
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/SHA256SUMS
+          draft: true

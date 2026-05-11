@@ -9,11 +9,13 @@ use espejismo_core::config::example_config;
 use espejismo_core::{
     apply_log_overrides, bind_tcp_listener, config_to_toml, decode_profile_url,
     encode_config_base64, encode_profile_url, init_logging, load_config, load_config_base64,
-    parse_psk, print_update_check, report_config_check, spawn_admin_server, AdminState,
-    ClientProfile, ConfigInput, EspejismoConfig, FrameOptions, HandshakeConfig, LogOverrides,
-    Metrics, ProxyAuth, RuntimeState, TcpConfig, TunnelPoolConfig,
+    parse_psk, print_update_check, report_config_check, spawn_admin_server, AdminAction,
+    AdminState, ClientProfile, ConfigInput, EspejismoConfig, FrameOptions, HandshakeConfig,
+    LogOverrides, Metrics, ProxyAuth, RuntimeState, TcpConfig, TunnelPoolConfig,
 };
+use serde_json::json;
 use tokio::net::lookup_host;
+use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tracing::{debug, info};
 
@@ -24,8 +26,9 @@ mod tun;
 mod tunnel;
 
 use handler::{handle_http_client, handle_socks5_client};
-use tunnel::{TunnelManager, TunnelManagerConfig};
-#[derive(Parser, Debug)]
+use tunnel::{TunnelManager, TunnelManagerConfig, TunnelService};
+
+#[derive(Parser, Clone, Debug)]
 #[command(name = "espejismo-local", version)]
 struct Args {
     #[arg(long)]
@@ -118,6 +121,7 @@ struct Args {
     admin_token: Option<String>,
 }
 
+#[derive(Clone)]
 struct LocalRuntime {
     server: String,
     socks5_listen: Option<SocketAddr>,
@@ -133,6 +137,31 @@ struct LocalRuntime {
     admin_listen: Option<SocketAddr>,
     admin_token: Option<String>,
     idle_timeout: Duration,
+}
+
+struct LocalRuntimeService {
+    runtime: RwLock<LocalRuntime>,
+    tunnel: Arc<TunnelService>,
+}
+
+impl LocalRuntimeService {
+    fn new(runtime: LocalRuntime, metrics: Metrics, runtime_state: RuntimeState) -> Self {
+        let manager = build_tunnel_manager(&runtime, metrics, runtime_state);
+        Self {
+            runtime: RwLock::new(runtime),
+            tunnel: Arc::new(TunnelService::new(manager)),
+        }
+    }
+
+    async fn snapshot(&self) -> LocalRuntime {
+        self.runtime.read().await.clone()
+    }
+
+    async fn apply(&self, runtime: LocalRuntime, metrics: Metrics, runtime_state: RuntimeState) {
+        let manager = build_tunnel_manager(&runtime, metrics, runtime_state);
+        self.tunnel.replace(manager).await;
+        *self.runtime.write().await = runtime;
+    }
 }
 
 #[tokio::main]
@@ -157,10 +186,11 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    let mut config = load_config(ConfigInput {
+    let config_input = ConfigInput {
         path: args.config.clone(),
         base64: args.config_base64.clone(),
-    })?;
+    };
+    let mut config = load_config(config_input.clone())?;
     if let Some(profile_url) = &args.import_profile {
         decode_profile_url(profile_url)?.apply_to_config(&mut config);
     }
@@ -182,7 +212,19 @@ async fn main() -> Result<()> {
     let runtime = build_runtime(config, &args)?;
     let metrics = Metrics::default();
     let runtime_state = RuntimeState::default();
+    let service = Arc::new(LocalRuntimeService::new(
+        runtime.clone(),
+        metrics.clone(),
+        runtime_state.clone(),
+    ));
     if let Some(addr) = runtime.admin_listen {
+        let reload = local_reload_action(
+            config_input,
+            args.clone(),
+            service.clone(),
+            metrics.clone(),
+            runtime_state.clone(),
+        );
         spawn_admin_server(
             addr,
             AdminState {
@@ -190,40 +232,25 @@ async fn main() -> Result<()> {
                 metrics: metrics.clone(),
                 runtime: runtime_state.clone(),
                 token: runtime.admin_token.clone(),
-                reload: None,
+                reload: Some(reload),
             },
         );
     }
 
-    let tunnel = Arc::new(TunnelManager::new(
-        TunnelManagerConfig {
-            server: runtime.server.clone(),
-            handshake: runtime.handshake,
-            frames: runtime.frames,
-            tcp: runtime.tcp.clone(),
-            mux: runtime.mux,
-            tunnel_buffer: runtime.tunnel_buffer,
-            pool: runtime.tunnel_pool.clone(),
-        },
-        metrics.clone(),
-        runtime_state.clone(),
-    ));
-
     let mut listeners = JoinSet::new();
     if let Some(addr) = runtime.socks5_listen {
         let listener = bind_tcp_listener(addr, &runtime.tcp)?;
-        let tunnel = tunnel.clone();
-        let auth = runtime.auth.clone();
+        let service = service.clone();
         let metrics = metrics.clone();
-        let idle = runtime.idle_timeout;
-        let tcp = runtime.tcp.clone();
         listeners.spawn(async move {
             info!(listen = %addr, "SOCKS5 proxy listening");
             loop {
                 let (socket, peer) = listener.accept().await?;
-                let _ = espejismo_core::apply_tcp_options(&socket, &tcp);
-                let tunnel = tunnel.clone();
-                let auth = auth.clone();
+                let current = service.snapshot().await;
+                let _ = espejismo_core::apply_tcp_options(&socket, &current.tcp);
+                let tunnel = service.tunnel.clone();
+                let auth = current.auth.clone();
+                let idle = current.idle_timeout;
                 let metrics = metrics.clone();
                 metrics.inc_accepted();
                 tokio::spawn(async move {
@@ -241,18 +268,17 @@ async fn main() -> Result<()> {
 
     if let Some(addr) = runtime.http_listen {
         let listener = bind_tcp_listener(addr, &runtime.tcp)?;
-        let tunnel = tunnel.clone();
-        let auth = runtime.auth.clone();
+        let service = service.clone();
         let metrics = metrics.clone();
-        let idle = runtime.idle_timeout;
-        let tcp = runtime.tcp.clone();
         listeners.spawn(async move {
             info!(listen = %addr, "HTTP proxy listening");
             loop {
                 let (socket, peer) = listener.accept().await?;
-                let _ = espejismo_core::apply_tcp_options(&socket, &tcp);
-                let tunnel = tunnel.clone();
-                let auth = auth.clone();
+                let current = service.snapshot().await;
+                let _ = espejismo_core::apply_tcp_options(&socket, &current.tcp);
+                let tunnel = service.tunnel.clone();
+                let auth = current.auth.clone();
+                let idle = current.idle_timeout;
                 let metrics = metrics.clone();
                 metrics.inc_accepted();
                 tokio::spawn(async move {
@@ -271,7 +297,7 @@ async fn main() -> Result<()> {
         listeners.spawn(tun::run_tun_ingress(
             runtime.tun.clone(),
             runtime.server.clone(),
-            tunnel.clone(),
+            service.tunnel.clone(),
             metrics.clone(),
             runtime.idle_timeout,
         ));
@@ -296,6 +322,81 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn build_tunnel_manager(
+    runtime: &LocalRuntime,
+    metrics: Metrics,
+    runtime_state: RuntimeState,
+) -> TunnelManager {
+    TunnelManager::new(
+        TunnelManagerConfig {
+            server: runtime.server.clone(),
+            handshake: runtime.handshake.clone(),
+            frames: runtime.frames.clone(),
+            tcp: runtime.tcp.clone(),
+            mux: runtime.mux,
+            tunnel_buffer: runtime.tunnel_buffer,
+            pool: runtime.tunnel_pool.clone(),
+        },
+        metrics,
+        runtime_state,
+    )
+}
+
+fn local_reload_action(
+    source: ConfigInput,
+    args: Args,
+    service: Arc<LocalRuntimeService>,
+    metrics: Metrics,
+    runtime_state: RuntimeState,
+) -> AdminAction {
+    Arc::new(move |body| {
+        let source = source.clone();
+        let args = args.clone();
+        let service = service.clone();
+        let metrics = metrics.clone();
+        let runtime_state = runtime_state.clone();
+        Box::pin(async move {
+            let mut config = match body {
+                Some(toml) => {
+                    toml::from_str::<EspejismoConfig>(&toml).context("parse local apply config")?
+                }
+                None => load_config(source)
+                    .context("reload requires --config or --config-base64; use /apply")?,
+            };
+            if let Some(profile_url) = &args.import_profile {
+                decode_profile_url(profile_url)?.apply_to_config(&mut config);
+            }
+            apply_log_overrides(&mut config.logging, &log_overrides(&args))?;
+            let runtime = build_runtime(config, &args)?;
+            service
+                .apply(runtime, metrics.clone(), runtime_state.clone())
+                .await;
+            runtime_state.mark_config_applied();
+            Ok(json!({
+                "ok": true,
+                "applied": true,
+                "role": "local",
+                "runtime_updated": [
+                    "server",
+                    "local.auth",
+                    "shared.tcp",
+                    "shared.pacing",
+                    "shared.obfuscation",
+                    "shared.mux",
+                    "local.tunnel_pool"
+                ],
+                "restart_required_for": [
+                    "local.socks5_listen",
+                    "local.http_listen",
+                    "local.tun",
+                    "admin.listen",
+                    "logging.file"
+                ]
+            }))
+        })
+    })
 }
 
 async fn shutdown_signal() {

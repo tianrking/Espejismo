@@ -200,8 +200,12 @@ The most important knobs are:
 - `shared.mux.native_initial_window_bytes`: native mux send window per stream.
 - `shared.mux.native_stream_buffer_frames`: native mux bounded receive queue per
   stream.
+- `shared.mux.native_send_queue_frames`: native mux bounded sender queue per
+  stream before local writes apply backpressure.
 - `shared.mux.native_idle_timeout_secs`: idle native mux session timeout before
   GOAWAY.
+- `shared.mux.native_drain_timeout_secs`: graceful GOAWAY drain window for
+  existing streams.
 - `local.tunnel_pool.max_reconnect_attempts`: per-request reconnect attempts
   before returning an explicit local proxy error.
 - `shared.obfuscation.profile`: sender-side traffic shape. Use `low_latency`,

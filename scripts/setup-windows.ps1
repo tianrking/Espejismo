@@ -33,7 +33,9 @@ param(
     [string]$MuxMode = "yamux",
     [int]$NativeMuxInitialWindowBytes = 1048576,
     [int]$NativeMuxStreamBufferFrames = 128,
+    [int]$NativeMuxSendQueueFrames = 64,
     [int]$NativeMuxIdleTimeoutSecs = 300,
+    [int]$NativeMuxDrainTimeoutSecs = 30,
     [bool]$PacingEnabled = $true,
     [int64]$PacingMaxBytesPerSec = 0,
     [int]$PacingBurstBytes = 65536,
@@ -197,7 +199,9 @@ recv_buffer_bytes = $TcpRecvBufferBytes
 mode = $(Quote-Toml $MuxMode)
 native_initial_window_bytes = $NativeMuxInitialWindowBytes
 native_stream_buffer_frames = $NativeMuxStreamBufferFrames
+native_send_queue_frames = $NativeMuxSendQueueFrames
 native_idle_timeout_secs = $NativeMuxIdleTimeoutSecs
+native_drain_timeout_secs = $NativeMuxDrainTimeoutSecs
 
 [shared.pacing]
 enabled = $($PacingEnabled.ToString().ToLowerInvariant())

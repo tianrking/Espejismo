@@ -16,12 +16,12 @@ use tracing::{debug, info, warn};
 use tun_rs::DeviceBuilder;
 
 use crate::route;
-use crate::TunnelManager;
+use crate::tunnel::TunnelService;
 
 pub async fn run_tun_ingress(
     config: LocalTunConfig,
     server: String,
-    tunnel: Arc<TunnelManager>,
+    tunnel: Arc<TunnelService>,
     metrics: Metrics,
     idle: Duration,
 ) -> Result<()> {
@@ -112,7 +112,7 @@ pub async fn run_tun_ingress(
 
 async fn handle_tun_tcp(
     mut tcp_listener: TcpListener,
-    tunnel: Arc<TunnelManager>,
+    tunnel: Arc<TunnelService>,
     metrics: Metrics,
     idle: Duration,
 ) {
@@ -146,7 +146,7 @@ async fn handle_tun_tcp(
     }
 }
 
-async fn handle_tun_udp(udp_socket: UdpSocket, tunnel: Arc<TunnelManager>, metrics: Metrics) {
+async fn handle_tun_udp(udp_socket: UdpSocket, tunnel: Arc<TunnelService>, metrics: Metrics) {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let (mut read_half, mut write_half) = udp_socket.split();
     tokio::spawn(async move {
@@ -178,7 +178,7 @@ async fn handle_tun_udp(udp_socket: UdpSocket, tunnel: Arc<TunnelManager>, metri
 }
 
 async fn relay_udp_authority(
-    tunnel: Arc<TunnelManager>,
+    tunnel: Arc<TunnelService>,
     authority: &str,
     payload: &[u8],
 ) -> Result<Vec<u8>> {

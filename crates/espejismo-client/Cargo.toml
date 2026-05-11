@@ -18,6 +18,8 @@ clap.workspace = true
 espejismo-core = { path = "../espejismo-core" }
 futures.workspace = true
 netstack-smoltcp.workspace = true
+serde_json.workspace = true
 tokio.workspace = true
+toml.workspace = true
 tracing.workspace = true
 tun-rs.workspace = true

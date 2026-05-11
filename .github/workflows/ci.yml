@@ -32,6 +32,9 @@ jobs:
         run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - name: Test
         run: cargo test --workspace --all-targets
+      - name: Fuzz target check
+        if: matrix.os == 'ubuntu-latest'
+        run: cargo check --manifest-path fuzz/Cargo.toml
       - name: End-to-end smoke
         if: matrix.os == 'ubuntu-latest'
         run: ./scripts/e2e_smoke.sh

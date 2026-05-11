@@ -10,11 +10,11 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::timeout;
 
-use crate::tunnel::TunnelManager;
+use crate::tunnel::TunnelService;
 
 pub(crate) async fn handle_socks5_client(
     mut local: TcpStream,
-    tunnel: Arc<TunnelManager>,
+    tunnel: Arc<TunnelService>,
     auth: Option<ProxyAuth>,
     metrics: Metrics,
     idle: Duration,
@@ -31,7 +31,7 @@ pub(crate) async fn handle_socks5_client(
 
 async fn handle_socks5_client_inner(
     local: &mut TcpStream,
-    tunnel: Arc<TunnelManager>,
+    tunnel: Arc<TunnelService>,
     auth: Option<ProxyAuth>,
     metrics: Metrics,
     idle: Duration,
@@ -58,7 +58,7 @@ async fn handle_socks5_client_inner(
 
 pub(crate) async fn handle_http_client(
     mut local: TcpStream,
-    tunnel: Arc<TunnelManager>,
+    tunnel: Arc<TunnelService>,
     auth: Option<ProxyAuth>,
     metrics: Metrics,
     idle: Duration,
@@ -75,7 +75,7 @@ pub(crate) async fn handle_http_client(
 
 async fn handle_http_client_inner(
     local: &mut TcpStream,
-    tunnel: Arc<TunnelManager>,
+    tunnel: Arc<TunnelService>,
     auth: Option<ProxyAuth>,
     metrics: Metrics,
     idle: Duration,
@@ -99,7 +99,7 @@ async fn handle_http_client_inner(
 
 async fn handle_udp_associate(
     control_stream: &mut TcpStream,
-    tunnel: Arc<TunnelManager>,
+    tunnel: Arc<TunnelService>,
     metrics: Metrics,
     idle: Duration,
 ) -> Result<()> {
@@ -123,7 +123,7 @@ async fn handle_udp_associate(
 }
 
 async fn relay_udp_packet(
-    tunnel: Arc<TunnelManager>,
+    tunnel: Arc<TunnelService>,
     target: &socks5::SocksTarget,
     payload: &[u8],
 ) -> Result<Vec<u8>> {

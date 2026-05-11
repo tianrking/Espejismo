@@ -181,8 +181,16 @@ pub(super) fn default_native_mux_stream_buffer_frames() -> usize {
     128
 }
 
+pub(super) fn default_native_mux_send_queue_frames() -> usize {
+    64
+}
+
 pub(super) fn default_native_mux_idle_timeout_secs() -> u64 {
     300
+}
+
+pub(super) fn default_native_mux_drain_timeout_secs() -> u64 {
+    30
 }
 
 pub(super) fn default_tunnel_pool_max_reconnect_attempts() -> u32 {

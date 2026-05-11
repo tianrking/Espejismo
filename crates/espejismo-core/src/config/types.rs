@@ -97,8 +97,12 @@ pub struct MuxConfig {
     pub native_initial_window_bytes: usize,
     #[serde(default = "default_native_mux_stream_buffer_frames")]
     pub native_stream_buffer_frames: usize,
+    #[serde(default = "default_native_mux_send_queue_frames")]
+    pub native_send_queue_frames: usize,
     #[serde(default = "default_native_mux_idle_timeout_secs")]
     pub native_idle_timeout_secs: u64,
+    #[serde(default = "default_native_mux_drain_timeout_secs")]
+    pub native_drain_timeout_secs: u64,
 }
 
 impl Default for MuxConfig {
@@ -107,7 +111,9 @@ impl Default for MuxConfig {
             mode: MuxMode::default(),
             native_initial_window_bytes: default_native_mux_initial_window_bytes(),
             native_stream_buffer_frames: default_native_mux_stream_buffer_frames(),
+            native_send_queue_frames: default_native_mux_send_queue_frames(),
             native_idle_timeout_secs: default_native_mux_idle_timeout_secs(),
+            native_drain_timeout_secs: default_native_mux_drain_timeout_secs(),
         }
     }
 }

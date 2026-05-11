@@ -81,7 +81,9 @@ recv_buffer_bytes = 1048576
 mode = "${MUX_MODE}"
 native_initial_window_bytes = 1048576
 native_stream_buffer_frames = 128
+native_send_queue_frames = 64
 native_idle_timeout_secs = 60
+native_drain_timeout_secs = 10
 
 [shared.pacing]
 enabled = true
@@ -254,6 +256,32 @@ curl --silent --show-error --max-time 5 \
   -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   "http://${LOCAL_ADMIN_ADDR}/connections" \
   | grep -q "\"active_physical_connections\""
+
+LOCAL_APPLY_FILE="$(mktemp /tmp/espejismo-local-apply.XXXXXX.toml)"
+cp "${CONFIG_FILE}" "${LOCAL_APPLY_FILE}"
+python3 - "${LOCAL_APPLY_FILE}" "${PROXY_PASS}" "${PROXY_PASS}-reloaded" <<'PY'
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+text = path.read_text()
+text = text.replace(f'password = "{sys.argv[2]}"', f'password = "{sys.argv[3]}"')
+path.write_text(text)
+PY
+
+curl --silent --show-error --max-time 5 \
+  -X POST \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  --data-binary "@${LOCAL_APPLY_FILE}" \
+  "http://${LOCAL_ADMIN_ADDR}/apply" \
+  | grep -q '"applied": true'
+
+curl --silent --show-error --max-time 10 \
+  --proxy-user "${PROXY_USER}:${PROXY_PASS}-reloaded" \
+  --socks5-hostname "${SOCKS5_ADDR}" \
+  -H "X-Espejismo-Probe: ${PROBE_TOKEN}-local-reload" \
+  "http://${HTTP_ADDR}:${HTTP_PORT}/probe/local-reload/${PROBE_TOKEN}" \
+  | grep -q "\"path\": \"/probe/local-reload/${PROBE_TOKEN}\""
 
 curl --silent --show-error --max-time 5 \
   -H "Authorization: Bearer ${ADMIN_TOKEN}" \

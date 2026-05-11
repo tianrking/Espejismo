@@ -7,6 +7,10 @@ networks. The implementation keeps the protocol split into small modules so the
 cryptographic handshake, replay protection, framing, padding, and application
 relay can evolve independently.
 
+Espejismo does not impersonate TLS, HTTP/2, QUIC, or any other named
+application protocol. The design goal is an authenticated private encrypted byte
+stream with no stable cleartext TLV markers or borrowed protocol fingerprint.
+
 ## Crates
 
 - `espejismo-core`: shared protocol library. It owns the handshake, replay
@@ -104,7 +108,7 @@ integration can reuse them without disturbing the stable proxy path.
 The recommended production path is TCP with `shared.mux.mode = "yamux"` because
 it is portable, simple to deploy, and predictable under ordinary NAT, cloud
 firewall, and QoS devices. `shared.mux.mode = "native"` enables the in-tree
-native mux alpha for tests and benchmarks. SOCKS5 UDP ASSOCIATE is an
+native mux beta for tests and benchmarks. SOCKS5 UDP ASSOCIATE is an
 application-level UDP relay carried over the same authenticated TCP tunnel. A
 physical UDP underlay remains experimental reserve, not the default reliability
 path.
@@ -124,11 +128,14 @@ string, and `--decode-config-base64` prints that string back as TOML.
 profile URL for client onboarding. `--import-profile` applies that profile to a
 local config before startup.
 
-`espejismo-remote` can hot-apply runtime settings through the authenticated admin
+Both binaries can hot-apply runtime settings through the authenticated admin
 endpoint. `POST /reload` re-reads the original config source; `POST /apply`
-accepts a TOML request body. New physical tunnels and newly opened logical
-streams see the new users, quotas, bandwidth limits, egress policy, fallback,
-and transport-shaping settings.
+accepts a TOML request body. Remote apply updates new physical tunnels and newly
+opened logical streams with the new users, quotas, bandwidth limits, egress
+policy, fallback, and transport-shaping settings. Local apply rebuilds the
+tunnel pool for new proxy/TUN flows and can update `local.server`, local auth,
+TCP/pacing/obfuscation settings, mux mode, and tunnel-pool layout without
+restarting the process.
 
 ## Users And Egress
 
@@ -147,7 +154,7 @@ CONNECT. UDP uses SOCKS5 UDP ASSOCIATE when `remote.egress.socks5_proxy` is set.
 - `config/`: TOML and base64 configuration loading.
 - `crypto/`: authenticated first packet, X25519, HKDF, and AEAD helpers.
 - `ingress/`: local protocol parsers such as SOCKS5 and HTTP proxy.
-- `mux/`: in-tree native mux alpha with OPEN, DATA, WINDOW_UPDATE, FIN, RST,
+- `mux/`: in-tree native mux beta with OPEN, DATA, WINDOW_UPDATE, FIN, RST,
   PING, and GOAWAY frames.
 - `protocol/`: encrypted frames, puzzles, UDP underlay primitives, and replay
   protection.
@@ -179,7 +186,7 @@ fallback because it naturally supplies a fuller fingerprint.
 ## Next Layer: Migration
 
 Multiplexing is behind a replaceable wrapper. `yamux` remains the production
-default, while the native mux alpha exercises the same proxy path through
+default, while the native mux beta exercises the same proxy path through
 Espejismo-owned frames. Transparent migration across a failed physical tunnel
 remains a higher-level connection-manager task: it should own reconnection,
 unsent-buffer tracking, stream retry policy, and user-visible failure semantics.

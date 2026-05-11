@@ -385,7 +385,9 @@ max_chunk = 16384
 mode = "yamux"
 native_initial_window_bytes = 1048576
 native_stream_buffer_frames = 128
+native_send_queue_frames = 64
 native_idle_timeout_secs = 300
+native_drain_timeout_secs = 30
 
 [shared.stealth]
 frame_size = 4096

@@ -119,7 +119,9 @@ recv_buffer_bytes = 1048576
 mode = "${MUX_MODE}"
 native_initial_window_bytes = 1048576
 native_stream_buffer_frames = 128
+native_send_queue_frames = 64
 native_idle_timeout_secs = 60
+native_drain_timeout_secs = 10
 
 [shared.pacing]
 enabled = true
