@@ -109,6 +109,12 @@ allow_ports = [${HTTP_PORT}, ${UDP_PORT}]
 EOF
 
 CONFIG_B64="$(base64 <"${CONFIG_FILE}" | tr -d '\n')"
+LOCAL_CONFIG_B64="$(cargo run --quiet --bin espejismo-local -- --config "${CONFIG_FILE}" --print-config-base64)"
+cargo run --quiet --bin espejismo-local -- --decode-config-base64 "${LOCAL_CONFIG_B64}" \
+  | grep -q 'socks5_listen'
+REMOTE_CONFIG_B64="$(cargo run --quiet --bin espejismo-remote -- --config "${CONFIG_FILE}" --print-config-base64)"
+cargo run --quiet --bin espejismo-remote -- --decode-config-base64 "${REMOTE_CONFIG_B64}" \
+  | grep -q 'handshake_timeout_ms'
 PROFILE_URL="$(cargo run --quiet --bin espejismo-local -- --config "${CONFIG_FILE}" --print-client-profile --profile-name smoke)"
 case "${PROFILE_URL}" in
   espejismo://import/*) ;;

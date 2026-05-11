@@ -12,6 +12,8 @@
 - HTTP proxy ingress with optional Basic proxy authentication, CONNECT, and
   absolute-form HTTP forwarding.
 - Shared TOML configuration and base64 configuration import.
+- CLI config conversion with `--print-config-base64` and
+  `--decode-config-base64`.
 - Client profile export/import through `espejismo://import/...` URLs.
 - Multi-user remote authentication with independent per-user PSKs and user
   metrics.

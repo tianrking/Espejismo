@@ -5,12 +5,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use espejismo_core::config::{encode_config_base64, example_config};
+use espejismo_core::config::example_config;
 use espejismo_core::{
-    accept_handshake_with_users, check_for_update, init_logging, load_config, parse_config,
-    parse_psk, read_tunnel_request, spawn_admin_server, spawn_frame_transport, AdminAction,
-    AdminState, ConfigInput, EgressPolicy, EspejismoConfig, FrameOptions, HandshakeConfig,
-    HandshakeUser, LogConfig, LogFormat, Metrics, ProbeDefenseMode, ReplayCache, TunnelRequest,
+    accept_handshake_with_users, check_for_update, config_to_toml, encode_config_base64,
+    init_logging, load_config, load_config_base64, parse_config, parse_psk, read_tunnel_request,
+    spawn_admin_server, spawn_frame_transport, AdminAction, AdminState, ConfigInput, EgressPolicy,
+    EspejismoConfig, FrameOptions, HandshakeConfig, HandshakeUser, LogConfig, LogFormat, Metrics,
+    ProbeDefenseMode, ReplayCache, TunnelRequest,
 };
 use futures::StreamExt;
 use rand::seq::SliceRandom;
@@ -39,6 +40,10 @@ struct Args {
     print_example_config: bool,
     #[arg(long)]
     print_example_config_base64: bool,
+    #[arg(long)]
+    print_config_base64: bool,
+    #[arg(long)]
+    decode_config_base64: Option<String>,
     #[arg(long)]
     check_update: bool,
     #[arg(long)]
@@ -135,6 +140,11 @@ async fn main() -> Result<()> {
         print_update_check(args.update_url.as_deref())?;
         return Ok(());
     }
+    if let Some(encoded) = &args.decode_config_base64 {
+        let config = load_config_base64(encoded)?;
+        print!("{}", config_to_toml(&config)?);
+        return Ok(());
+    }
     if args.print_example_config || args.print_example_config_base64 {
         let example = example_config();
         if args.print_example_config_base64 {
@@ -150,6 +160,10 @@ async fn main() -> Result<()> {
         base64: args.config_base64.clone(),
     };
     let mut config = load_config(config_input.clone())?;
+    if args.print_config_base64 {
+        println!("{}", encode_config_base64(&config_to_toml(&config)?));
+        return Ok(());
+    }
     apply_log_overrides(&mut config.logging, &args)?;
     let _log_guard = init_logging(&config.logging)?;
     let runtime = build_runtime(config, &args, config_input)?;

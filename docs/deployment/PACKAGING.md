@@ -63,10 +63,24 @@ CONFIG_B64="$(base64 -w0 configs/espejismo.toml)"
 ./bin/espejismo-local --config-base64 "$CONFIG_B64"
 ```
 
+The binaries can produce and decode that one-line config form directly:
+
+```bash
+CONFIG_B64="$(./bin/espejismo-local --config configs/espejismo.toml --print-config-base64)"
+./bin/espejismo-local --decode-config-base64 "$CONFIG_B64" > configs/espejismo.toml
+```
+
 PowerShell base64:
 
 ```powershell
 $CONFIG_B64 = [Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes((Get-Content .\configs\espejismo.toml -Raw)))
 .\bin\espejismo-remote.exe --config-base64 $CONFIG_B64
 .\bin\espejismo-local.exe --config-base64 $CONFIG_B64
+```
+
+PowerShell direct conversion:
+
+```powershell
+$CONFIG_B64 = .\bin\espejismo-local.exe --config .\configs\espejismo.toml --print-config-base64
+.\bin\espejismo-local.exe --decode-config-base64 $CONFIG_B64 > .\configs\espejismo.toml
 ```

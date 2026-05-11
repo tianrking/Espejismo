@@ -24,7 +24,7 @@ Copy-Item "$TargetDir/espejismo-local.exe" "$Out/bin/"
 Copy-Item "$TargetDir/espejismo-remote.exe" "$Out/bin/"
 Copy-Item "configs/examples/espejismo.toml" "$Out/configs/"
 Copy-Item "README.md" "$Out/"
-Copy-Item "docs/ARCHITECTURE.md", "docs/deployment/ADMIN.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/PACKAGING.md", "docs/deployment/PROFILES.md", "docs/deployment/QUICKSTART.md", "docs/development/STATUS.md", "docs/testing/TEST_PLAN.md" "$Out/docs/"
+Copy-Item "docs/ARCHITECTURE.md", "docs/deployment/ADMIN.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/PACKAGING.md", "docs/deployment/PROFILES.md", "docs/deployment/QUICKSTART.md", "docs/deployment/UPDATES.md", "docs/deployment/USERS.md", "docs/development/STATUS.md", "docs/testing/TEST_PLAN.md" "$Out/docs/"
 Copy-Item "scripts/setup-windows.ps1", "scripts/e2e_smoke.ps1", "scripts/stress_smoke.ps1", "scripts/install-ubuntu-remote.sh" "$Out/scripts/"
 
 Compress-Archive -Path $Out -DestinationPath "dist/$Pkg.zip" -Force

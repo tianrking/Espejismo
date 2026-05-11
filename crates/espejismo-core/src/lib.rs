@@ -12,8 +12,9 @@ pub mod updater;
 
 pub use admin::{spawn_admin_server, AdminAction, AdminState};
 pub use config::{
-    load_config, parse_config, AdminConfig, ConfigInput, EgressConfig, EspejismoConfig, LogConfig,
-    LogFormat, ObfuscationConfig, ProbeDefenseMode,
+    config_to_toml, encode_config_base64, load_config, load_config_base64, parse_config,
+    AdminConfig, ConfigInput, EgressConfig, EspejismoConfig, LogConfig, LogFormat,
+    ObfuscationConfig, ProbeDefenseMode,
 };
 pub use crypto::{
     accept_handshake, accept_handshake_with_replay, accept_handshake_with_users, connect_handshake,

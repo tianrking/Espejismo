@@ -5,13 +5,13 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use espejismo_core::config::{encode_config_base64, example_config};
+use espejismo_core::config::example_config;
 use espejismo_core::{
-    check_for_update, connect_handshake, decode_profile_url, encode_profile_url, http_proxy,
-    idle_copy_bidirectional, init_logging, load_config, parse_psk, socks5, spawn_admin_server,
-    spawn_frame_transport, write_tcp_connect, write_udp_datagram, AdminState, ClientProfile,
-    ConfigInput, EspejismoConfig, FrameOptions, HandshakeConfig, LogConfig, LogFormat, Metrics,
-    ProxyAuth,
+    check_for_update, config_to_toml, connect_handshake, decode_profile_url, encode_config_base64,
+    encode_profile_url, http_proxy, idle_copy_bidirectional, init_logging, load_config,
+    load_config_base64, parse_psk, socks5, spawn_admin_server, spawn_frame_transport,
+    write_tcp_connect, write_udp_datagram, AdminState, ClientProfile, ConfigInput, EspejismoConfig,
+    FrameOptions, HandshakeConfig, LogConfig, LogFormat, Metrics, ProxyAuth,
 };
 use futures::StreamExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -32,6 +32,10 @@ struct Args {
     print_example_config: bool,
     #[arg(long)]
     print_example_config_base64: bool,
+    #[arg(long)]
+    print_config_base64: bool,
+    #[arg(long)]
+    decode_config_base64: Option<String>,
     #[arg(long)]
     check_update: bool,
     #[arg(long)]
@@ -103,6 +107,11 @@ async fn main() -> Result<()> {
         print_update_check(args.update_url.as_deref())?;
         return Ok(());
     }
+    if let Some(encoded) = &args.decode_config_base64 {
+        let config = load_config_base64(encoded)?;
+        print!("{}", config_to_toml(&config)?);
+        return Ok(());
+    }
     if args.print_example_config || args.print_example_config_base64 {
         let example = example_config();
         if args.print_example_config_base64 {
@@ -123,6 +132,10 @@ async fn main() -> Result<()> {
     if args.print_client_profile {
         let profile = ClientProfile::from_config(args.profile_name.clone(), &config)?;
         println!("{}", encode_profile_url(&profile)?);
+        return Ok(());
+    }
+    if args.print_config_base64 {
+        println!("{}", encode_config_base64(&config_to_toml(&config)?));
         return Ok(());
     }
     apply_log_overrides(&mut config.logging, &args)?;

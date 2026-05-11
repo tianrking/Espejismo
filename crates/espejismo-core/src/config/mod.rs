@@ -443,6 +443,10 @@ pub fn example_config() -> String {
     toml::to_string_pretty(&config).expect("example config serializes")
 }
 
+pub fn config_to_toml(config: &EspejismoConfig) -> Result<String> {
+    toml::to_string_pretty(config).context("serialize TOML config")
+}
+
 pub fn encode_config_base64(toml: &str) -> String {
     base64::engine::general_purpose::STANDARD.encode(toml.as_bytes())
 }

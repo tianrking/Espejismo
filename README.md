@@ -374,6 +374,13 @@ cargo run --bin espejismo-remote -- --config-base64 "$CONFIG_B64"
 cargo run --bin espejismo-local -- --config-base64 "$CONFIG_B64"
 ```
 
+Espejismo can also convert configs without shell-specific base64 flags:
+
+```bash
+CONFIG_B64="$(cargo run --bin espejismo-local -- --config espejismo.toml --print-config-base64)"
+cargo run --bin espejismo-local -- --decode-config-base64 "$CONFIG_B64" > espejismo.toml
+```
+
 You can print an example directly as base64:
 
 ```bash
@@ -423,6 +430,8 @@ internals and wire format specification live in
 - `espejismo-local --print-client-profile` emits an
   `espejismo://import/...` profile URL that can be imported with
   `--import-profile`.
+- `--print-config-base64` prints the selected TOML config as a one-line base64
+  string. `--decode-config-base64` prints that string back as TOML.
 - `--check-update` checks the latest release metadata and prints whether a newer
   version is available. `--update-url` can point at a compatible JSON endpoint
   with `tag_name` or `latest_version`. See
