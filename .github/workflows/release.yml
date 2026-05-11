@@ -73,7 +73,22 @@ jobs:
         run: cargo build --release --locked --target ${{ matrix.target }} --bin espejismo-local --bin espejismo-remote
       - name: Build with cross
         if: matrix.use_cross == true
-        run: cross build --release --locked --target ${{ matrix.target }} --bin espejismo-local --bin espejismo-remote
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            echo "cross build attempt ${attempt}/5 for ${{ matrix.target }}"
+            if cross build --release --locked --target ${{ matrix.target }} --bin espejismo-local --bin espejismo-remote; then
+              exit 0
+            fi
+            status=$?
+            if [[ "${attempt}" == "5" ]]; then
+              exit "${status}"
+            fi
+            echo "::warning::cross build failed for ${{ matrix.target }} with status ${status}; retrying after backoff"
+            docker image prune -f || true
+            sleep $((attempt * 20))
+          done
       - name: Package Unix
         if: runner.os != 'Windows'
         shell: bash
