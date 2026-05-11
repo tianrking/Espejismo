@@ -7,10 +7,10 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use espejismo_core::config::{encode_config_base64, example_config};
 use espejismo_core::{
-    accept_handshake_with_replay, idle_copy_bidirectional, init_logging, load_config, parse_psk,
+    accept_handshake_with_users, idle_copy_bidirectional, init_logging, load_config, parse_psk,
     read_tunnel_request, spawn_admin_server, spawn_frame_transport, AdminState, ConfigInput,
-    EgressPolicy, EspejismoConfig, FrameOptions, HandshakeConfig, LogConfig, LogFormat, Metrics,
-    ProbeDefenseMode, ReplayCache, TunnelRequest,
+    EgressPolicy, EspejismoConfig, FrameOptions, HandshakeConfig, HandshakeUser, LogConfig,
+    LogFormat, Metrics, ProbeDefenseMode, ReplayCache, TunnelRequest,
 };
 use futures::StreamExt;
 use rand::seq::SliceRandom;
@@ -86,7 +86,7 @@ struct Args {
 #[derive(Clone)]
 struct RemoteRuntime {
     listen: SocketAddr,
-    handshake: HandshakeConfig,
+    users: Arc<Vec<HandshakeUser>>,
     frames: FrameOptions,
     handshake_timeout: Duration,
     reject_delay: Duration,
@@ -191,12 +191,51 @@ fn parse_log_format(format: &str) -> Result<LogFormat> {
     }
 }
 
-fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<RemoteRuntime> {
+fn build_handshake_users(
+    config: &EspejismoConfig,
+    args: &Args,
+    stealth_handshake: Option<usize>,
+) -> Result<Vec<HandshakeUser>> {
+    let mut users = Vec::new();
+    if !config.remote.users.is_empty() {
+        for user in &config.remote.users {
+            users.push(HandshakeUser {
+                name: user.name.clone(),
+                config: HandshakeConfig::new(
+                    parse_psk(&user.psk)?,
+                    args.clock_skew_secs
+                        .unwrap_or(config.shared.clock_skew_secs),
+                    args.max_handshake_padding
+                        .unwrap_or(config.remote.max_handshake_padding),
+                    args.puzzle_bits.unwrap_or(config.shared.puzzle_bits),
+                )
+                .with_stealth_frame_size(stealth_handshake),
+            });
+        }
+        return Ok(users);
+    }
+
     let psk = args
         .psk
         .clone()
-        .or(config.shared.psk)
-        .context("provide psk in config, --psk, or ESPEJISMO_PSK")?;
+        .or_else(|| config.shared.psk.clone())
+        .context("provide shared.psk, remote.users, --psk, or ESPEJISMO_PSK")?;
+    users.push(HandshakeUser {
+        name: "default".to_string(),
+        config: HandshakeConfig::new(
+            parse_psk(&psk)?,
+            args.clock_skew_secs
+                .unwrap_or(config.shared.clock_skew_secs),
+            args.max_handshake_padding
+                .unwrap_or(config.remote.max_handshake_padding),
+            args.puzzle_bits.unwrap_or(config.shared.puzzle_bits),
+        )
+        .with_stealth_frame_size(stealth_handshake),
+    });
+    Ok(users)
+}
+
+fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<RemoteRuntime> {
     let stealth_frame_size = config.shared.stealth.frame_size;
     let stealth_tick_ms = config.shared.stealth.tick_ms;
     let obfuscation_profile = config.shared.obfuscation.profile;
@@ -206,15 +245,7 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<RemoteRuntime> 
 
     Ok(RemoteRuntime {
         listen: args.listen.unwrap_or(config.remote.listen),
-        handshake: HandshakeConfig::new(
-            parse_psk(&psk)?,
-            args.clock_skew_secs
-                .unwrap_or(config.shared.clock_skew_secs),
-            args.max_handshake_padding
-                .unwrap_or(config.remote.max_handshake_padding),
-            args.puzzle_bits.unwrap_or(config.shared.puzzle_bits),
-        )
-        .with_stealth_frame_size(stealth_handshake),
+        users: Arc::new(build_handshake_users(&config, args, stealth_handshake)?),
         frames: FrameOptions {
             max_padding: args.max_padding.unwrap_or(config.shared.max_padding),
             jitter_ms: args.jitter_ms.unwrap_or(config.shared.jitter_ms),
@@ -289,12 +320,13 @@ async fn handle_peer(
     metrics.inc_active_physical();
     let keys = match timeout(
         runtime.handshake_timeout,
-        accept_handshake_with_replay(&mut inbound, &runtime.handshake, replay),
+        accept_handshake_with_users(&mut inbound, &runtime.users, replay),
     )
     .await
     {
         Ok(Ok(keys)) => {
             metrics.inc_handshake_success();
+            metrics.inc_user_handshake_success(&keys.user);
             keys
         }
         Ok(Err(err)) => {
@@ -327,7 +359,10 @@ async fn handle_peer(
         sleep(runtime.cold_start_delay).await;
     }
 
-    let transport = spawn_frame_transport(inbound, keys, runtime.frames, runtime.tunnel_buffer);
+    let user = keys.user;
+    info!(user = %user, "authenticated tunnel accepted");
+    let transport =
+        spawn_frame_transport(inbound, keys.keys, runtime.frames, runtime.tunnel_buffer);
     let mut session = Session::new_server(transport, YamuxConfig::default());
     let stream_limit = Arc::new(Semaphore::new(runtime.max_streams as usize));
     while let Some(stream) = session.next().await {
@@ -355,9 +390,10 @@ async fn handle_peer(
         let metrics = metrics.clone();
         let egress = runtime.egress.clone();
         let idle = runtime.idle_timeout;
+        let user = user.clone();
         tokio::spawn(async move {
             let _stream_permit = stream_permit;
-            if let Err(err) = handle_mux_stream(stream, metrics, egress, idle).await {
+            if let Err(err) = handle_mux_stream(stream, metrics, egress, idle, user).await {
                 debug!(error = %err, "mux stream ended");
             }
         });
@@ -371,10 +407,12 @@ async fn handle_mux_stream(
     metrics: Metrics,
     egress: EgressPolicy,
     idle: Duration,
+    user: String,
 ) -> Result<()> {
     metrics.inc_active_stream();
     metrics.inc_stream_opened();
-    let result = handle_mux_stream_inner(&mut stream, metrics.clone(), egress, idle).await;
+    metrics.inc_user_stream_opened(&user);
+    let result = handle_mux_stream_inner(&mut stream, metrics.clone(), egress, idle, &user).await;
     if result.is_err() {
         metrics.inc_stream_failed();
     }
@@ -387,6 +425,7 @@ async fn handle_mux_stream_inner(
     metrics: Metrics,
     egress: EgressPolicy,
     idle: Duration,
+    user: &str,
 ) -> Result<()> {
     match read_tunnel_request(stream).await? {
         TunnelRequest::TcpConnect { authority } => {
@@ -395,10 +434,12 @@ async fn handle_mux_stream_inner(
             let (client_to_remote, remote_to_client) =
                 idle_copy_bidirectional(stream, &mut remote, idle).await?;
             metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
+            metrics.add_user_tunnel_bytes(user, client_to_remote, remote_to_client);
         }
         TunnelRequest::UdpDatagram { authority, payload } => {
             let response = relay_udp_datagram(&authority, &payload, &egress, idle).await?;
             metrics.add_tunnel_bytes(payload.len() as u64, response.len() as u64);
+            metrics.add_user_tunnel_bytes(user, payload.len() as u64, response.len() as u64);
             anyhow::ensure!(
                 response.len() <= u16::MAX as usize,
                 "UDP response too large"

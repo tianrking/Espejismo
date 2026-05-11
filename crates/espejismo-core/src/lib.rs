@@ -15,8 +15,8 @@ pub use config::{
     ObfuscationConfig, ProbeDefenseMode,
 };
 pub use crypto::{
-    accept_handshake, accept_handshake_with_replay, connect_handshake, parse_psk, HandshakeConfig,
-    SessionKeys,
+    accept_handshake, accept_handshake_with_replay, accept_handshake_with_users, connect_handshake,
+    parse_psk, AuthenticatedSession, HandshakeConfig, HandshakeUser, SessionKeys,
 };
 pub use egress::{split_authority, EgressPolicy};
 pub use ingress::{http_proxy, socks5, ProxyAuth};

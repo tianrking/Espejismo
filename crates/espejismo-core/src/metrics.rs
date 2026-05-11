@@ -1,5 +1,6 @@
+use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use serde::Serialize;
 
@@ -19,6 +20,7 @@ struct MetricsInner {
     stream_failed: AtomicU64,
     bytes_client_to_remote: AtomicU64,
     bytes_remote_to_client: AtomicU64,
+    users: Mutex<BTreeMap<String, UserMetricsSnapshot>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -31,6 +33,16 @@ pub struct MetricsSnapshot {
     pub handshake_failure: u64,
     pub stream_opened: u64,
     pub stream_failed: u64,
+    pub bytes_client_to_remote: u64,
+    pub bytes_remote_to_client: u64,
+    pub users: Vec<UserMetricsSnapshot>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct UserMetricsSnapshot {
+    pub user: String,
+    pub handshake_success: u64,
+    pub stream_opened: u64,
     pub bytes_client_to_remote: u64,
     pub bytes_remote_to_client: u64,
 }
@@ -87,7 +99,34 @@ impl Metrics {
             .fetch_add(remote_to_client, Ordering::Relaxed);
     }
 
+    pub fn inc_user_handshake_success(&self, user: &str) {
+        self.with_user(user, |entry| {
+            entry.handshake_success += 1;
+        });
+    }
+
+    pub fn inc_user_stream_opened(&self, user: &str) {
+        self.with_user(user, |entry| {
+            entry.stream_opened += 1;
+        });
+    }
+
+    pub fn add_user_tunnel_bytes(&self, user: &str, client_to_remote: u64, remote_to_client: u64) {
+        self.with_user(user, |entry| {
+            entry.bytes_client_to_remote += client_to_remote;
+            entry.bytes_remote_to_client += remote_to_client;
+        });
+    }
+
     pub fn snapshot(&self, role: impl Into<String>) -> MetricsSnapshot {
+        let users = self
+            .inner
+            .users
+            .lock()
+            .expect("user metrics mutex poisoned")
+            .values()
+            .cloned()
+            .collect();
         MetricsSnapshot {
             role: role.into(),
             active_physical_connections: self
@@ -102,6 +141,7 @@ impl Metrics {
             stream_failed: self.inner.stream_failed.load(Ordering::Relaxed),
             bytes_client_to_remote: self.inner.bytes_client_to_remote.load(Ordering::Relaxed),
             bytes_remote_to_client: self.inner.bytes_remote_to_client.load(Ordering::Relaxed),
+            users,
         }
     }
 
@@ -157,7 +197,52 @@ impl Metrics {
             "bytes_remote_to_client_total",
             snapshot.bytes_remote_to_client,
         );
+        for user in &snapshot.users {
+            user_metric(
+                &mut output,
+                role,
+                &user.user,
+                "user_handshake_success_total",
+                user.handshake_success,
+            );
+            user_metric(
+                &mut output,
+                role,
+                &user.user,
+                "user_stream_opened_total",
+                user.stream_opened,
+            );
+            user_metric(
+                &mut output,
+                role,
+                &user.user,
+                "user_bytes_client_to_remote_total",
+                user.bytes_client_to_remote,
+            );
+            user_metric(
+                &mut output,
+                role,
+                &user.user,
+                "user_bytes_remote_to_client_total",
+                user.bytes_remote_to_client,
+            );
+        }
         output
+    }
+
+    fn with_user(&self, user: &str, f: impl FnOnce(&mut UserMetricsSnapshot)) {
+        let mut users = self
+            .inner
+            .users
+            .lock()
+            .expect("user metrics mutex poisoned");
+        let entry = users
+            .entry(user.to_string())
+            .or_insert_with(|| UserMetricsSnapshot {
+                user: user.to_string(),
+                ..UserMetricsSnapshot::default()
+            });
+        f(entry);
     }
 }
 
@@ -166,6 +251,18 @@ fn metric(output: &mut String, role: &str, name: &str, value: u64) {
     output.push_str(name);
     output.push_str("{role=\"");
     output.push_str(role);
+    output.push_str("\"} ");
+    output.push_str(&value.to_string());
+    output.push('\n');
+}
+
+fn user_metric(output: &mut String, role: &str, user: &str, name: &str, value: u64) {
+    output.push_str("espejismo_");
+    output.push_str(name);
+    output.push_str("{role=\"");
+    output.push_str(role);
+    output.push_str("\",user=\"");
+    output.push_str(&user.replace('"', "\\\""));
     output.push_str("\"} ");
     output.push_str(&value.to_string());
     output.push('\n');

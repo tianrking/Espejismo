@@ -320,6 +320,10 @@ probe_timeout_ms = 250
 server = "nginx"
 body = "<html><head><title>It works</title></head><body><h1>It works</h1></body></html>"
 
+[[remote.users]]
+name = "default"
+psk = "change-me-long-random-secret"
+
 [remote.egress]
 deny_private_ips = false
 allow_hosts = []
@@ -392,6 +396,8 @@ internals and wire format specification live in
   allow/block lists.
 - `local.server` and `--server` accept either `ip:port` or `domain:port`; the
   local client resolves the name before opening the physical tunnel.
+- `[[remote.users]]` enables multiple independent server users, each with its
+  own PSK. If no users are configured, the server falls back to `shared.psk`.
 - `[remote.egress].socks5_proxy` optionally chains TCP egress through another
   SOCKS5 proxy.
 - `espejismo-local --print-client-profile` emits an

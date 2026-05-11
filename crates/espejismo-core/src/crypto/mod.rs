@@ -74,6 +74,17 @@ pub struct SessionKeys {
     pub(crate) nonce_tag: [u8; 8],
 }
 
+pub struct AuthenticatedSession {
+    pub keys: SessionKeys,
+    pub user: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct HandshakeUser {
+    pub name: String,
+    pub config: HandshakeConfig,
+}
+
 pub fn parse_psk(input: &str) -> Result<Vec<u8>> {
     let key = if let Some(rest) = input.strip_prefix("hex:") {
         hex::decode(rest).context("invalid hex PSK")?
@@ -182,6 +193,17 @@ where
     accept_handshake_inner(stream, cfg, Some(replay)).await
 }
 
+pub async fn accept_handshake_with_users<S>(
+    stream: &mut S,
+    users: &[HandshakeUser],
+    replay: Arc<Mutex<ReplayCache>>,
+) -> Result<AuthenticatedSession>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    accept_handshake_users_inner(stream, users, Some(replay)).await
+}
+
 async fn accept_handshake_inner<S>(
     stream: &mut S,
     cfg: &HandshakeConfig,
@@ -237,6 +259,81 @@ where
         &client_hello.fixed_body[8..32],
         b"server",
     )
+}
+
+async fn accept_handshake_users_inner<S>(
+    stream: &mut S,
+    users: &[HandshakeUser],
+    replay: Option<Arc<Mutex<ReplayCache>>>,
+) -> Result<AuthenticatedSession>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let first = users
+        .first()
+        .context("at least one handshake user is required")?;
+    let client_hello = if let Some(frame_size) = first.config.stealth_frame_size {
+        read_stealth_client_hello_for_users(stream, users, frame_size).await?
+    } else {
+        read_plain_client_hello_with_max_padding(stream, max_user_padding(users)).await?
+    };
+
+    let mut matched = None;
+    for user in users {
+        if verify_client_hello(&user.config, &client_hello, None)
+            .await
+            .is_ok()
+        {
+            matched = Some(user);
+            break;
+        }
+    }
+    let user = matched.context("client authentication failed for all configured users")?;
+    verify_client_hello(&user.config, &client_hello, replay).await?;
+
+    let client_public_bytes = slice_32(&client_hello.fixed_body[32..64])?;
+    let client_public = PublicKey::from(client_public_bytes);
+    let secret = StaticSecret::random_from_rng(OsRng);
+    let public = PublicKey::from(&secret);
+    let shared = secret.diffie_hellman(&client_public);
+
+    let client_capabilities = u64::from_be_bytes(client_hello.fixed_body[66..74].try_into()?);
+    let server_capabilities = DEFAULT_CAPABILITIES & client_capabilities;
+    let tag = server_hmac(
+        &user.config.auth_key,
+        &client_hello.body,
+        public.as_bytes(),
+        PROTOCOL_VERSION,
+        server_capabilities,
+    )?;
+    let mut reply = Vec::with_capacity(SERVER_HELLO_LEN);
+    reply.extend_from_slice(public.as_bytes());
+    reply.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
+    reply.extend_from_slice(&server_capabilities.to_be_bytes());
+    reply.extend_from_slice(&tag);
+
+    if let Some(frame_size) = user.config.stealth_frame_size {
+        let block = mask_stealth_handshake_block(
+            &user.config.auth_key,
+            b"server-hello",
+            &client_hello.tag,
+            &reply,
+            frame_size,
+        )?;
+        stream.write_all(&block).await?;
+    } else {
+        stream.write_all(&reply).await?;
+    }
+
+    Ok(AuthenticatedSession {
+        keys: derive_keys(
+            &user.config.psk,
+            shared.as_bytes(),
+            &client_hello.fixed_body[8..32],
+            b"server",
+        )?,
+        user: user.name.clone(),
+    })
 }
 
 struct ClientHelloMaterial {
@@ -359,6 +456,44 @@ where
     })
 }
 
+async fn read_plain_client_hello_with_max_padding<S>(
+    stream: &mut S,
+    max_padding: usize,
+) -> Result<ParsedClientHello>
+where
+    S: AsyncRead + Unpin,
+{
+    let mut tag = [0_u8; CLIENT_HELLO_TAG_LEN];
+    let mut fixed_body = [0_u8; CLIENT_HELLO_FIXED_BODY_LEN];
+    stream
+        .read_exact(&mut tag)
+        .await
+        .context("client handshake tag failed")?;
+    stream
+        .read_exact(&mut fixed_body)
+        .await
+        .context("client handshake body failed")?;
+    let padding_len = u16::from_be_bytes(fixed_body[82..84].try_into()?) as usize;
+    if padding_len > max_padding.min(MAX_HANDSHAKE_PADDING) {
+        bail!("handshake padding exceeds configured user limit");
+    }
+    let mut padding = vec![0_u8; padding_len];
+    if padding_len > 0 {
+        stream
+            .read_exact(&mut padding)
+            .await
+            .context("client handshake padding failed")?;
+    }
+    let mut body = Vec::with_capacity(CLIENT_HELLO_FIXED_BODY_LEN + padding_len);
+    body.extend_from_slice(&fixed_body);
+    body.extend_from_slice(&padding);
+    Ok(ParsedClientHello {
+        tag,
+        fixed_body,
+        body,
+    })
+}
+
 async fn read_stealth_client_hello<S>(
     stream: &mut S,
     cfg: &HandshakeConfig,
@@ -375,6 +510,44 @@ where
         .context("stealth client handshake failed")?;
     let plain = unmask_stealth_handshake_block(&cfg.auth_key, b"client-hello", &[], &block)?;
     parse_stealth_client_hello(cfg, &plain, frame_size)
+}
+
+async fn read_stealth_client_hello_for_users<S>(
+    stream: &mut S,
+    users: &[HandshakeUser],
+    frame_size: usize,
+) -> Result<ParsedClientHello>
+where
+    S: AsyncRead + Unpin,
+{
+    validate_stealth_handshake_frame(frame_size)?;
+    let mut block = vec![0_u8; frame_size];
+    stream
+        .read_exact(&mut block)
+        .await
+        .context("stealth client handshake failed")?;
+    for user in users {
+        if user.config.stealth_frame_size != Some(frame_size) {
+            continue;
+        }
+        let Ok(plain) =
+            unmask_stealth_handshake_block(&user.config.auth_key, b"client-hello", &[], &block)
+        else {
+            continue;
+        };
+        if let Ok(parsed) = parse_stealth_client_hello(&user.config, &plain, frame_size) {
+            return Ok(parsed);
+        }
+    }
+    bail!("stealth client handshake did not match any configured user")
+}
+
+fn max_user_padding(users: &[HandshakeUser]) -> usize {
+    users
+        .iter()
+        .map(|user| user.config.max_handshake_padding)
+        .max()
+        .unwrap_or(0)
 }
 
 fn parse_stealth_client_hello(

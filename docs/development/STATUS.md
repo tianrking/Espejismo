@@ -9,6 +9,8 @@
   absolute-form HTTP forwarding.
 - Shared TOML configuration and base64 configuration import.
 - Client profile export/import through `espejismo://import/...` URLs.
+- Multi-user remote authentication with independent per-user PSKs and user
+  metrics.
 - Configurable compact, pretty, or JSON logging with optional file output.
 - Read-only admin HTTP endpoint with health, status, and Prometheus-style metrics.
 - Server-side egress policy for host/port allow and block rules.

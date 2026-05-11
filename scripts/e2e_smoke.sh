@@ -83,6 +83,10 @@ handshake_timeout_ms = 1000
 reject_delay_ms = 25
 cold_start_delay_ms = 20
 
+[[remote.users]]
+name = "smoke"
+psk = "${PSK}"
+
 [remote.egress]
 allow_ports = [${HTTP_PORT}, ${UDP_PORT}]
 EOF
@@ -177,6 +181,11 @@ curl --silent --show-error --max-time 5 \
   -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   "http://${REMOTE_ADMIN_ADDR}/metrics" \
   | grep -q "espejismo_stream_opened_total"
+
+curl --silent --show-error --max-time 5 \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  "http://${REMOTE_ADMIN_ADDR}/metrics" \
+  | grep -q 'user="smoke"'
 
 ADMIN_AUTH_STATUS="$(curl --silent --output /dev/null --write-out "%{http_code}" --max-time 5 \
   "http://${LOCAL_ADMIN_ADDR}/status" || true)"

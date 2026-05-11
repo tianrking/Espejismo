@@ -117,6 +117,14 @@ pub struct RemoteConfig {
     pub fallback_http: RemoteFallbackHttpConfig,
     #[serde(default)]
     pub egress: EgressConfig,
+    #[serde(default)]
+    pub users: Vec<RemoteUserConfig>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RemoteUserConfig {
+    pub name: String,
+    pub psk: String,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -266,6 +274,7 @@ impl Default for RemoteConfig {
             tarpit_hold_secs: default_tarpit_hold_secs(),
             fallback_http: RemoteFallbackHttpConfig::default(),
             egress: EgressConfig::default(),
+            users: Vec::new(),
         }
     }
 }
@@ -324,6 +333,24 @@ fn parse_config(content: &str) -> Result<EspejismoConfig> {
     }
     if let Some(token) = &config.admin.token {
         anyhow::ensure!(!token.is_empty(), "admin.token must not be empty");
+    }
+    for user in &config.remote.users {
+        anyhow::ensure!(
+            !user.name.trim().is_empty(),
+            "remote.users.name must not be empty"
+        );
+        anyhow::ensure!(
+            !user.psk.trim().is_empty(),
+            "remote.users.psk must not be empty"
+        );
+    }
+    let mut names = std::collections::BTreeSet::new();
+    for user in &config.remote.users {
+        anyhow::ensure!(
+            names.insert(user.name.as_str()),
+            "remote.users contains duplicate user name '{}'",
+            user.name
+        );
     }
     anyhow::ensure!(
         config.shared.obfuscation.min_chunk > 0,
