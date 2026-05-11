@@ -173,6 +173,11 @@ allow_ports = [$HttpPort, $UdpPort]
             Assert-Contains $_ "Linux TUN auto-route requested"
         }
     }
+    if ($IsWindows) {
+        & $Cargo run --quiet --bin espejismo-local -- --config $ConfigFile --tun-enabled --tun-auto-route --tun-auto-dns --check-config | Out-String | ForEach-Object {
+            Assert-Contains $_ "Windows TUN auto-route requested"
+        }
+    }
     & $Cargo run --quiet --bin espejismo-remote -- --config $ConfigFile --check-config | Out-String | ForEach-Object {
         Assert-Contains $_ "config check passed"
     }

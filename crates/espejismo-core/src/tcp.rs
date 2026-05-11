@@ -101,7 +101,7 @@ fn apply_congestion(socket: &SockRef<'_>, options: &TcpConfig) -> io::Result<()>
     Ok(())
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "freebsd")))]
+#[cfg(any(target_os = "android", target_os = "fuchsia", target_os = "cygwin"))]
 fn apply_congestion(_socket: &SockRef<'_>, _options: &TcpConfig) -> io::Result<()> {
     Ok(())
 }

@@ -447,7 +447,7 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - `espejismo-local --http-listen` habilita el proxy HTTP local.
 - `[local.tun]` habilita un ingreso TUN nativo opcional para capturar trafico
   del sistema. Convierte flujos TCP y datagramas UDP de la interfaz virtual al
-  tunel cifrado TCP/yamux existente. La toma de rutas y DNS en Linux es
+  tunel cifrado TCP/yamux existente. La toma de rutas y DNS en Linux y Windows es
   explicita con `[local.tun.route]`; ver [docs/deployment/TUN.md](docs/deployment/TUN.md).
 - `[local.auth]` habilita autenticacion SOCKS5 por usuario/contrasena y
   autenticacion HTTP Basic del proxy. Omitir para un listener sin autenticacion

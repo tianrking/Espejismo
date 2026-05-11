@@ -492,16 +492,18 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args) -> Result<()>
             errors.push("local.tun.mtu must be >= 576".to_string());
         }
         warnings.push(
-            "TUN mode requires OS privileges; --tun-auto-route changes the Linux default route"
-                .to_string(),
+            "TUN mode requires OS privileges; --tun-auto-route changes system routes".to_string(),
         );
         println!("OK TUN ingress requested");
     }
     if tun_route_enabled {
         #[cfg(target_os = "linux")]
         println!("OK Linux TUN auto-route requested");
-        #[cfg(not(target_os = "linux"))]
-        errors.push("TUN auto-route is currently implemented only on Linux".to_string());
+        #[cfg(target_os = "windows")]
+        println!("OK Windows TUN auto-route requested");
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        errors
+            .push("TUN auto-route is currently implemented only on Linux and Windows".to_string());
     }
     if tun_dns_enabled {
         let dns_servers = if args.tun_dns.is_empty() {
@@ -516,8 +518,10 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args) -> Result<()>
         }
         #[cfg(target_os = "linux")]
         println!("OK Linux TUN auto-DNS requested");
-        #[cfg(not(target_os = "linux"))]
-        errors.push("TUN auto-DNS is currently implemented only on Linux".to_string());
+        #[cfg(target_os = "windows")]
+        println!("OK Windows TUN auto-DNS requested");
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        errors.push("TUN auto-DNS is currently implemented only on Linux and Windows".to_string());
     }
     report_config_check(warnings, errors)
 }

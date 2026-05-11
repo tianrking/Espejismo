@@ -31,6 +31,18 @@ sudo espejismo-local \
   --tun-dns 1.1.1.1,8.8.8.8
 ```
 
+Windows PowerShell equivalent:
+
+```powershell
+.\espejismo-local.exe `
+  --config espejismo.toml `
+  --tun-enabled `
+  --tun-name esptun0 `
+  --tun-auto-route `
+  --tun-auto-dns `
+  --tun-dns 1.1.1.1,8.8.8.8
+```
+
 How it works:
 
 - `espejismo-local` creates a native TUN interface.
@@ -43,15 +55,22 @@ How it works:
 Important deployment notes:
 
 - Creating a TUN interface usually requires root/admin privileges or a platform
-  VPN entitlement.
+  VPN entitlement. On Windows, run the local process from an elevated
+  PowerShell or terminal.
 - Linux route takeover is opt-in through `[local.tun.route].enabled = true` or
   `--tun-auto-route`.
 - When route takeover is enabled, Espejismo first resolves `local.server`, adds
   direct `/32` routes for the remote IPv4 addresses through the original default
   gateway, then replaces the default route with the TUN device.
+- Windows route takeover is also opt-in. It protects the remote server route
+  through the current default gateway and installs split-default
+  `0.0.0.0/1` plus `128.0.0.0/1` routes through the TUN interface, leaving the
+  original default route intact for recovery.
 - DNS takeover is opt-in through `[local.tun.route].dns_enabled = true` or
   `--tun-auto-dns`. On Linux it uses `resolvectl dns`, `resolvectl domain ~.`,
-  and `resolvectl default-route yes`.
+  and `resolvectl default-route yes`. On Windows it uses `netsh interface ipv4`
+  to assign DNS servers to the TUN interface and restores the previous DHCP or
+  static DNS state on shutdown.
 - On Ctrl-C or SIGTERM, Espejismo restores the original default route, reverts
   the TUN DNS settings, and removes the protected remote routes on a best-effort
   basis.
@@ -69,6 +88,15 @@ Restore Linux default routing with your original gateway:
 
 ```bash
 sudo ip route replace default via <current-gateway> dev <physical-interface>
+```
+
+Windows manual route equivalent:
+
+```powershell
+route ADD <remote-server-ip> MASK 255.255.255.255 <current-gateway> METRIC 1 IF <physical-ifindex>
+route ADD 0.0.0.0 MASK 128.0.0.0 10.255.0.1 METRIC 1 IF <tun-ifindex>
+route ADD 128.0.0.0 MASK 128.0.0.0 10.255.0.1 METRIC 1 IF <tun-ifindex>
+netsh interface ipv4 set dnsservers name="esptun0" static 1.1.1.1 primary
 ```
 
 Use `--check-config` first:
