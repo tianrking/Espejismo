@@ -499,11 +499,14 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args) -> Result<()>
     if tun_route_enabled {
         #[cfg(target_os = "linux")]
         println!("OK Linux TUN auto-route requested");
+        #[cfg(target_os = "macos")]
+        println!("OK macOS TUN auto-route requested");
         #[cfg(target_os = "windows")]
         println!("OK Windows TUN auto-route requested");
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-        errors
-            .push("TUN auto-route is currently implemented only on Linux and Windows".to_string());
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        errors.push(
+            "TUN auto-route is currently implemented only on Linux, macOS, and Windows".to_string(),
+        );
     }
     if tun_dns_enabled {
         let dns_servers = if args.tun_dns.is_empty() {
@@ -518,10 +521,14 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args) -> Result<()>
         }
         #[cfg(target_os = "linux")]
         println!("OK Linux TUN auto-DNS requested");
+        #[cfg(target_os = "macos")]
+        println!("OK macOS TUN auto-DNS requested");
         #[cfg(target_os = "windows")]
         println!("OK Windows TUN auto-DNS requested");
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
-        errors.push("TUN auto-DNS is currently implemented only on Linux and Windows".to_string());
+        #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
+        errors.push(
+            "TUN auto-DNS is currently implemented only on Linux, macOS, and Windows".to_string(),
+        );
     }
     report_config_check(warnings, errors)
 }

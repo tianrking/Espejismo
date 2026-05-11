@@ -31,8 +31,8 @@ Current release target: `v0.0.2`.
 - TCP-friendly pacing knobs for burst budget, rate cap, and minimum write size.
 - Optional local native TUN ingress that maps virtual-interface TCP/UDP traffic
   into the existing encrypted TCP/yamux tunnel.
-- Linux and Windows TUN route/DNS managers with remote-server route protection,
-  route takeover, DNS takeover, and best-effort shutdown restore.
+- Linux, macOS, and Windows TUN route/DNS managers with remote-server route
+  protection, route takeover, DNS takeover, and best-effort shutdown restore.
 - Client and remote release update checks with configurable metadata URL.
 - Server-side egress policy for host/port allow and block rules.
 - SOCKS5 chained TCP egress and SOCKS5 UDP ASSOCIATE chained UDP egress.
@@ -62,7 +62,6 @@ Current release target: `v0.0.2`.
 ## Not Yet Implemented
 
 - Transparent migration of already-active yamux streams across a new physical tunnel.
-- Automatic macOS route and DNS takeover for TUN mode.
 - Browser extension packaging.
 - WASM transport crate. The current runtime uses Tokio TCP and is native-first.
 - Richer multi-profile control plane and log rotation policy.

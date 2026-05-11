@@ -4,11 +4,17 @@ use espejismo_core::config::LocalTunConfig;
 #[cfg(target_os = "linux")]
 mod linux;
 
+#[cfg(any(target_os = "macos", test))]
+mod macos;
+
 #[cfg(target_os = "windows")]
 mod windows;
 
 #[cfg(target_os = "linux")]
 pub type RouteGuard = linux::LinuxRouteGuard;
+
+#[cfg(target_os = "macos")]
+pub type RouteGuard = macos::MacosRouteGuard;
 
 #[cfg(target_os = "windows")]
 pub type RouteGuard = windows::WindowsRouteGuard;
@@ -18,17 +24,22 @@ pub async fn install_tun_routes(config: &LocalTunConfig, server: &str) -> Result
     linux::install(config, server).await
 }
 
+#[cfg(target_os = "macos")]
+pub async fn install_tun_routes(config: &LocalTunConfig, server: &str) -> Result<RouteGuard> {
+    macos::install(config, server).await
+}
+
 #[cfg(target_os = "windows")]
 pub async fn install_tun_routes(config: &LocalTunConfig, server: &str) -> Result<RouteGuard> {
     windows::install(config, server).await
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 pub struct RouteGuard;
 
-#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+#[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
 pub async fn install_tun_routes(_config: &LocalTunConfig, _server: &str) -> Result<RouteGuard> {
     anyhow::bail!(
-        "automatic TUN route/DNS takeover is currently implemented only on Linux and Windows"
+        "automatic TUN route/DNS takeover is currently implemented only on Linux, macOS, and Windows"
     )
 }

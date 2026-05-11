@@ -437,7 +437,7 @@ internals and wire format specification live in
 - `[local.tun]` enables optional native TUN ingress for system-level traffic
   capture. It turns TCP flows and UDP datagrams from the virtual interface into
   the existing encrypted TCP/yamux tunnel. Route and DNS takeover are explicit
-  Linux and Windows opt-in settings under `[local.tun.route]`; see
+  Linux, macOS, and Windows opt-in settings under `[local.tun.route]`; see
   [docs/deployment/TUN.md](docs/deployment/TUN.md).
 - `[local.auth]` enables local SOCKS5 username/password auth and HTTP Basic
   proxy auth. Omit it for a trusted loopback-only no-auth listener.

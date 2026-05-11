@@ -141,8 +141,16 @@ cargo run --quiet --bin espejismo-local -- --config "${CONFIG_FILE}" --check-con
   | grep -q "config check passed"
 cargo run --quiet --bin espejismo-local -- --config "${CONFIG_FILE}" --tun-enabled --check-config \
   | grep -q "TUN ingress requested"
-cargo run --quiet --bin espejismo-local -- --config "${CONFIG_FILE}" --tun-enabled --tun-auto-route --tun-auto-dns --check-config \
-  | grep -q "Linux TUN auto-route requested"
+case "$(uname -s)" in
+  Linux)
+    cargo run --quiet --bin espejismo-local -- --config "${CONFIG_FILE}" --tun-enabled --tun-auto-route --tun-auto-dns --check-config \
+      | grep -q "Linux TUN auto-route requested"
+    ;;
+  Darwin)
+    cargo run --quiet --bin espejismo-local -- --config "${CONFIG_FILE}" --tun-enabled --tun-auto-route --tun-auto-dns --check-config \
+      | grep -q "macOS TUN auto-route requested"
+    ;;
+esac
 cargo run --quiet --bin espejismo-remote -- --config "${CONFIG_FILE}" --check-config \
   | grep -q "config check passed"
 
