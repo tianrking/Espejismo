@@ -11,9 +11,11 @@ relay can evolve independently.
 
 - `espejismo-core`: shared protocol library. It owns the handshake, replay
   cache, client puzzle, AEAD frame codec, padding generation, SOCKS5 parsing,
-  HTTP proxy parsing, configuration loading, encrypted transport adapter, and
-  adaptive frame writer.
-- `espejismo-client`: builds `espejismo-local`, the local SOCKS5 ingress.
+  HTTP proxy parsing, configuration/profile loading, encrypted transport
+  adapter, UDP underlay primitives, update metadata checks, and adaptive frame
+  writer.
+- `espejismo-client`: builds `espejismo-local`, the local SOCKS5 and HTTP proxy
+  ingress.
 - `espejismo-server`: builds `espejismo-remote`, the authenticated remote
   egress.
 
@@ -88,6 +90,13 @@ logical stream is handled independently: read the command preface, validate
 egress policy, connect the outbound TCP destination or relay one UDP datagram,
 then return traffic through the tunnel.
 
+The current production tunnel still uses TCP as the physical underlay. The core
+crate also contains UDP underlay primitives: packet codec, session id, sequence
+numbers, cumulative ACKs, retransmission scheduling, and a portable congestion
+controller with slow-start, additive growth, and loss backoff. Those primitives
+are intentionally separated from the running TCP tunnel so future UDP socket
+integration can reuse them without disturbing the stable proxy path.
+
 ## Configuration Pipeline
 
 Both binaries read the same TOML document and use their relevant sections:
@@ -95,6 +104,28 @@ Both binaries read the same TOML document and use their relevant sections:
 Operators can provide TOML from a path with `--config` or from a base64 string
 with `--config-base64`. `--print-example-config` and
 `--print-example-config-base64` generate deployable starter configs.
+`--print-config-base64` converts a selected config into a one-line import
+string, and `--decode-config-base64` prints that string back as TOML.
+
+`espejismo-local --print-client-profile` creates an `espejismo://import/...`
+profile URL for client onboarding. `--import-profile` applies that profile to a
+local config before startup.
+
+`espejismo-remote` can hot-apply runtime settings through the authenticated admin
+endpoint. `POST /reload` re-reads the original config source; `POST /apply`
+accepts a TOML request body. New physical tunnels and newly opened logical
+streams see the new users, quotas, bandwidth limits, egress policy, fallback,
+and transport-shaping settings.
+
+## Users And Egress
+
+The remote can authenticate multiple users. Each `[[remote.users]]` entry has an
+independent PSK and optional quota/bandwidth policy. Metrics are emitted both
+globally and per user.
+
+Remote egress policy supports host and port allow/block lists, private-address
+denial for direct egress, and optional no-auth SOCKS5 chaining. TCP uses SOCKS5
+CONNECT. UDP uses SOCKS5 UDP ASSOCIATE when `remote.egress.socks5_proxy` is set.
 
 ## Source Layout
 
@@ -103,7 +134,8 @@ with `--config-base64`. `--print-example-config` and
 - `config/`: TOML and base64 configuration loading.
 - `crypto/`: authenticated first packet, X25519, HKDF, and AEAD helpers.
 - `ingress/`: local protocol parsers such as SOCKS5 and HTTP proxy.
-- `protocol/`: encrypted frames, puzzles, padding, and replay protection.
+- `protocol/`: encrypted frames, puzzles, UDP underlay primitives, and replay
+  protection.
 - `transport/`: bridge between encrypted frames and `AsyncRead + AsyncWrite`.
 
 ## Adaptive Padding

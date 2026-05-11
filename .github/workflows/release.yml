@@ -85,7 +85,8 @@ jobs:
           cp "target/${{ matrix.target }}/release/espejismo-remote" "dist/${pkg}/bin/"
           cp configs/examples/espejismo.toml "dist/${pkg}/configs/"
           cp README.md "dist/${pkg}/"
-          cp docs/ARCHITECTURE.md docs/deployment/ADMIN.md docs/deployment/EGRESS.md docs/deployment/LOGGING.md docs/deployment/PACKAGING.md docs/deployment/PROFILES.md docs/deployment/QUICKSTART.md docs/development/STATUS.md docs/testing/TEST_PLAN.md "dist/${pkg}/docs/"
+          cp CHANGELOG.md "dist/${pkg}/"
+          cp docs/ARCHITECTURE.md docs/deployment/ADMIN.md docs/deployment/CLI.md docs/deployment/EGRESS.md docs/deployment/LOGGING.md docs/deployment/PACKAGING.md docs/deployment/PROFILES.md docs/deployment/QUICKSTART.md docs/deployment/UPDATES.md docs/deployment/USERS.md docs/development/STATUS.md docs/testing/TEST_PLAN.md "dist/${pkg}/docs/"
           cp scripts/setup-windows.ps1 scripts/e2e_smoke.ps1 scripts/stress_smoke.ps1 scripts/install-ubuntu-remote.sh "dist/${pkg}/scripts/"
           tar -C dist -czf "dist/${pkg}.tar.gz" "${pkg}"
       - name: Package Windows
@@ -98,7 +99,8 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/espejismo-remote.exe" "dist/$pkg/bin/"
           Copy-Item "configs/examples/espejismo.toml" "dist/$pkg/configs/"
           Copy-Item "README.md" "dist/$pkg/"
-          Copy-Item "docs/ARCHITECTURE.md", "docs/deployment/ADMIN.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/PACKAGING.md", "docs/deployment/PROFILES.md", "docs/deployment/QUICKSTART.md", "docs/development/STATUS.md", "docs/testing/TEST_PLAN.md" "dist/$pkg/docs/"
+          Copy-Item "CHANGELOG.md" "dist/$pkg/"
+          Copy-Item "docs/ARCHITECTURE.md", "docs/deployment/ADMIN.md", "docs/deployment/CLI.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/PACKAGING.md", "docs/deployment/PROFILES.md", "docs/deployment/QUICKSTART.md", "docs/deployment/UPDATES.md", "docs/deployment/USERS.md", "docs/development/STATUS.md", "docs/testing/TEST_PLAN.md" "dist/$pkg/docs/"
           Copy-Item "scripts/setup-windows.ps1", "scripts/e2e_smoke.ps1", "scripts/stress_smoke.ps1", "scripts/install-ubuntu-remote.sh" "dist/$pkg/scripts/"
           Compress-Archive -Path "dist/$pkg" -DestinationPath "dist/$pkg.zip" -Force
       - name: Upload artifact

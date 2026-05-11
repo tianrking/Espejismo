@@ -35,5 +35,10 @@ Runtime apply updates new remote tunnels and newly opened logical streams. A
 restart is still required for process-owned resources such as `remote.listen`,
 `admin.listen`, and log file handles.
 
+Runtime-managed settings include remote users, user quotas, user bandwidth
+limits, egress policy, fallback behavior, handshake timing, frame shaping, and
+stream limits. Existing established streams keep their current resources until
+they naturally close.
+
 Keep admin listeners bound to loopback unless they sit behind a trusted local
 firewall or service manager.

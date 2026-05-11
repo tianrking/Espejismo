@@ -1,5 +1,7 @@
 # Implementation Status
 
+Current release target: `v0.0.2`.
+
 ## Implemented
 
 - Native Rust workspace with separate local, remote, and shared core crates.

@@ -55,9 +55,14 @@ The probe sends a unique token through these paths:
 - Authenticated HTTP proxy absolute-form GET
 - Authenticated HTTP CONNECT tunnel
 - HTTP proxy authentication rejection
+- Config-to-base64 and base64-to-config CLI conversion for both binaries
+- Update-check CLI path with a deterministic local release metadata fixture
 - JSON logging configuration during process startup
 - Admin health/status/metrics endpoint checks
+- Admin `/apply` hot reload, verified by changing remote egress policy at
+  runtime and checking that a new proxy request is rejected
 - Egress allow-port policy in the remote test config
+- Per-user metrics labels in remote metrics
 - Profile URL export/import smoke check
 
 The fixture returns JSON containing method, path, probe header, and request
@@ -73,6 +78,12 @@ Current unit tests cover:
 - Client puzzle solving and verification.
 - Replay cache duplicate rejection.
 - Replay cache expiry.
+- UDP underlay packet codec.
+- UDP underlay cumulative ACK and retransmission scheduling.
+- UDP underlay congestion growth and loss backoff.
+- Per-user quota and bandwidth limiter behavior.
+- Update metadata version comparison.
+- SOCKS5 UDP ASSOCIATE packet wrapping for chained UDP egress.
 
 ## Regression Areas
 
@@ -83,6 +94,7 @@ ingress, or configuration loading, always run the full automated check list.
 
 - Multi-hour soak tests.
 - Cross-platform packet-loss simulation.
-- Multi-packet UDP flows and fragmentation behavior.
+- Production UDP physical-underlay socket integration.
+- Multi-packet UDP underlay packet-loss simulation.
 - Live physical tunnel migration.
 - Browser/WASM transport behavior.

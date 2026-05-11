@@ -5,6 +5,7 @@ Espejismo is distributed as two native binaries plus configuration:
 - `espejismo-local`: local SOCKS5/HTTP proxy.
 - `espejismo-remote`: remote tunnel endpoint.
 - `configs/espejismo.toml`: starter shared configuration.
+- `README.md` and `CHANGELOG.md`: top-level usage and release notes.
 - `scripts/setup-windows.ps1`: Windows config generator and launcher.
 - `scripts/install-ubuntu-remote.sh`: Ubuntu remote installer for one-line
   server deployment.
@@ -42,9 +43,22 @@ Windows PowerShell:
 ```
 
 Both scripts build release binaries and create a `dist/` archive containing the
-binaries, starter config, README, architecture notes, admin guide, egress guide,
-logging guide, packaging guide, profile guide, status, test plan, and deployment
-helper scripts.
+binaries, starter config, README, changelog, architecture notes, CLI reference,
+admin guide, egress guide, logging guide, packaging guide, profile guide, users
+guide, update guide, status, test plan, and deployment helper scripts.
+
+## Publishing v0.0.2
+
+After the version bump and verification commit is merged, create and push the
+release tag:
+
+```bash
+git tag v0.0.2
+git push origin v0.0.2
+```
+
+The GitHub release workflow runs on `v*` tags and publishes all platform
+archives to the GitHub release.
 
 ## Configuration Import
 

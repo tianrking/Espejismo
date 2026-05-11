@@ -16,6 +16,8 @@ networks. SOCKS5 & HTTP local ingress, X25519 forward secrecy, XChaCha20-Poly130
 encrypted frames, yamux multiplexing, adaptive padding, and client puzzles — all in
 safe Rust with no TUN/TAP or system-level dependencies.
 
+Current release: `v0.0.2`.
+
 ## Architecture
 
 ### System View
@@ -41,7 +43,7 @@ flowchart LR
         ENC_R["Encrypted transport adapter"]
         YMUX_R["yamux server session"]
         REQ["Tunnel request parser"]
-        POLICY["Egress policy<br/>host + port ACL"]
+        POLICY["Egress policy<br/>host + port ACL + SOCKS5 chain"]
         DEST["TCP / UDP destination"]
     end
 
@@ -175,7 +177,7 @@ Each archive contains:
 - `bin/espejismo-local`
 - `bin/espejismo-remote`
 - `configs/espejismo.toml`
-- README and architecture/testing notes
+- README, architecture, deployment, user, update, status, and testing notes
 
 Create a package for the current Unix-like host:
 
@@ -525,10 +527,14 @@ raise one module while keeping the rest quiet.
 
 See [docs/development/STATUS.md](docs/development/STATUS.md) for the implemented
 feature matrix and the remaining roadmap, including transparent migration,
-WASM/browser packaging, runtime reload, and richer multi-profile control.
+WASM/browser packaging, UDP underlay socket integration, and richer
+multi-profile control.
 
-See [docs/testing/TEST_PLAN.md](docs/testing/TEST_PLAN.md) for the executable
-test strategy and [docs/research/DESIGN_PRINCIPLES.md](docs/research/DESIGN_PRINCIPLES.md)
+See [CHANGELOG.md](CHANGELOG.md) for release notes.
+
+See [docs/deployment/CLI.md](docs/deployment/CLI.md) for command-line usage,
+[docs/testing/TEST_PLAN.md](docs/testing/TEST_PLAN.md) for the executable test
+strategy, and [docs/research/DESIGN_PRINCIPLES.md](docs/research/DESIGN_PRINCIPLES.md)
 for the protocol design principles.
 
 ## Responsible Use

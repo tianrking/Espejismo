@@ -36,7 +36,7 @@ Pinned release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=v0.0.1 bash
+  | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=v0.0.2 bash
 ```
 
 Custom archive URL, useful for private releases or self-hosted packages:
@@ -157,6 +157,27 @@ The most important knobs are:
 - `remote.egress.deny_private_ips`: block private, loopback, link-local, and
   special egress targets.
 - `remote.egress.allow_ports` / `block_ports`: outbound port policy.
+- `remote.users`: optional multi-user credentials. Each user can have an
+  independent PSK, rolling byte quota, and aggregate bandwidth limit.
+- `remote.egress.socks5_proxy`: optional no-auth SOCKS5 chain for TCP and UDP
+  egress.
+
+Config exchange:
+
+```bash
+espejismo-local --config espejismo.toml --print-config-base64
+espejismo-local --decode-config-base64 "BASE64_CONFIG"
+espejismo-local --config espejismo.toml --print-client-profile --profile-name laptop
+espejismo-local --import-profile "espejismo://import/..."
+```
+
+Remote runtime apply:
+
+```bash
+curl -X POST -H "Authorization: Bearer $ESPEJISMO_ADMIN_TOKEN" \
+  --data-binary @/etc/espejismo/espejismo.toml \
+  http://127.0.0.1:9090/apply
+```
 
 The generated profile/config contains secret material. Do not paste it into
 logs, issue trackers, chat, or shell history on shared systems.

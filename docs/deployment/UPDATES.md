@@ -1,7 +1,8 @@
 # Update Checks
 
 Both binaries can check release metadata and print a human-readable update
-notice.
+notice. In `v0.0.2`, this is an explicit check command rather than an automatic
+self-replacing updater.
 
 ```bash
 espejismo-local --check-update
