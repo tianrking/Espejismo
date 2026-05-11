@@ -45,6 +45,12 @@ the v0.0.4 release candidate.
   tag, preventing bulk/custom chunk policies from producing oversized frames.
 - Windows and Ubuntu setup templates now include `chunk_policy` and carry
   obfuscation/stealth settings into generated client profiles.
+- Multi-user handshakes now bind to the selected user during envelope parsing
+  instead of sequentially verifying users until the first match.
+- Frame receive paths avoid an extra plaintext payload allocation, and TCP
+  relay copy buffers now use 32 KiB chunks for fewer syscalls on large flows.
+- Tunnel lane reconnects no longer hold the primary mux-control lock while
+  dialing and handshaking a replacement physical connection.
 
 ### Clarified
 

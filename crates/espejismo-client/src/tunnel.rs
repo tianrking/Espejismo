@@ -45,6 +45,7 @@ struct TunnelLane {
     id: usize,
     kind: LaneKind,
     control: Mutex<Option<MuxControl>>,
+    connect_lock: Mutex<()>,
     health: Mutex<LaneHealth>,
 }
 
@@ -177,6 +178,7 @@ impl TunnelManager {
                     id,
                     kind,
                     control: Mutex::new(None),
+                    connect_lock: Mutex::new(()),
                     health: Mutex::new(LaneHealth::default()),
                 })
             })
@@ -229,31 +231,50 @@ impl TunnelManager {
         priority: StreamPriority,
     ) -> Result<MuxStream> {
         let started = Instant::now();
-        let mut guard = lane.control.lock().await;
         let max_attempts = self.max_reconnect_attempts.max(1);
         for attempt in 1..=max_attempts {
-            if guard.is_none() {
-                *guard = Some(self.connect_lane(lane.clone()).await?);
-            }
-            let Some(control) = guard.as_mut() else {
-                continue;
+            self.ensure_lane_control(lane.clone()).await?;
+            let result = {
+                let mut guard = lane.control.lock().await;
+                let Some(control) = guard.as_mut() else {
+                    continue;
+                };
+                control.open_stream_with_priority(priority).await
             };
-            match control.open_stream_with_priority(priority).await {
+            match result {
                 Ok(stream) => {
                     self.record_open_success(&lane, started.elapsed()).await;
                     return Ok(stream);
                 }
                 Err(err) => {
+                    {
+                        let mut guard = lane.control.lock().await;
+                        *guard = None;
+                    }
                     self.record_lane_error(
                         &lane,
                         format!("mux stream open attempt {attempt}/{max_attempts} failed: {err}"),
                     )
                     .await;
-                    *guard = None;
                 }
             }
         }
         anyhow::bail!("mux stream open failed after {max_attempts} attempts")
+    }
+
+    async fn ensure_lane_control(&self, lane: Arc<TunnelLane>) -> Result<()> {
+        if lane.control.lock().await.is_some() {
+            return Ok(());
+        }
+
+        let _connect_guard = lane.connect_lock.lock().await;
+        if lane.control.lock().await.is_some() {
+            return Ok(());
+        }
+
+        let control = self.connect_lane(lane.clone()).await?;
+        *lane.control.lock().await = Some(control);
+        Ok(())
     }
 
     async fn connect_lane(&self, lane: Arc<TunnelLane>) -> Result<MuxControl> {

@@ -95,6 +95,7 @@ path, and body. This proves both directions of the proxy path are working.
 Current unit tests cover:
 
 - Variable-length authenticated handshake completion.
+- Multi-user plain and stealth handshake selection.
 - Stealth handshake completion and fixed-size frame roundtrip behavior.
 - Client puzzle solving and verification.
 - Replay cache duplicate rejection.

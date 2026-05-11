@@ -18,7 +18,8 @@ Current release target: `v0.0.5`.
   `--decode-config-base64`.
 - Client profile export/import through `espejismo://import/...` URLs.
 - Multi-user remote authentication with independent per-user PSKs and user
-  metrics.
+  metrics. Multi-user handshake selection is resolved during envelope parsing
+  instead of by early-exit user verification.
 - Per-user rolling byte quotas and aggregate relay bandwidth limits.
 - Configurable compact, pretty, or JSON logging with optional file output.
 - Admin HTTP endpoint with health, status, Prometheus-style metrics, reload, and
@@ -67,6 +68,8 @@ Current release target: `v0.0.5`.
 - Adaptive padding backpressure.
 - Yamux multiplexing over one encrypted physical tunnel.
 - Local reconnecting tunnel manager for opening new streams after tunnel failure.
+- Tunnel lane reconnects are serialized per lane without holding the mux-control
+  lock across TCP dial and handshake work.
 - End-to-end smoke test covering authenticated SOCKS5, authenticated HTTP proxy,
   file config, and base64 config.
 - TCP stress smoke test covering single-stream download-like traffic, many small

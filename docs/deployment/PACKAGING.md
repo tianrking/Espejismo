@@ -51,16 +51,19 @@ helper scripts.
 
 ## Publishing v0.0.5
 
-After the version bump and verification commit is merged, create and push the
-release tag:
+After the version bump and verification commit is merged, create or update the
+release tag on the exact commit that should be packaged:
 
 ```bash
-git tag v0.0.5
-git push origin v0.0.5
+git tag -f -a v0.0.5 -m "v0.0.5"
+git push origin main
+git push --force origin v0.0.5
 ```
 
 The GitHub release workflow runs on `v*` tags and publishes all platform
-archives to the GitHub release.
+archives to a non-draft GitHub release. If a draft release already exists for
+the tag, the rerun updates that release with assets built from the new tag
+target.
 
 ## Configuration Import
 

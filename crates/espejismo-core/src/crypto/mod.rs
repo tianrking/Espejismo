@@ -237,6 +237,45 @@ where
     };
     verify_client_hello(cfg, &client_hello, replay).await?;
 
+    send_server_hello_and_derive_keys(stream, cfg, &client_hello).await
+}
+
+async fn accept_handshake_users_inner<S>(
+    stream: &mut S,
+    users: &[HandshakeUser],
+    replay: Option<Arc<Mutex<ReplayCache>>>,
+) -> Result<AuthenticatedSession>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let first = users
+        .first()
+        .context("at least one handshake user is required")?;
+    let (client_hello, user_index) = if let Some(frame_size) = first.config.stealth_frame_size {
+        read_stealth_client_hello_for_users(stream, users, frame_size).await?
+    } else {
+        read_plain_client_hello_for_users(stream, users).await?
+    };
+    let user = users
+        .get(user_index)
+        .context("selected handshake user is out of range")?;
+    verify_client_hello(&user.config, &client_hello, replay).await?;
+
+    let keys = send_server_hello_and_derive_keys(stream, &user.config, &client_hello).await?;
+    Ok(AuthenticatedSession {
+        keys,
+        user: user.name.clone(),
+    })
+}
+
+async fn send_server_hello_and_derive_keys<S>(
+    stream: &mut S,
+    cfg: &HandshakeConfig,
+    client_hello: &ParsedClientHello,
+) -> Result<SessionKeys>
+where
+    S: AsyncWrite + Unpin,
+{
     let client_public_bytes = slice_32(&client_hello.fixed_body[32..64])?;
     let client_public = PublicKey::from(client_public_bytes);
     let secret = StaticSecret::random_from_rng(OsRng);
@@ -284,88 +323,6 @@ where
         &client_hello.fixed_body[8..32],
         b"server",
     )
-}
-
-async fn accept_handshake_users_inner<S>(
-    stream: &mut S,
-    users: &[HandshakeUser],
-    replay: Option<Arc<Mutex<ReplayCache>>>,
-) -> Result<AuthenticatedSession>
-where
-    S: AsyncRead + AsyncWrite + Unpin,
-{
-    let first = users
-        .first()
-        .context("at least one handshake user is required")?;
-    let client_hello = if let Some(frame_size) = first.config.stealth_frame_size {
-        read_stealth_client_hello_for_users(stream, users, frame_size).await?
-    } else {
-        read_plain_client_hello_for_users(stream, users).await?
-    };
-
-    let mut matched = None;
-    for user in users {
-        if verify_client_hello(&user.config, &client_hello, None)
-            .await
-            .is_ok()
-        {
-            matched = Some(user);
-            break;
-        }
-    }
-    let user = matched.context("client authentication failed for all configured users")?;
-    verify_client_hello(&user.config, &client_hello, replay).await?;
-
-    let client_public_bytes = slice_32(&client_hello.fixed_body[32..64])?;
-    let client_public = PublicKey::from(client_public_bytes);
-    let secret = StaticSecret::random_from_rng(OsRng);
-    let public = PublicKey::from(&secret);
-    let shared = secret.diffie_hellman(&client_public);
-
-    let client_capabilities = u64::from_be_bytes(client_hello.fixed_body[66..74].try_into()?);
-    let server_capabilities = DEFAULT_CAPABILITIES & client_capabilities;
-    let tag = server_hmac(
-        &user.config.auth_key,
-        &client_hello.body,
-        public.as_bytes(),
-        PROTOCOL_VERSION,
-        server_capabilities,
-    )?;
-    let mut reply = Vec::with_capacity(SERVER_HELLO_LEN);
-    reply.extend_from_slice(public.as_bytes());
-    reply.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
-    reply.extend_from_slice(&server_capabilities.to_be_bytes());
-    reply.extend_from_slice(&tag);
-
-    if let Some(frame_size) = user.config.stealth_frame_size {
-        let block = mask_stealth_handshake_block(
-            &user.config.auth_key,
-            b"server-hello",
-            &client_hello.tag,
-            &reply,
-            frame_size,
-        )?;
-        stream.write_all(&block).await?;
-    } else {
-        let envelope = mask_variable_handshake_envelope(
-            &user.config.auth_key,
-            b"plain-server",
-            &client_hello.tag,
-            &reply,
-            VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
-        )?;
-        stream.write_all(&envelope).await?;
-    }
-
-    Ok(AuthenticatedSession {
-        keys: derive_keys(
-            &user.config.psk,
-            shared.as_bytes(),
-            &client_hello.fixed_body[8..32],
-            b"server",
-        )?,
-        user: user.name.clone(),
-    })
 }
 
 struct ClientHelloMaterial {
@@ -473,7 +430,7 @@ where
 async fn read_plain_client_hello_for_users<S>(
     stream: &mut S,
     users: &[HandshakeUser],
-) -> Result<ParsedClientHello>
+) -> Result<(ParsedClientHello, usize)>
 where
     S: AsyncRead + Unpin,
 {
@@ -523,7 +480,10 @@ where
         &nonce,
         &mut payload,
     )?;
-    parse_plain_client_hello(&users[index].config, &payload)
+    Ok((
+        parse_plain_client_hello(&users[index].config, &payload)?,
+        index,
+    ))
 }
 
 fn parse_plain_client_hello(cfg: &HandshakeConfig, plain: &[u8]) -> Result<ParsedClientHello> {
@@ -575,7 +535,7 @@ async fn read_stealth_client_hello_for_users<S>(
     stream: &mut S,
     users: &[HandshakeUser],
     frame_size: usize,
-) -> Result<ParsedClientHello>
+) -> Result<(ParsedClientHello, usize)>
 where
     S: AsyncRead + Unpin,
 {
@@ -585,7 +545,9 @@ where
         .read_exact(&mut block)
         .await
         .context("stealth client handshake failed")?;
-    for user in users {
+    let mut matched = None;
+    let mut matches = 0_usize;
+    for (index, user) in users.iter().enumerate() {
         if user.config.stealth_frame_size != Some(frame_size) {
             continue;
         }
@@ -595,10 +557,17 @@ where
             continue;
         };
         if let Ok(parsed) = parse_stealth_client_hello(&user.config, &plain, frame_size) {
-            return Ok(parsed);
+            matches += 1;
+            if matched.is_none() {
+                matched = Some((parsed, index));
+            }
         }
     }
-    bail!("stealth client handshake did not match any configured user")
+    match (matches, matched) {
+        (1, Some((parsed, index))) => Ok((parsed, index)),
+        (0, _) => bail!("stealth client handshake did not match any configured user"),
+        _ => bail!("stealth client handshake matched multiple users"),
+    }
 }
 
 fn plain_client_hello_min_len() -> usize {
@@ -1118,6 +1087,36 @@ mod tests {
         ];
         let replay = Arc::new(Mutex::new(ReplayCache::new(60)));
         let (mut client, mut server) = duplex(4096);
+
+        let client_task = tokio::spawn(async move { connect_handshake(&mut client, &good).await });
+        let server_task =
+            tokio::spawn(
+                async move { accept_handshake_with_users(&mut server, &users, replay).await },
+            );
+
+        client_task.await.unwrap().unwrap();
+        let session = server_task.await.unwrap().unwrap();
+        assert_eq!(session.user, "good");
+    }
+
+    #[tokio::test]
+    async fn stealth_handshake_supports_multiple_users() {
+        let good = HandshakeConfig::new(b"good-stealth-secret-that-is-long".to_vec(), 30, 128, 2)
+            .with_stealth_frame_size(Some(4096));
+        let other = HandshakeConfig::new(b"other-stealth-secret-that-is-long".to_vec(), 30, 128, 2)
+            .with_stealth_frame_size(Some(4096));
+        let users = vec![
+            HandshakeUser {
+                name: "other".to_string(),
+                config: other,
+            },
+            HandshakeUser {
+                name: "good".to_string(),
+                config: good.clone(),
+            },
+        ];
+        let replay = Arc::new(Mutex::new(ReplayCache::new(60)));
+        let (mut client, mut server) = duplex(8192);
 
         let client_task = tokio::spawn(async move { connect_handshake(&mut client, &good).await });
         let server_task =

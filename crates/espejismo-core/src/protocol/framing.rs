@@ -241,19 +241,16 @@ where
     }
 
     pub async fn send(&mut self, frame: Frame) -> Result<()> {
-        if !self.options.is_stealth() && frame.ty != FrameType::Padding {
-            self.maybe_send_padding().await?;
-        }
-        let elapsed = write_one(
+        send_with_optional_padding(
             &mut self.stream,
             &self.keys,
             &mut self.tx_seq,
             &self.options,
+            &mut self.padding_disabled_until,
             &mut self.next_pace_at,
             frame,
         )
         .await?;
-        self.observe_backpressure(elapsed);
         Ok(())
     }
 
@@ -279,34 +276,6 @@ where
     pub fn into_inner(self) -> S {
         self.stream
     }
-
-    async fn maybe_send_padding(&mut self) -> Result<()> {
-        if !should_send_padding(&self.options, self.padding_disabled_until) {
-            return Ok(());
-        }
-        let len = rand::thread_rng().gen_range(1..=self.options.max_padding);
-        let payload = random_padding(len);
-        let elapsed = write_one(
-            &mut self.stream,
-            &self.keys,
-            &mut self.tx_seq,
-            &self.options,
-            &mut self.next_pace_at,
-            Frame {
-                ty: FrameType::Padding,
-                payload,
-            },
-        )
-        .await?;
-        self.observe_backpressure(elapsed);
-        Ok(())
-    }
-
-    fn observe_backpressure(&mut self, elapsed: Duration) {
-        if let Some(until) = observe_backpressure(&self.options, elapsed) {
-            self.padding_disabled_until = Some(until);
-        }
-    }
 }
 
 impl<W> FrameWriter<W>
@@ -325,51 +294,21 @@ where
     }
 
     pub async fn send(&mut self, frame: Frame) -> Result<()> {
-        if !self.options.is_stealth() && frame.ty != FrameType::Padding {
-            self.maybe_send_padding().await?;
-        }
-        let elapsed = write_one(
+        send_with_optional_padding(
             &mut self.writer,
             &self.keys,
             &mut self.tx_seq,
             &self.options,
+            &mut self.padding_disabled_until,
             &mut self.next_pace_at,
             frame,
         )
         .await?;
-        self.observe_backpressure(elapsed);
         Ok(())
     }
 
     pub fn options(&self) -> &FrameOptions {
         &self.options
-    }
-
-    async fn maybe_send_padding(&mut self) -> Result<()> {
-        if !should_send_padding(&self.options, self.padding_disabled_until) {
-            return Ok(());
-        }
-        let len = rand::thread_rng().gen_range(1..=self.options.max_padding);
-        let elapsed = write_one(
-            &mut self.writer,
-            &self.keys,
-            &mut self.tx_seq,
-            &self.options,
-            &mut self.next_pace_at,
-            Frame {
-                ty: FrameType::Padding,
-                payload: random_padding(len),
-            },
-        )
-        .await?;
-        self.observe_backpressure(elapsed);
-        Ok(())
-    }
-
-    fn observe_backpressure(&mut self, elapsed: Duration) {
-        if let Some(until) = observe_backpressure(&self.options, elapsed) {
-            self.padding_disabled_until = Some(until);
-        }
     }
 }
 
@@ -480,6 +419,75 @@ where
     Ok(started.elapsed())
 }
 
+async fn send_with_optional_padding<W>(
+    writer: &mut W,
+    keys: &SessionKeys,
+    tx_seq: &mut u64,
+    options: &FrameOptions,
+    padding_disabled_until: &mut Option<Instant>,
+    next_pace_at: &mut Option<Instant>,
+    frame: Frame,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    if !options.is_stealth() && frame.ty != FrameType::Padding {
+        maybe_write_padding(
+            writer,
+            keys,
+            tx_seq,
+            options,
+            padding_disabled_until,
+            next_pace_at,
+        )
+        .await?;
+    }
+    let elapsed = write_one(writer, keys, tx_seq, options, next_pace_at, frame).await?;
+    observe_write_backpressure(options, padding_disabled_until, elapsed);
+    Ok(())
+}
+
+async fn maybe_write_padding<W>(
+    writer: &mut W,
+    keys: &SessionKeys,
+    tx_seq: &mut u64,
+    options: &FrameOptions,
+    padding_disabled_until: &mut Option<Instant>,
+    next_pace_at: &mut Option<Instant>,
+) -> Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    if !should_send_padding(options, *padding_disabled_until) {
+        return Ok(());
+    }
+    let len = rand::thread_rng().gen_range(1..=options.max_padding);
+    let elapsed = write_one(
+        writer,
+        keys,
+        tx_seq,
+        options,
+        next_pace_at,
+        Frame {
+            ty: FrameType::Padding,
+            payload: random_padding(len),
+        },
+    )
+    .await?;
+    observe_write_backpressure(options, padding_disabled_until, elapsed);
+    Ok(())
+}
+
+fn observe_write_backpressure(
+    options: &FrameOptions,
+    padding_disabled_until: &mut Option<Instant>,
+    elapsed: Duration,
+) {
+    if let Some(until) = observe_backpressure(options, elapsed) {
+        *padding_disabled_until = Some(until);
+    }
+}
+
 async fn read_one<S>(
     stream: &mut S,
     keys: &SessionKeys,
@@ -500,15 +508,14 @@ where
     }
     let mut encrypted = vec![0_u8; len];
     stream.read_exact(&mut encrypted).await?;
-    let plain = decrypt(&keys.rx, seq, &keys.nonce_tag, &encrypted)?;
+    let mut plain = decrypt(&keys.rx, seq, &keys.nonce_tag, &encrypted)?;
     *rx_seq += 1;
     if plain.is_empty() {
         bail!("empty plaintext frame");
     }
-    Ok(Frame {
-        ty: FrameType::try_from(plain[0])?,
-        payload: plain[1..].to_vec(),
-    })
+    let ty = FrameType::try_from(plain[0])?;
+    plain.drain(..1);
+    Ok(Frame { ty, payload: plain })
 }
 
 async fn write_stealth_one<S>(
@@ -590,7 +597,7 @@ where
     let seq = *rx_seq;
     let mut encrypted = vec![0_u8; options.stealth_frame_size];
     stream.read_exact(&mut encrypted).await?;
-    let plain = decrypt(&keys.rx, seq, &keys.nonce_tag, &encrypted)?;
+    let mut plain = decrypt(&keys.rx, seq, &keys.nonce_tag, &encrypted)?;
     *rx_seq += 1;
     if plain.len() < STEALTH_HEADER_LEN {
         bail!("short stealth plaintext frame");
@@ -600,10 +607,10 @@ where
     if payload_len > capacity || STEALTH_HEADER_LEN + payload_len > plain.len() {
         bail!("invalid stealth payload length {payload_len}");
     }
-    Ok(Frame {
-        ty: FrameType::try_from(plain[0])?,
-        payload: plain[STEALTH_HEADER_LEN..STEALTH_HEADER_LEN + payload_len].to_vec(),
-    })
+    let ty = FrameType::try_from(plain[0])?;
+    plain.drain(..STEALTH_HEADER_LEN);
+    plain.truncate(payload_len);
+    Ok(Frame { ty, payload: plain })
 }
 
 async fn maybe_jitter(options: &FrameOptions) {

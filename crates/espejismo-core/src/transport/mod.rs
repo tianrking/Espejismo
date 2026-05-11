@@ -15,6 +15,7 @@ use crate::protocol::framing::{Frame, FrameOptions, FrameReader, FrameType, Fram
 const STEALTH_WARMUP_MIN_FRAMES: usize = 2;
 const STEALTH_WARMUP_MAX_FRAMES: usize = 5;
 const STEALTH_IDLE_DECAY_FRAMES: u64 = 8;
+const COPY_BUFFER_SIZE: usize = 32 * 1024;
 
 pub fn spawn_frame_transport<S>(
     stream: S,
@@ -90,8 +91,8 @@ where
     B: AsyncRead + AsyncWrite + Unpin,
     M: CopyMeter,
 {
-    let mut buf_a = [0u8; 8192];
-    let mut buf_b = [0u8; 8192];
+    let mut buf_a = [0u8; COPY_BUFFER_SIZE];
+    let mut buf_b = [0u8; COPY_BUFFER_SIZE];
     let mut total_a = 0u64;
     let mut total_b = 0u64;
     let mut a_done = false;
