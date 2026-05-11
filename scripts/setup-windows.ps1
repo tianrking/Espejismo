@@ -40,10 +40,12 @@ param(
     [int64]$PacingMaxBytesPerSec = 0,
     [int]$PacingBurstBytes = 65536,
     [int]$PacingMinWriteBytes = 1024,
-    [ValidateSet("low_latency", "balanced", "high_entropy", "stealth")]
+    [ValidateSet("low_latency", "balanced", "high_entropy", "bulk", "stealth")]
     [string]$ObfuscationProfile = "balanced",
+    [ValidateSet("low_latency", "balanced", "bulk", "stealth", "custom")]
+    [string]$ChunkPolicy = "balanced",
     [bool]$RandomizeChunks = $true,
-    [int]$MinChunk = 1024,
+    [int]$MinChunk = 4096,
     [int]$MaxChunk = 16384,
     [int]$StealthFrameSize = 4096,
     [int]$StealthTickMs = 50,
@@ -211,6 +213,7 @@ min_write_bytes = $PacingMinWriteBytes
 
 [shared.obfuscation]
 profile = $(Quote-Toml $ObfuscationProfile)
+chunk_policy = $(Quote-Toml $ChunkPolicy)
 randomize_chunks = $($RandomizeChunks.ToString().ToLowerInvariant())
 min_chunk = $MinChunk
 max_chunk = $MaxChunk

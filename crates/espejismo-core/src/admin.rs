@@ -121,7 +121,7 @@ async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<(
             write_response(
                 &mut stream,
                 200,
-                "text/plain; version=0.0.4",
+                concat!("text/plain; version=", env!("CARGO_PKG_VERSION")),
                 body.as_bytes(),
             )
             .await?;

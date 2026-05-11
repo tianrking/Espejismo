@@ -163,7 +163,8 @@ CONNECT. UDP uses SOCKS5 UDP ASSOCIATE when `remote.egress.socks5_proxy` is set.
 - `crypto/`: authenticated first packet, X25519, HKDF, and AEAD helpers.
 - `ingress/`: local protocol parsers such as SOCKS5 and HTTP proxy.
 - `mux/`: in-tree native mux beta with OPEN, DATA, WINDOW_UPDATE, FIN, RST,
-  PING, and GOAWAY frames.
+  PING, and GOAWAY frames. Its native implementation is split into session,
+  frame codec, pending-queue, and test modules.
 - `protocol/`: encrypted frames, puzzles, UDP underlay primitives, and replay
   protection.
 - `transport/`: bridge between encrypted frames and `AsyncRead + AsyncWrite`.

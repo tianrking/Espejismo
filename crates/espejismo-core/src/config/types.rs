@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use super::defaults::*;
 use crate::egress::EgressPolicy;
 use crate::ingress::ProxyAuth;
-use crate::protocol::framing::{ChunkPolicy, ObfuscationProfile};
+use crate::protocol::framing::{ChunkPolicy, FrameOptions, ObfuscationProfile};
 
 #[derive(Clone, Debug, Default)]
 pub struct ConfigInput {
@@ -26,6 +26,15 @@ pub struct EspejismoConfig {
     pub logging: LogConfig,
     #[serde(default)]
     pub admin: AdminConfig,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct FrameOptionOverrides {
+    pub max_padding: Option<usize>,
+    pub jitter_ms: Option<u64>,
+    pub padding_chance_percent: Option<u8>,
+    pub backpressure_threshold_ms: Option<u64>,
+    pub backpressure_cooldown_ms: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -114,6 +123,36 @@ impl Default for MuxConfig {
             native_send_queue_frames: default_native_mux_send_queue_frames(),
             native_idle_timeout_secs: default_native_mux_idle_timeout_secs(),
             native_drain_timeout_secs: default_native_mux_drain_timeout_secs(),
+        }
+    }
+}
+
+impl SharedConfig {
+    pub fn frame_options(&self, overrides: &FrameOptionOverrides) -> FrameOptions {
+        FrameOptions {
+            max_padding: overrides.max_padding.unwrap_or(self.max_padding),
+            jitter_ms: overrides.jitter_ms.unwrap_or(self.jitter_ms),
+            padding_chance_percent: overrides
+                .padding_chance_percent
+                .unwrap_or(self.padding_chance_percent),
+            backpressure_threshold_ms: overrides
+                .backpressure_threshold_ms
+                .unwrap_or(self.backpressure_threshold_ms),
+            backpressure_cooldown_ms: overrides
+                .backpressure_cooldown_ms
+                .unwrap_or(self.backpressure_cooldown_ms),
+            obfuscation_profile: self.obfuscation.profile,
+            chunk_policy: self.obfuscation.chunk_policy,
+            randomize_chunks: self.obfuscation.randomize_chunks,
+            min_chunk: self.obfuscation.min_chunk,
+            max_chunk: self.obfuscation.max_chunk,
+            stealth_frame_size: self.stealth.frame_size,
+            stealth_tick_ms: self.stealth.tick_ms,
+            pacing_enabled: self.pacing.enabled,
+            pacing_max_bytes_per_sec: self.pacing.max_bytes_per_sec,
+            pacing_burst_bytes: self.pacing.burst_bytes,
+            pacing_min_write_bytes: self.pacing.min_write_bytes,
+            heartbeat_secs: self.tcp.heartbeat_secs,
         }
     }
 }

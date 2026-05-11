@@ -1,6 +1,6 @@
 # Implementation Status
 
-Current release target: `v0.0.4`.
+Current release target: `v0.0.5`.
 
 ## Implemented
 
@@ -39,8 +39,9 @@ Current release target: `v0.0.4`.
 - Native mux beta with OPEN, DATA, WINDOW_UPDATE, FIN, RST, PING, and GOAWAY
   frame types, PING RTT measurement, graceful GOAWAY drain, priority-aware data
   scheduling, byte-window flow control, bounded per-stream receive/send queues,
-  max-stream enforcement, and idle GOAWAY shutdown. It is selectable through
-  `[shared.mux].mode = "native"` while `yamux` remains the production default.
+  bounded command/pending queues, max-stream enforcement, RST for unknown stream
+  DATA, and idle GOAWAY shutdown. It is selectable through `[shared.mux].mode =
+  "native"` while `yamux` remains the production default.
 - Stream priority field in TCP CONNECT and UDP DATAGRAM tunnel requests.
 - Adaptive chunk policies for low-latency, balanced, bulk, stealth, and custom
   frame sizing.

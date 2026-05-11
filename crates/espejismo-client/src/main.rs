@@ -10,8 +10,8 @@ use espejismo_core::{
     apply_log_overrides, bind_tcp_listener, config_to_toml, decode_profile_url,
     encode_config_base64, encode_profile_url, init_logging, load_config, load_config_base64,
     parse_psk, print_update_check, report_config_check, spawn_admin_server, AdminAction,
-    AdminState, ClientProfile, ConfigInput, EspejismoConfig, FrameOptions, HandshakeConfig,
-    LogOverrides, Metrics, ProxyAuth, RuntimeState, TcpConfig, TunnelPoolConfig,
+    AdminState, ClientProfile, ConfigInput, EspejismoConfig, FrameOptionOverrides, FrameOptions,
+    HandshakeConfig, LogOverrides, Metrics, ProxyAuth, RuntimeState, TcpConfig, TunnelPoolConfig,
 };
 use serde_json::json;
 use tokio::net::lookup_host;
@@ -437,7 +437,7 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
     let psk = args
         .psk
         .clone()
-        .or(config.shared.psk)
+        .or_else(|| config.shared.psk.clone())
         .context("provide psk in config, --psk, or ESPEJISMO_PSK")?;
     let server = args
         .server
@@ -445,7 +445,6 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
         .or(config.local.server)
         .context("provide local.server in config or --server")?;
     let stealth_frame_size = config.shared.stealth.frame_size;
-    let stealth_tick_ms = config.shared.stealth.tick_ms;
     let obfuscation_profile = config.shared.obfuscation.profile;
     let stealth_handshake = obfuscation_profile
         .is_stealth()
@@ -506,31 +505,13 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
             args.puzzle_bits.unwrap_or(config.shared.puzzle_bits),
         )
         .with_stealth_frame_size(stealth_handshake),
-        frames: FrameOptions {
-            max_padding: args.max_padding.unwrap_or(config.shared.max_padding),
-            jitter_ms: args.jitter_ms.unwrap_or(config.shared.jitter_ms),
-            padding_chance_percent: args
-                .padding_chance_percent
-                .unwrap_or(config.shared.padding_chance_percent),
-            backpressure_threshold_ms: args
-                .backpressure_threshold_ms
-                .unwrap_or(config.shared.backpressure_threshold_ms),
-            backpressure_cooldown_ms: args
-                .backpressure_cooldown_ms
-                .unwrap_or(config.shared.backpressure_cooldown_ms),
-            obfuscation_profile,
-            chunk_policy: config.shared.obfuscation.chunk_policy,
-            randomize_chunks: config.shared.obfuscation.randomize_chunks,
-            min_chunk: config.shared.obfuscation.min_chunk,
-            max_chunk: config.shared.obfuscation.max_chunk,
-            stealth_frame_size,
-            stealth_tick_ms,
-            pacing_enabled: config.shared.pacing.enabled,
-            pacing_max_bytes_per_sec: config.shared.pacing.max_bytes_per_sec,
-            pacing_burst_bytes: config.shared.pacing.burst_bytes,
-            pacing_min_write_bytes: config.shared.pacing.min_write_bytes,
-            heartbeat_secs: config.shared.tcp.heartbeat_secs,
-        },
+        frames: config.shared.frame_options(&FrameOptionOverrides {
+            max_padding: args.max_padding,
+            jitter_ms: args.jitter_ms,
+            padding_chance_percent: args.padding_chance_percent,
+            backpressure_threshold_ms: args.backpressure_threshold_ms,
+            backpressure_cooldown_ms: args.backpressure_cooldown_ms,
+        }),
         tcp: config.shared.tcp.clone(),
         mux: espejismo_core::mux::MuxRuntimeConfig::from_config(
             config.shared.max_streams,

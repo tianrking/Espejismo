@@ -16,7 +16,7 @@ networks. SOCKS5, HTTP, and optional native TUN local ingress, X25519 forward
 secrecy, XChaCha20-Poly1305 encrypted frames, selectable logical stream
 multiplexing, adaptive padding, TCP-friendly pacing, and client puzzles.
 
-Current release: `v0.0.4`.
+Current release: `v0.0.5`.
 
 ## Architecture
 
@@ -560,7 +560,8 @@ internals and wire format specification live in
 - `[shared.mux]` selects the logical stream multiplexer. `yamux` is the stable
   default; `native` enables the in-tree beta mux for testing and benchmarking.
   The native mux uses byte-window flow control, bounded per-stream receive
-  queues, a max-stream limit, and an idle GOAWAY timeout.
+  queues, bounded command/pending queues, a max-stream limit, RST for unknown
+  stream DATA, and an idle GOAWAY timeout.
 - `[[remote.users]]` enables multiple independent server users, each with its
   own PSK. If no users are configured, the server falls back to `shared.psk`.
 - `[remote.users.quota]` sets an optional per-user rolling byte quota. `bytes`
@@ -596,8 +597,9 @@ internals and wire format specification live in
 - `[shared.obfuscation]` controls sender-side traffic shape. `profile` can be
   `low_latency`, `balanced`, `high_entropy`, `bulk`, or `stealth`.
   `chunk_policy` selects adaptive encrypted data chunks: `low_latency` uses
-  2-8 KiB, `balanced` uses 4-16 KiB, `bulk` uses 16-64 KiB, `stealth` uses the
-  fixed stealth payload capacity, and `custom` uses `min_chunk` / `max_chunk`.
+  2-8 KiB, `balanced` uses 4-16 KiB, `bulk` uses large chunks capped just below
+  64 KiB to leave room for frame metadata and AEAD tag, `stealth` uses the fixed
+  stealth payload capacity, and `custom` uses `min_chunk` / `max_chunk`.
 - `[shared.stealth]` is used when `profile = "stealth"`: every encrypted frame
   is exactly `frame_size` bytes. The transport starts with a short random
   padding warmup, sends data or padding on a paced cadence, and gradually slows

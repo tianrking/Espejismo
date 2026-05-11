@@ -36,7 +36,7 @@ Pinned release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=v0.0.4 bash
+  | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=v0.0.5 bash
 ```
 
 Custom archive URL, useful for private releases or self-hosted packages:
@@ -212,8 +212,9 @@ The most important knobs are:
   `balanced`, `high_entropy`, `bulk`, or `stealth`.
 - `shared.obfuscation.chunk_policy`: adaptive data chunk sizing. Use
   `low_latency` for 2-8 KiB chunks, `balanced` for 4-16 KiB chunks, `bulk` for
-  16-64 KiB chunks, `stealth` for fixed stealth capacity, or `custom` to honor
-  `min_chunk` / `max_chunk`.
+  large chunks capped just below 64 KiB to leave room for frame metadata and the
+  AEAD tag, `stealth` for fixed stealth capacity, or `custom` to honor
+  `min_chunk` / `max_chunk` within that payload cap.
 - `shared.stealth.frame_size` / `shared.stealth.tick_ms`: fixed frame size and
   base pacing when `profile = "stealth"`. The transport starts with a short
   random padding warmup, sends data or padding on a paced cadence, and slows

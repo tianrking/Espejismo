@@ -1,4 +1,10 @@
-use std::collections::{HashMap, VecDeque};
+mod frame;
+mod pending;
+
+#[cfg(test)]
+mod tests;
+
+use std::collections::HashMap;
 use std::io;
 use std::pin::Pin;
 use std::sync::{Arc, Mutex};
@@ -7,20 +13,21 @@ use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context as AnyhowContext, Result};
 use futures::Stream;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 
 use crate::protocol::request::StreamPriority;
+use frame::{
+    read_frame, write_frame, FRAME_DATA, FRAME_FIN, FRAME_GOAWAY, FRAME_OPEN, FRAME_PING,
+    FRAME_RST, FRAME_WINDOW_UPDATE, MAX_PAYLOAD,
+};
+use pending::{PendingFrame, PendingFrames};
 
-const FRAME_OPEN: u8 = 1;
-const FRAME_DATA: u8 = 2;
-const FRAME_WINDOW_UPDATE: u8 = 3;
-const FRAME_FIN: u8 = 4;
-const FRAME_RST: u8 = 5;
-const FRAME_PING: u8 = 6;
-const FRAME_GOAWAY: u8 = 7;
-const MAX_PAYLOAD: usize = 64 * 1024;
+pub use frame::validate_frame_bytes_for_fuzz;
+
+const COMMAND_CHANNEL_EXTRA_FRAMES: usize = 1024;
+const CONTROL_PENDING_EXTRA_FRAMES: usize = 1024;
 
 #[derive(Clone, Copy, Debug)]
 pub struct NativeMuxConfig {
@@ -47,18 +54,18 @@ impl Default for NativeMuxConfig {
 
 #[derive(Clone)]
 pub struct NativeControl {
-    tx: mpsc::UnboundedSender<Command>,
+    tx: mpsc::Sender<Command>,
 }
 
 pub struct NativeSession {
-    accept_rx: mpsc::UnboundedReceiver<Result<NativeStream, io::Error>>,
+    accept_rx: mpsc::Receiver<Result<NativeStream, io::Error>>,
     task: JoinHandle<()>,
 }
 
 pub struct NativeStream {
     id: u32,
     priority: StreamPriority,
-    tx: mpsc::UnboundedSender<Command>,
+    tx: mpsc::Sender<Command>,
     rx: mpsc::Receiver<Vec<u8>>,
     flow: Arc<Mutex<FlowState>>,
     read_buf: Vec<u8>,
@@ -93,13 +100,6 @@ enum Command {
         reply: Option<oneshot::Sender<Duration>>,
     },
     Goaway,
-}
-
-struct PendingFrame {
-    kind: u8,
-    stream_id: u32,
-    payload: Vec<u8>,
-    queued_stream: Option<u32>,
 }
 
 struct StreamEntry {
@@ -183,8 +183,8 @@ where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let config = sanitize_config(config);
-    let (command_tx, command_rx) = mpsc::unbounded_channel();
-    let (accept_tx, accept_rx) = mpsc::unbounded_channel();
+    let (command_tx, command_rx) = mpsc::channel(command_channel_limit(&config));
+    let (accept_tx, accept_rx) = mpsc::channel(config.max_streams);
     let control = NativeControl {
         tx: command_tx.clone(),
     };
@@ -197,6 +197,22 @@ where
         config,
     ));
     (control, NativeSession { accept_rx, task })
+}
+
+fn command_channel_limit(config: &NativeMuxConfig) -> usize {
+    config
+        .max_streams
+        .saturating_mul(config.send_queue_frames.saturating_add(8))
+        .saturating_add(COMMAND_CHANNEL_EXTRA_FRAMES)
+        .max(1)
+}
+
+fn pending_frame_limit(config: &NativeMuxConfig) -> usize {
+    config
+        .max_streams
+        .saturating_mul(config.send_queue_frames.saturating_add(4))
+        .saturating_add(CONTROL_PENDING_EXTRA_FRAMES)
+        .max(1)
 }
 
 fn sanitize_config(config: NativeMuxConfig) -> NativeMuxConfig {
@@ -215,6 +231,7 @@ impl NativeControl {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(Command::Open { priority, reply })
+            .await
             .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "native mux stopped"))?;
         rx.await.context("native mux open stream reply dropped")?
     }
@@ -227,13 +244,14 @@ impl NativeControl {
                 nonce,
                 reply: Some(reply),
             })
+            .await
             .map_err(|_| anyhow::anyhow!("native mux stopped"))?;
         rx.await.context("native mux ping reply dropped")
     }
 
     pub fn goaway(&self) -> Result<()> {
         self.tx
-            .send(Command::Goaway)
+            .try_send(Command::Goaway)
             .map_err(|_| anyhow::anyhow!("native mux stopped"))
     }
 }
@@ -298,7 +316,7 @@ impl NativeStream {
         self.pending_window_update = 0;
         while amount > 0 {
             let chunk = amount.min(u32::MAX as usize);
-            let _ = self.tx.send(Command::WindowUpdate {
+            let _ = self.tx.try_send(Command::WindowUpdate {
                 stream_id: self.id,
                 amount: chunk as u32,
             });
@@ -346,7 +364,7 @@ impl AsyncWrite for NativeStream {
 
         if this
             .tx
-            .send(Command::Data {
+            .try_send(Command::Data {
                 stream_id: this.id,
                 priority: this.priority,
                 payload: buf[..n].to_vec(),
@@ -372,7 +390,7 @@ impl AsyncWrite for NativeStream {
         if !self.local_closed {
             self.local_closed = true;
             self.tx
-                .send(Command::Fin { stream_id: self.id })
+                .try_send(Command::Fin { stream_id: self.id })
                 .map_err(|_| io::Error::new(io::ErrorKind::BrokenPipe, "native mux stopped"))?;
         }
         Poll::Ready(Ok(()))
@@ -382,7 +400,7 @@ impl AsyncWrite for NativeStream {
 impl Drop for NativeStream {
     fn drop(&mut self) {
         if !self.local_closed {
-            let _ = self.tx.send(Command::Rst { stream_id: self.id });
+            let _ = self.tx.try_send(Command::Rst { stream_id: self.id });
             self.local_closed = true;
         }
     }
@@ -390,16 +408,16 @@ impl Drop for NativeStream {
 
 async fn run_session<T>(
     mut transport: T,
-    command_tx: mpsc::UnboundedSender<Command>,
-    mut command_rx: mpsc::UnboundedReceiver<Command>,
-    accept_tx: mpsc::UnboundedSender<Result<NativeStream, io::Error>>,
+    command_tx: mpsc::Sender<Command>,
+    mut command_rx: mpsc::Receiver<Command>,
+    accept_tx: mpsc::Sender<Result<NativeStream, io::Error>>,
     mut next_stream_id: u32,
     config: NativeMuxConfig,
 ) where
     T: AsyncRead + AsyncWrite + Unpin,
 {
     let mut streams = HashMap::<u32, StreamEntry>::new();
-    let mut pending = PendingFrames::default();
+    let mut pending = PendingFrames::new(pending_frame_limit(&config));
     let mut pending_pings = HashMap::<u64, (Instant, oneshot::Sender<Duration>)>::new();
     let mut draining_since: Option<Instant> = None;
     loop {
@@ -417,7 +435,7 @@ async fn run_session<T>(
 
             command = command_rx.recv() => {
                 let Some(command) = command else {
-                    enqueue_control(&mut pending, FRAME_GOAWAY, 0, Vec::new());
+                    enqueue_control(&mut pending, FRAME_GOAWAY, 0, Vec::new()).ok();
                     draining_since.get_or_insert_with(Instant::now);
                     continue;
                 };
@@ -454,20 +472,30 @@ async fn run_session<T>(
                                 draining_since.get_or_insert_with(Instant::now);
                             }
                             Err(err) => {
-                                let _ = accept_tx.send(Err(io::Error::new(io::ErrorKind::InvalidData, err.to_string())));
+                                let _ = accept_tx
+                                    .send(Err(io::Error::new(
+                                        io::ErrorKind::InvalidData,
+                                        err.to_string(),
+                                    )))
+                                    .await;
                                 break;
                             }
                         }
                     }
                     Ok(None) => break,
                     Err(err) => {
-                        let _ = accept_tx.send(Err(io::Error::new(io::ErrorKind::InvalidData, err.to_string())));
+                        let _ = accept_tx
+                            .send(Err(io::Error::new(
+                                io::ErrorKind::InvalidData,
+                                err.to_string(),
+                            )))
+                            .await;
                         break;
                     }
                 }
             }
             _ = tokio::time::sleep(config.session_idle_timeout), if streams.is_empty() && draining_since.is_none() => {
-                enqueue_control(&mut pending, FRAME_GOAWAY, 0, Vec::new());
+                enqueue_control(&mut pending, FRAME_GOAWAY, 0, Vec::new()).ok();
                 draining_since = Some(Instant::now());
             }
             _ = tokio::time::sleep(config.drain_timeout), if draining_since.is_some() => {
@@ -493,15 +521,8 @@ enum FrameEffect {
     StartDrain,
 }
 
-#[derive(Default)]
-struct PendingFrames {
-    control: VecDeque<PendingFrame>,
-    interactive: VecDeque<PendingFrame>,
-    bulk: VecDeque<PendingFrame>,
-}
-
 struct CommandContext<'a> {
-    command_tx: &'a mpsc::UnboundedSender<Command>,
+    command_tx: &'a mpsc::Sender<Command>,
     streams: &'a mut HashMap<u32, StreamEntry>,
     next_stream_id: &'a mut u32,
     config: &'a NativeMuxConfig,
@@ -532,7 +553,7 @@ async fn handle_command(command: Command, ctx: CommandContext<'_>) -> Result<Com
                 ctx.config.send_queue_frames,
             );
             ctx.streams.insert(stream_id, entry);
-            enqueue_control(ctx.pending, FRAME_OPEN, stream_id, vec![priority as u8]);
+            enqueue_control(ctx.pending, FRAME_OPEN, stream_id, vec![priority as u8])?;
             let _ = reply.send(Ok(stream));
         }
         Command::Data {
@@ -541,17 +562,20 @@ async fn handle_command(command: Command, ctx: CommandContext<'_>) -> Result<Com
             payload,
         } => {
             if ctx.streams.contains_key(&stream_id) {
-                enqueue_data(ctx.pending, priority, stream_id, payload);
+                if let Err(err) = enqueue_data(ctx.pending, priority, stream_id, payload) {
+                    release_send_slot(ctx.streams, stream_id);
+                    return Err(err);
+                }
             } else {
                 release_send_slot(ctx.streams, stream_id);
             }
         }
         Command::Fin { stream_id } => {
-            enqueue_control(ctx.pending, FRAME_FIN, stream_id, Vec::new());
+            enqueue_control(ctx.pending, FRAME_FIN, stream_id, Vec::new())?;
         }
         Command::Rst { stream_id } => {
             ctx.streams.remove(&stream_id);
-            enqueue_control(ctx.pending, FRAME_RST, stream_id, Vec::new());
+            enqueue_control(ctx.pending, FRAME_RST, stream_id, Vec::new())?;
         }
         Command::WindowUpdate { stream_id, amount } => {
             enqueue_control(
@@ -559,16 +583,16 @@ async fn handle_command(command: Command, ctx: CommandContext<'_>) -> Result<Com
                 FRAME_WINDOW_UPDATE,
                 stream_id,
                 amount.to_be_bytes().to_vec(),
-            );
+            )?;
         }
         Command::Ping { nonce, reply } => {
             if let Some(reply) = reply {
                 ctx.pending_pings.insert(nonce, (Instant::now(), reply));
             }
-            enqueue_control(ctx.pending, FRAME_PING, 0, nonce.to_be_bytes().to_vec());
+            enqueue_control(ctx.pending, FRAME_PING, 0, nonce.to_be_bytes().to_vec())?;
         }
         Command::Goaway => {
-            enqueue_control(ctx.pending, FRAME_GOAWAY, 0, Vec::new());
+            enqueue_control(ctx.pending, FRAME_GOAWAY, 0, Vec::new())?;
             return Ok(CommandEffect::StartDrain);
         }
     }
@@ -576,8 +600,8 @@ async fn handle_command(command: Command, ctx: CommandContext<'_>) -> Result<Com
 }
 
 struct FrameContext<'a> {
-    command_tx: &'a mpsc::UnboundedSender<Command>,
-    accept_tx: &'a mpsc::UnboundedSender<Result<NativeStream, io::Error>>,
+    command_tx: &'a mpsc::Sender<Command>,
+    accept_tx: &'a mpsc::Sender<Result<NativeStream, io::Error>>,
     streams: &'a mut HashMap<u32, StreamEntry>,
     config: &'a NativeMuxConfig,
     pending: &'a mut PendingFrames,
@@ -594,11 +618,11 @@ async fn handle_frame(
     match kind {
         FRAME_OPEN => {
             if ctx.draining {
-                enqueue_control(ctx.pending, FRAME_RST, stream_id, Vec::new());
+                enqueue_control(ctx.pending, FRAME_RST, stream_id, Vec::new())?;
                 return Ok(FrameEffect::Continue);
             }
             if ctx.streams.len() >= ctx.config.max_streams {
-                enqueue_control(ctx.pending, FRAME_RST, stream_id, Vec::new());
+                enqueue_control(ctx.pending, FRAME_RST, stream_id, Vec::new())?;
                 return Ok(FrameEffect::Continue);
             }
             let priority = payload
@@ -618,11 +642,13 @@ async fn handle_frame(
             ctx.streams.insert(stream_id, entry);
             ctx.accept_tx
                 .send(Ok(stream))
+                .await
                 .map_err(|_| anyhow::anyhow!("native mux accept receiver dropped"))?;
         }
         FRAME_DATA => {
             let Some(stream) = ctx.streams.get(&stream_id) else {
-                bail!("native mux data for unknown stream {stream_id}");
+                enqueue_control(ctx.pending, FRAME_RST, stream_id, Vec::new())?;
+                return Ok(FrameEffect::Continue);
             };
             stream
                 .tx
@@ -656,7 +682,7 @@ async fn handle_frame(
             if let Some((started, reply)) = ctx.pending_pings.remove(&nonce) {
                 let _ = reply.send(started.elapsed());
             } else {
-                enqueue_control(ctx.pending, FRAME_PING, 0, payload);
+                enqueue_control(ctx.pending, FRAME_PING, 0, payload)?;
             }
         }
         FRAME_GOAWAY => return Ok(FrameEffect::StartDrain),
@@ -665,13 +691,18 @@ async fn handle_frame(
     Ok(FrameEffect::Continue)
 }
 
-fn enqueue_control(pending: &mut PendingFrames, kind: u8, stream_id: u32, payload: Vec<u8>) {
-    pending.control.push_back(PendingFrame {
+fn enqueue_control(
+    pending: &mut PendingFrames,
+    kind: u8,
+    stream_id: u32,
+    payload: Vec<u8>,
+) -> Result<()> {
+    pending.push_control(PendingFrame {
         kind,
         stream_id,
         payload,
         queued_stream: None,
-    });
+    })
 }
 
 fn enqueue_data(
@@ -679,17 +710,14 @@ fn enqueue_data(
     priority: StreamPriority,
     stream_id: u32,
     payload: Vec<u8>,
-) {
+) -> Result<()> {
     let frame = PendingFrame {
         kind: FRAME_DATA,
         stream_id,
         payload,
         queued_stream: Some(stream_id),
     };
-    match priority {
-        StreamPriority::Interactive => pending.interactive.push_back(frame),
-        StreamPriority::Bulk => pending.bulk.push_back(frame),
-    }
+    pending.push_data(priority, frame)
 }
 
 async fn flush_pending<W>(
@@ -700,21 +728,13 @@ async fn flush_pending<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    while let Some(frame) = next_pending_frame(pending) {
+    while let Some(frame) = pending.pop_next() {
         write_frame(writer, frame.kind, frame.stream_id, &frame.payload).await?;
         if let Some(stream_id) = frame.queued_stream {
             release_send_slot(streams, stream_id);
         }
     }
     Ok(())
-}
-
-fn next_pending_frame(pending: &mut PendingFrames) -> Option<PendingFrame> {
-    pending
-        .control
-        .pop_front()
-        .or_else(|| pending.interactive.pop_front())
-        .or_else(|| pending.bulk.pop_front())
 }
 
 fn release_send_slot(streams: &HashMap<u32, StreamEntry>, stream_id: u32) {
@@ -736,7 +756,7 @@ fn mark_stream_closed(streams: &HashMap<u32, StreamEntry>, stream_id: u32) {
 fn new_stream(
     stream_id: u32,
     priority: StreamPriority,
-    command_tx: mpsc::UnboundedSender<Command>,
+    command_tx: mpsc::Sender<Command>,
     initial_window_bytes: usize,
     stream_buffer_frames: usize,
     send_queue_frames: usize,
@@ -760,317 +780,4 @@ fn new_stream(
     };
     let entry = StreamEntry { tx, flow };
     (stream, entry)
-}
-
-async fn write_frame<W>(writer: &mut W, kind: u8, stream_id: u32, payload: &[u8]) -> Result<()>
-where
-    W: AsyncWrite + Unpin,
-{
-    if payload.len() > MAX_PAYLOAD {
-        bail!("native mux payload too large");
-    }
-    writer.write_u8(kind).await?;
-    writer.write_u32(stream_id).await?;
-    writer.write_u32(payload.len() as u32).await?;
-    writer.write_all(payload).await?;
-    Ok(())
-}
-
-async fn read_frame<R>(reader: &mut R) -> Result<Option<(u8, u32, Vec<u8>)>>
-where
-    R: AsyncRead + Unpin,
-{
-    let kind = match reader.read_u8().await {
-        Ok(kind) => kind,
-        Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => return Ok(None),
-        Err(err) => return Err(err.into()),
-    };
-    let stream_id = reader.read_u32().await?;
-    let len = reader.read_u32().await? as usize;
-    if len > MAX_PAYLOAD {
-        bail!("native mux payload too large");
-    }
-    let mut payload = vec![0_u8; len];
-    reader.read_exact(&mut payload).await?;
-    Ok(Some((kind, stream_id, payload)))
-}
-
-pub fn validate_frame_bytes_for_fuzz(input: &[u8]) -> Result<Option<(u8, u32, usize)>> {
-    if input.len() < 9 {
-        return Ok(None);
-    }
-    let kind = input[0];
-    match kind {
-        FRAME_OPEN | FRAME_DATA | FRAME_WINDOW_UPDATE | FRAME_FIN | FRAME_RST | FRAME_PING
-        | FRAME_GOAWAY => {}
-        _ => bail!("unknown native mux frame type {kind}"),
-    }
-    let stream_id = u32::from_be_bytes([input[1], input[2], input[3], input[4]]);
-    let len = u32::from_be_bytes([input[5], input[6], input[7], input[8]]) as usize;
-    if len > MAX_PAYLOAD {
-        bail!("native mux payload too large");
-    }
-    if input.len() < 9 + len {
-        return Ok(None);
-    }
-    Ok(Some((kind, stream_id, len)))
-}
-
-#[cfg(test)]
-mod tests {
-    use std::io;
-    use std::time::Duration;
-
-    use super::{client_session, server_session, NativeMuxConfig};
-    use crate::protocol::request::StreamPriority;
-    use futures::StreamExt;
-    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
-
-    #[test]
-    fn native_frame_parser_rejects_unknown_types_and_large_payloads() {
-        assert!(super::validate_frame_bytes_for_fuzz(&[99, 0, 0, 0, 0, 0, 0, 0, 0]).is_err());
-        let mut frame = vec![super::FRAME_DATA, 0, 0, 0, 1];
-        frame.extend_from_slice(&((super::MAX_PAYLOAD as u32) + 1).to_be_bytes());
-        assert!(super::validate_frame_bytes_for_fuzz(&frame).is_err());
-    }
-
-    #[tokio::test]
-    async fn native_mux_opens_stream_and_roundtrips_data() {
-        let (client_io, server_io) = duplex(64 * 1024);
-        let (mut client_control, mut client_session) =
-            client_session(client_io, NativeMuxConfig::default());
-        let (_server_control, mut server_session) =
-            server_session(server_io, NativeMuxConfig::default());
-
-        tokio::spawn(async move { while client_session.next().await.is_some() {} });
-
-        let mut client_stream = client_control
-            .open_stream(StreamPriority::Interactive)
-            .await
-            .unwrap();
-        let mut server_stream = server_session.next().await.unwrap().unwrap();
-
-        client_stream.write_all(b"ping").await.unwrap();
-        let mut received = [0_u8; 4];
-        server_stream.read_exact(&mut received).await.unwrap();
-        assert_eq!(&received, b"ping");
-
-        server_stream.write_all(b"pong").await.unwrap();
-        let mut response = [0_u8; 4];
-        client_stream.read_exact(&mut response).await.unwrap();
-        assert_eq!(&response, b"pong");
-    }
-
-    #[tokio::test]
-    async fn native_mux_ping_reports_rtt() {
-        let (client_io, server_io) = duplex(64 * 1024);
-        let (client_control, mut client_session) =
-            client_session(client_io, NativeMuxConfig::default());
-        let (_server_control, mut server_session) =
-            server_session(server_io, NativeMuxConfig::default());
-
-        tokio::spawn(async move { while client_session.next().await.is_some() {} });
-        tokio::spawn(async move { while server_session.next().await.is_some() {} });
-
-        let rtt = client_control.ping_rtt().await.unwrap();
-        assert!(rtt < Duration::from_secs(1));
-    }
-
-    #[tokio::test]
-    async fn native_mux_enforces_max_streams() {
-        let (client_io, server_io) = duplex(64 * 1024);
-        let config = NativeMuxConfig {
-            max_streams: 1,
-            ..NativeMuxConfig::default()
-        };
-        let (mut client_control, mut client_session) = client_session(client_io, config);
-        let (_server_control, mut server_session) = server_session(server_io, config);
-
-        tokio::spawn(async move { while client_session.next().await.is_some() {} });
-
-        let first_stream = client_control
-            .open_stream(StreamPriority::Interactive)
-            .await
-            .unwrap();
-        let first_server_stream = server_session.next().await.unwrap().unwrap();
-        assert!(client_control
-            .open_stream(StreamPriority::Interactive)
-            .await
-            .is_err());
-        drop(first_stream);
-        drop(first_server_stream);
-    }
-
-    #[tokio::test]
-    async fn native_mux_enforces_send_window_until_remote_reads() {
-        let (client_io, server_io) = duplex(64 * 1024);
-        let config = NativeMuxConfig {
-            initial_window_bytes: 4,
-            ..NativeMuxConfig::default()
-        };
-        let (mut client_control, mut client_session) = client_session(client_io, config);
-        let (_server_control, mut server_session) = server_session(server_io, config);
-
-        tokio::spawn(async move { while client_session.next().await.is_some() {} });
-
-        let mut client_stream = client_control
-            .open_stream(StreamPriority::Interactive)
-            .await
-            .unwrap();
-        let mut server_stream = server_session.next().await.unwrap().unwrap();
-
-        assert_eq!(client_stream.write(b"abcd").await.unwrap(), 4);
-        let blocked =
-            tokio::time::timeout(Duration::from_millis(50), client_stream.write(b"e")).await;
-        assert!(blocked.is_err());
-
-        let mut received = [0_u8; 4];
-        server_stream.read_exact(&mut received).await.unwrap();
-        assert_eq!(&received, b"abcd");
-
-        let unblocked = tokio::time::timeout(Duration::from_secs(1), client_stream.write(b"e"))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(unblocked, 1);
-    }
-
-    #[tokio::test]
-    async fn native_mux_batches_window_update_until_payload_consumed() {
-        let (client_io, server_io) = duplex(64 * 1024);
-        let config = NativeMuxConfig {
-            initial_window_bytes: 4,
-            ..NativeMuxConfig::default()
-        };
-        let (mut client_control, mut client_session) = client_session(client_io, config);
-        let (_server_control, mut server_session) = server_session(server_io, config);
-
-        tokio::spawn(async move { while client_session.next().await.is_some() {} });
-
-        let mut client_stream = client_control
-            .open_stream(StreamPriority::Interactive)
-            .await
-            .unwrap();
-        let mut server_stream = server_session.next().await.unwrap().unwrap();
-
-        client_stream.write_all(b"abcd").await.unwrap();
-        let mut one = [0_u8; 1];
-        server_stream.read_exact(&mut one).await.unwrap();
-        assert_eq!(&one, b"a");
-
-        let blocked =
-            tokio::time::timeout(Duration::from_millis(50), client_stream.write(b"e")).await;
-        assert!(blocked.is_err());
-
-        let mut rest = [0_u8; 3];
-        server_stream.read_exact(&mut rest).await.unwrap();
-        assert_eq!(&rest, b"bcd");
-
-        let unblocked = tokio::time::timeout(Duration::from_secs(1), client_stream.write(b"e"))
-            .await
-            .unwrap()
-            .unwrap();
-        assert_eq!(unblocked, 1);
-    }
-
-    #[tokio::test]
-    async fn native_mux_write_errors_after_peer_rst() {
-        let (client_io, server_io) = duplex(64 * 1024);
-        let (mut client_control, mut client_session) =
-            client_session(client_io, NativeMuxConfig::default());
-        let (_server_control, mut server_session) =
-            server_session(server_io, NativeMuxConfig::default());
-
-        tokio::spawn(async move { while client_session.next().await.is_some() {} });
-
-        let mut client_stream = client_control
-            .open_stream(StreamPriority::Interactive)
-            .await
-            .unwrap();
-        let server_stream = server_session.next().await.unwrap().unwrap();
-        tokio::spawn(async move { while server_session.next().await.is_some() {} });
-
-        drop(server_stream);
-        let result = tokio::time::timeout(Duration::from_secs(1), async {
-            loop {
-                match client_stream.write(b"x").await {
-                    Ok(_) => tokio::time::sleep(Duration::from_millis(10)).await,
-                    Err(err) => break err,
-                }
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(result.kind(), io::ErrorKind::BrokenPipe);
-    }
-
-    #[tokio::test]
-    async fn native_mux_bounds_per_stream_send_queue() {
-        let (client_io, server_io) = duplex(64 * 1024);
-        let config = NativeMuxConfig {
-            initial_window_bytes: 64 * 1024,
-            send_queue_frames: 1,
-            ..NativeMuxConfig::default()
-        };
-        let (mut client_control, mut client_session) = client_session(client_io, config);
-        let (_server_control, mut server_session) = server_session(server_io, config);
-
-        tokio::spawn(async move { while client_session.next().await.is_some() {} });
-
-        let mut client_stream = client_control
-            .open_stream(StreamPriority::Bulk)
-            .await
-            .unwrap();
-        let _server_stream = server_session.next().await.unwrap().unwrap();
-
-        assert!(client_stream.write(b"a").await.is_ok());
-        let maybe_blocked =
-            tokio::time::timeout(Duration::from_millis(50), client_stream.write(b"b")).await;
-        assert!(maybe_blocked.is_err() || maybe_blocked.unwrap().is_ok());
-    }
-
-    #[tokio::test]
-    async fn native_mux_goaway_drains_existing_streams() {
-        let (client_io, server_io) = duplex(64 * 1024);
-        let config = NativeMuxConfig {
-            drain_timeout: Duration::from_secs(1),
-            ..NativeMuxConfig::default()
-        };
-        let (mut client_control, mut client_session) = client_session(client_io, config);
-        let (server_control, mut server_session) = server_session(server_io, config);
-
-        tokio::spawn(async move { while client_session.next().await.is_some() {} });
-
-        let mut client_stream = client_control
-            .open_stream(StreamPriority::Interactive)
-            .await
-            .unwrap();
-        let mut server_stream = server_session.next().await.unwrap().unwrap();
-        server_control.goaway().unwrap();
-
-        client_stream.write_all(b"after-goaway").await.unwrap();
-        let mut received = vec![0_u8; 12];
-        server_stream.read_exact(&mut received).await.unwrap();
-        assert_eq!(&received, b"after-goaway");
-        assert!(client_control
-            .open_stream(StreamPriority::Interactive)
-            .await
-            .is_err());
-    }
-
-    #[tokio::test]
-    async fn native_mux_idle_session_exits() {
-        let (client_io, server_io) = duplex(64 * 1024);
-        let config = NativeMuxConfig {
-            session_idle_timeout: Duration::from_millis(10),
-            ..NativeMuxConfig::default()
-        };
-        let (_client_control, mut client_session) = client_session(client_io, config);
-        let (_server_control, _server_session) = server_session(server_io, config);
-
-        let next = tokio::time::timeout(Duration::from_secs(1), client_session.next())
-            .await
-            .unwrap();
-        assert!(next.is_none());
-    }
 }

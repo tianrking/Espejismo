@@ -495,7 +495,7 @@ dependencies = [
 
 [[package]]
 name = "espejismo-client"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "clap",
@@ -511,7 +511,7 @@ dependencies = [
 
 [[package]]
 name = "espejismo-core"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "base64",
@@ -540,7 +540,7 @@ dependencies = [
 
 [[package]]
 name = "espejismo-server"
-version = "0.0.4"
+version = "0.0.5"
 dependencies = [
  "anyhow",
  "clap",

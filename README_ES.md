@@ -17,7 +17,7 @@ directo con X25519, frames cifrados con XChaCha20-Poly1305, multiplexacion
 logica seleccionable, padding adaptativo, pacing amigable con TCP, y puzzles de
 cliente.
 
-Version actual: `v0.0.4`.
+Version actual: `v0.0.5`.
 
 ## Arquitectura
 
@@ -572,7 +572,8 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - `[shared.mux]` selecciona el multiplexor de streams logicos. `yamux` es el
   valor estable por defecto; `native` activa el mux beta del arbol para pruebas
   y benchmarks. El mux nativo usa control de flujo por ventana de bytes, colas
-  acotadas por stream, limite de streams, y timeout idle con GOAWAY.
+  acotadas por stream, colas acotadas de comandos/pendientes, limite de
+  streams, RST para DATA de streams desconocidos, y timeout idle con GOAWAY.
 - `[[remote.users]]` habilita multiples usuarios remotos independientes, cada
   uno con su propia PSK. Si no hay usuarios configurados, el servidor usa
   `shared.psk`.
@@ -612,8 +613,10 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - `[shared.obfuscation]` controla la forma del trafico del emisor. `profile`
   puede ser `low_latency`, `balanced`, `high_entropy`, `bulk`, o `stealth`.
   `chunk_policy` selecciona chunks cifrados adaptativos: `low_latency` usa 2-8
-  KiB, `balanced` usa 4-16 KiB, `bulk` usa 16-64 KiB, `stealth` usa la capacidad
-  fija del frame stealth, y `custom` usa `min_chunk` / `max_chunk`.
+  KiB, `balanced` usa 4-16 KiB, `bulk` usa chunks grandes limitados justo por
+  debajo de 64 KiB para dejar espacio al metadata del frame y al tag AEAD,
+  `stealth` usa la capacidad fija del frame stealth, y `custom` usa
+  `min_chunk` / `max_chunk`.
 - `[shared.stealth]` se usa cuando `profile = "stealth"`: cada frame cifrado
   mide exactamente `frame_size` bytes. El transporte comienza con un
   calentamiento corto de padding aleatorio, envia datos o padding en una

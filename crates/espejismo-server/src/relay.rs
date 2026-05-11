@@ -1,8 +1,9 @@
 use std::time::Duration;
+use std::{future::Future, pin::Pin};
 
 use anyhow::{Context, Result};
-use espejismo_core::EgressPolicy;
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use espejismo_core::{metered_idle_copy_bidirectional, CopyMeter, EgressPolicy};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{lookup_host, TcpStream, UdpSocket};
 use tokio::time::timeout;
 
@@ -20,85 +21,22 @@ where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut buf_a = [0_u8; 8192];
-    let mut buf_b = [0_u8; 8192];
-    let mut total_a = 0_u64;
-    let mut total_b = 0_u64;
-    let mut a_done = false;
-    let mut b_done = false;
+    let mut meter = UserLimitMeter { limits, user };
+    metered_idle_copy_bidirectional(a, b, idle, &mut meter).await
+}
 
-    loop {
-        let read_a = if !a_done {
-            Some(timeout(idle, a.read(&mut buf_a)))
-        } else {
-            None
-        };
-        let read_b = if !b_done {
-            Some(timeout(idle, b.read(&mut buf_b)))
-        } else {
-            None
-        };
+struct UserLimitMeter<'a> {
+    limits: &'a UserLimitRegistry,
+    user: &'a str,
+}
 
-        match (read_a, read_b) {
-            (Some(ra), Some(rb)) => {
-                tokio::select! {
-                    r = ra => {
-                        match r {
-                            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => {
-                                a_done = true;
-                                let _ = b.shutdown().await;
-                                if b_done {
-                                    break;
-                                }
-                            }
-                            Ok(Ok(n)) => {
-                                limits.account_and_throttle(user, n as u64).await?;
-                                b.write_all(&buf_a[..n]).await?;
-                                total_a += n as u64;
-                            }
-                        }
-                        continue;
-                    }
-                    r = rb => {
-                        match r {
-                            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => {
-                                b_done = true;
-                                let _ = a.shutdown().await;
-                                if a_done {
-                                    break;
-                                }
-                            }
-                            Ok(Ok(n)) => {
-                                limits.account_and_throttle(user, n as u64).await?;
-                                a.write_all(&buf_b[..n]).await?;
-                                total_b += n as u64;
-                            }
-                        }
-                        continue;
-                    }
-                }
-            }
-            (Some(ra), None) => match ra.await {
-                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
-                Ok(Ok(n)) => {
-                    limits.account_and_throttle(user, n as u64).await?;
-                    b.write_all(&buf_a[..n]).await?;
-                    total_a += n as u64;
-                }
-            },
-            (None, Some(rb)) => match rb.await {
-                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
-                Ok(Ok(n)) => {
-                    limits.account_and_throttle(user, n as u64).await?;
-                    a.write_all(&buf_b[..n]).await?;
-                    total_b += n as u64;
-                }
-            },
-            (None, None) => break,
-        }
+impl CopyMeter for UserLimitMeter<'_> {
+    fn account<'a>(
+        &'a mut self,
+        bytes: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async move { self.limits.account_and_throttle(self.user, bytes).await })
     }
-
-    Ok((total_a, total_b))
 }
 
 pub(crate) async fn connect_egress_tcp(

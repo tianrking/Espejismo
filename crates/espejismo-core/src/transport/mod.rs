@@ -1,6 +1,9 @@
 use std::collections::VecDeque;
+use std::future::Future;
+use std::pin::Pin;
 use std::time::Duration;
 
+use anyhow::Result;
 use rand::Rng;
 use tokio::io::{duplex, split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::time::{sleep, timeout};
@@ -52,6 +55,41 @@ where
     A: AsyncRead + AsyncWrite + Unpin,
     B: AsyncRead + AsyncWrite + Unpin,
 {
+    let mut meter = NoopCopyMeter;
+    metered_idle_copy_bidirectional(a, b, idle, &mut meter)
+        .await
+        .map_err(std::io::Error::other)
+}
+
+pub trait CopyMeter {
+    fn account<'a>(
+        &'a mut self,
+        bytes: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>>;
+}
+
+pub struct NoopCopyMeter;
+
+impl CopyMeter for NoopCopyMeter {
+    fn account<'a>(
+        &'a mut self,
+        _bytes: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+pub async fn metered_idle_copy_bidirectional<A, B, M>(
+    a: &mut A,
+    b: &mut B,
+    idle: Duration,
+    meter: &mut M,
+) -> Result<(u64, u64)>
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+    M: CopyMeter,
+{
     let mut buf_a = [0u8; 8192];
     let mut buf_b = [0u8; 8192];
     let mut total_a = 0u64;
@@ -82,6 +120,7 @@ where
                                 if b_done { break; }
                             }
                             Ok(Ok(n)) => {
+                                meter.account(n as u64).await?;
                                 total_a += n as u64;
                                 b.write_all(&buf_a[..n]).await?;
                             }
@@ -96,6 +135,7 @@ where
                                 if a_done { break; }
                             }
                             Ok(Ok(n)) => {
+                                meter.account(n as u64).await?;
                                 total_b += n as u64;
                                 a.write_all(&buf_b[..n]).await?;
                             }
@@ -107,6 +147,7 @@ where
             (Some(ra), None) => match ra.await {
                 Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
                 Ok(Ok(n)) => {
+                    meter.account(n as u64).await?;
                     total_a += n as u64;
                     b.write_all(&buf_a[..n]).await?;
                 }
@@ -114,6 +155,7 @@ where
             (None, Some(rb)) => match rb.await {
                 Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
                 Ok(Ok(n)) => {
+                    meter.account(n as u64).await?;
                     total_b += n as u64;
                     a.write_all(&buf_b[..n]).await?;
                 }

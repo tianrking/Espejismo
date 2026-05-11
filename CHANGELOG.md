@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## v0.0.5
+
+`v0.0.5` hardens the native mux beta and cleans up shared runtime plumbing after
+the v0.0.4 release candidate.
+
 ### Added
 
 - Native mux beta behavior: PING RTT measurement, graceful GOAWAY drain,
@@ -28,6 +33,18 @@
   resource exhaustion risk.
 - Runtime state and user metrics recover poisoned mutexes instead of panicking
   through the admin/status path.
+- Native mux implementation is split into frame codec, pending queue, and test
+  modules so the session state machine stays smaller and easier to audit.
+- Native mux command and accept channels are bounded, and pending outbound
+  frames have a session-level cap derived from stream limits.
+- DATA for an unknown native stream now emits RST for that stream instead of
+  terminating the whole mux session.
+- Shared `FrameOptions` construction now lives in the core config model, and
+  client/server bidirectional copy paths share the same metered copy loop.
+- Normal frame chunk bounds now reserve space for the frame type byte and AEAD
+  tag, preventing bulk/custom chunk policies from producing oversized frames.
+- Windows and Ubuntu setup templates now include `chunk_policy` and carry
+  obfuscation/stealth settings into generated client profiles.
 
 ### Clarified
 

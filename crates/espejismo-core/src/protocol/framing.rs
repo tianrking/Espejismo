@@ -15,6 +15,7 @@ const MAX_FRAME: usize = 64 * 1024;
 const DATA_CHUNK: usize = 16 * 1024;
 const AEAD_TAG_LEN: usize = 16;
 const STEALTH_HEADER_LEN: usize = 3;
+const NORMAL_PAYLOAD_CAPACITY: usize = MAX_FRAME - AEAD_TAG_LEN - 1;
 pub const DEFAULT_STEALTH_FRAME_SIZE: usize = 4096;
 pub const DEFAULT_STEALTH_TICK_MS: u64 = 50;
 
@@ -161,8 +162,8 @@ impl FrameOptions {
         } else {
             policy_min
         };
-        let min = requested_min.clamp(1, MAX_FRAME);
-        let max = policy_max.clamp(min, MAX_FRAME);
+        let min = requested_min.clamp(1, NORMAL_PAYLOAD_CAPACITY);
+        let max = policy_max.clamp(min, NORMAL_PAYLOAD_CAPACITY);
         (min, max)
     }
 
@@ -459,6 +460,9 @@ where
     if options.is_stealth() {
         return write_stealth_one(stream, keys, tx_seq, options, next_pace_at, frame).await;
     }
+    if frame.payload.len() > NORMAL_PAYLOAD_CAPACITY {
+        bail!("frame payload too large");
+    }
     let seq = *tx_seq;
     let mut plain = Vec::with_capacity(frame.payload.len() + 1);
     plain.push(frame.ty as u8);
@@ -657,8 +661,32 @@ fn observe_backpressure(options: &FrameOptions, elapsed: Duration) -> Option<Ins
 mod tests {
     use tokio::io::duplex;
 
-    use super::{Frame, FrameOptions, FrameReader, FrameType, FrameWriter, ObfuscationProfile};
+    use super::{
+        ChunkPolicy, Frame, FrameOptions, FrameReader, FrameType, FrameWriter, ObfuscationProfile,
+        NORMAL_PAYLOAD_CAPACITY,
+    };
     use crate::crypto::{accept_handshake, connect_handshake, HandshakeConfig};
+
+    #[test]
+    fn normal_chunk_bounds_leave_room_for_frame_metadata_and_aead_tag() {
+        let options = FrameOptions {
+            chunk_policy: ChunkPolicy::Bulk,
+            ..FrameOptions::default()
+        };
+        let (_min, max) = options.normalized_chunk_bounds();
+        assert_eq!(max, NORMAL_PAYLOAD_CAPACITY);
+
+        let options = FrameOptions {
+            chunk_policy: ChunkPolicy::Custom,
+            min_chunk: 64 * 1024,
+            max_chunk: 128 * 1024,
+            ..FrameOptions::default()
+        };
+        assert_eq!(
+            options.normalized_chunk_bounds(),
+            (NORMAL_PAYLOAD_CAPACITY, NORMAL_PAYLOAD_CAPACITY)
+        );
+    }
 
     #[tokio::test]
     async fn stealth_frames_roundtrip_data_and_ignore_padding() {
