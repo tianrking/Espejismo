@@ -324,6 +324,13 @@ body = "<html><head><title>It works</title></head><body><h1>It works</h1></body>
 name = "default"
 psk = "change-me-long-random-secret"
 
+[remote.users.quota]
+# bytes = 536870912
+window_secs = 86400
+
+[remote.users.bandwidth]
+# bytes_per_sec = 1048576
+
 [remote.egress]
 deny_private_ips = false
 allow_hosts = []
@@ -398,6 +405,11 @@ internals and wire format specification live in
   local client resolves the name before opening the physical tunnel.
 - `[[remote.users]]` enables multiple independent server users, each with its
   own PSK. If no users are configured, the server falls back to `shared.psk`.
+- `[remote.users.quota]` sets an optional per-user rolling byte quota. `bytes`
+  is disabled when omitted; `window_secs` defaults to 86400.
+- `[remote.users.bandwidth]` sets an optional per-user aggregate byte-per-second
+  limit across TCP and UDP relay traffic. See
+  [docs/deployment/USERS.md](docs/deployment/USERS.md).
 - `[remote.egress].socks5_proxy` optionally chains TCP egress through another
   SOCKS5 proxy.
 - `espejismo-local --print-client-profile` emits an

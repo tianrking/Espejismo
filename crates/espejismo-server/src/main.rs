@@ -7,22 +7,25 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use espejismo_core::config::{encode_config_base64, example_config};
 use espejismo_core::{
-    accept_handshake_with_users, idle_copy_bidirectional, init_logging, load_config, parse_psk,
-    read_tunnel_request, spawn_admin_server, spawn_frame_transport, AdminState, ConfigInput,
-    EgressPolicy, EspejismoConfig, FrameOptions, HandshakeConfig, HandshakeUser, LogConfig,
-    LogFormat, Metrics, ProbeDefenseMode, ReplayCache, TunnelRequest,
+    accept_handshake_with_users, init_logging, load_config, parse_psk, read_tunnel_request,
+    spawn_admin_server, spawn_frame_transport, AdminState, ConfigInput, EgressPolicy,
+    EspejismoConfig, FrameOptions, HandshakeConfig, HandshakeUser, LogConfig, LogFormat, Metrics,
+    ProbeDefenseMode, ReplayCache, TunnelRequest,
 };
 use futures::StreamExt;
 use rand::seq::SliceRandom;
 use rand::Rng;
-use tokio::io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{copy_bidirectional, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{lookup_host, TcpListener, TcpStream, UdpSocket};
 use tokio::sync::Semaphore;
 use tokio::time::{sleep, timeout, Duration};
 use tokio_yamux::{Config as YamuxConfig, Session, StreamHandle};
 use tracing::{debug, info};
 
+mod limits;
 mod tarpit;
+
+use limits::{UserLimitConfig, UserLimitRegistry};
 
 #[derive(Parser, Debug)]
 #[command(name = "espejismo-remote")]
@@ -101,6 +104,7 @@ struct RemoteRuntime {
     egress: EgressPolicy,
     idle_timeout: Duration,
     max_streams: u32,
+    limits: UserLimitRegistry,
 }
 
 #[derive(Clone)]
@@ -242,6 +246,7 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<RemoteRuntime> 
     let stealth_handshake = obfuscation_profile
         .is_stealth()
         .then_some(stealth_frame_size);
+    let limits = build_user_limits(&config);
 
     Ok(RemoteRuntime {
         listen: args.listen.unwrap_or(config.remote.listen),
@@ -302,7 +307,21 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<RemoteRuntime> 
         egress: config.remote.egress.into(),
         idle_timeout: Duration::from_secs(config.shared.idle_timeout_secs),
         max_streams: config.shared.max_streams,
+        limits,
     })
+}
+
+fn build_user_limits(config: &EspejismoConfig) -> UserLimitRegistry {
+    UserLimitRegistry::new(config.remote.users.iter().map(|user| {
+        (
+            user.name.clone(),
+            UserLimitConfig {
+                quota_bytes: user.quota.bytes,
+                quota_window: Duration::from_secs(user.quota.window_secs),
+                bandwidth_bytes_per_sec: user.bandwidth.bytes_per_sec,
+            },
+        )
+    }))
 }
 
 async fn handle_peer(
@@ -389,11 +408,12 @@ async fn handle_peer(
             .map_err(|err| anyhow::anyhow!("stream limit closed: {err}"))?;
         let metrics = metrics.clone();
         let egress = runtime.egress.clone();
+        let limits = runtime.limits.clone();
         let idle = runtime.idle_timeout;
         let user = user.clone();
         tokio::spawn(async move {
             let _stream_permit = stream_permit;
-            if let Err(err) = handle_mux_stream(stream, metrics, egress, idle, user).await {
+            if let Err(err) = handle_mux_stream(stream, metrics, egress, limits, idle, user).await {
                 debug!(error = %err, "mux stream ended");
             }
         });
@@ -406,13 +426,16 @@ async fn handle_mux_stream(
     mut stream: StreamHandle,
     metrics: Metrics,
     egress: EgressPolicy,
+    limits: UserLimitRegistry,
     idle: Duration,
     user: String,
 ) -> Result<()> {
+    limits.ensure_open(&user).await?;
     metrics.inc_active_stream();
     metrics.inc_stream_opened();
     metrics.inc_user_stream_opened(&user);
-    let result = handle_mux_stream_inner(&mut stream, metrics.clone(), egress, idle, &user).await;
+    let result =
+        handle_mux_stream_inner(&mut stream, metrics.clone(), egress, limits, idle, &user).await;
     if result.is_err() {
         metrics.inc_stream_failed();
     }
@@ -424,6 +447,7 @@ async fn handle_mux_stream_inner(
     stream: &mut StreamHandle,
     metrics: Metrics,
     egress: EgressPolicy,
+    limits: UserLimitRegistry,
     idle: Duration,
     user: &str,
 ) -> Result<()> {
@@ -432,12 +456,18 @@ async fn handle_mux_stream_inner(
             let mut remote = connect_egress_tcp(&authority, &egress).await?;
             info!(target = %authority, "mux TCP relay opened");
             let (client_to_remote, remote_to_client) =
-                idle_copy_bidirectional(stream, &mut remote, idle).await?;
+                limited_copy_bidirectional(stream, &mut remote, idle, &limits, user).await?;
             metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
             metrics.add_user_tunnel_bytes(user, client_to_remote, remote_to_client);
         }
         TunnelRequest::UdpDatagram { authority, payload } => {
+            limits
+                .account_and_throttle(user, payload.len() as u64)
+                .await?;
             let response = relay_udp_datagram(&authority, &payload, &egress, idle).await?;
+            limits
+                .account_and_throttle(user, response.len() as u64)
+                .await?;
             metrics.add_tunnel_bytes(payload.len() as u64, response.len() as u64);
             metrics.add_user_tunnel_bytes(user, payload.len() as u64, response.len() as u64);
             anyhow::ensure!(
@@ -450,6 +480,98 @@ async fn handle_mux_stream_inner(
         }
     }
     Ok(())
+}
+
+async fn limited_copy_bidirectional<A, B>(
+    a: &mut A,
+    b: &mut B,
+    idle: Duration,
+    limits: &UserLimitRegistry,
+    user: &str,
+) -> Result<(u64, u64)>
+where
+    A: AsyncRead + AsyncWrite + Unpin,
+    B: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut buf_a = [0_u8; 8192];
+    let mut buf_b = [0_u8; 8192];
+    let mut total_a = 0_u64;
+    let mut total_b = 0_u64;
+    let mut a_done = false;
+    let mut b_done = false;
+
+    loop {
+        let read_a = if !a_done {
+            Some(timeout(idle, a.read(&mut buf_a)))
+        } else {
+            None
+        };
+        let read_b = if !b_done {
+            Some(timeout(idle, b.read(&mut buf_b)))
+        } else {
+            None
+        };
+
+        match (read_a, read_b) {
+            (Some(ra), Some(rb)) => {
+                tokio::select! {
+                    r = ra => {
+                        match r {
+                            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => {
+                                a_done = true;
+                                let _ = b.shutdown().await;
+                                if b_done {
+                                    break;
+                                }
+                            }
+                            Ok(Ok(n)) => {
+                                limits.account_and_throttle(user, n as u64).await?;
+                                b.write_all(&buf_a[..n]).await?;
+                                total_a += n as u64;
+                            }
+                        }
+                        continue;
+                    }
+                    r = rb => {
+                        match r {
+                            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => {
+                                b_done = true;
+                                let _ = a.shutdown().await;
+                                if a_done {
+                                    break;
+                                }
+                            }
+                            Ok(Ok(n)) => {
+                                limits.account_and_throttle(user, n as u64).await?;
+                                a.write_all(&buf_b[..n]).await?;
+                                total_b += n as u64;
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
+            (Some(ra), None) => match ra.await {
+                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(n)) => {
+                    limits.account_and_throttle(user, n as u64).await?;
+                    b.write_all(&buf_a[..n]).await?;
+                    total_a += n as u64;
+                }
+            },
+            (None, Some(rb)) => match rb.await {
+                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(n)) => {
+                    limits.account_and_throttle(user, n as u64).await?;
+                    a.write_all(&buf_b[..n]).await?;
+                    total_b += n as u64;
+                }
+            },
+            (None, None) => break,
+        }
+    }
+
+    Ok((total_a, total_b))
 }
 
 async fn connect_egress_tcp(authority: &str, egress: &EgressPolicy) -> Result<TcpStream> {

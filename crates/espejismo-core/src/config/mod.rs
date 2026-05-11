@@ -125,6 +125,24 @@ pub struct RemoteConfig {
 pub struct RemoteUserConfig {
     pub name: String,
     pub psk: String,
+    #[serde(default)]
+    pub quota: RemoteUserQuotaConfig,
+    #[serde(default)]
+    pub bandwidth: RemoteUserBandwidthConfig,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RemoteUserQuotaConfig {
+    #[serde(default)]
+    pub bytes: Option<u64>,
+    #[serde(default = "default_user_quota_window_secs")]
+    pub window_secs: u64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct RemoteUserBandwidthConfig {
+    #[serde(default)]
+    pub bytes_per_sec: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -279,6 +297,15 @@ impl Default for RemoteConfig {
     }
 }
 
+impl Default for RemoteUserQuotaConfig {
+    fn default() -> Self {
+        Self {
+            bytes: None,
+            window_secs: default_user_quota_window_secs(),
+        }
+    }
+}
+
 impl Default for RemoteFallbackHttpConfig {
     fn default() -> Self {
         Self {
@@ -343,6 +370,18 @@ fn parse_config(content: &str) -> Result<EspejismoConfig> {
             !user.psk.trim().is_empty(),
             "remote.users.psk must not be empty"
         );
+        if user.quota.bytes.is_some() {
+            anyhow::ensure!(
+                user.quota.window_secs > 0,
+                "remote.users.quota.window_secs must be greater than 0"
+            );
+        }
+        if let Some(bytes_per_sec) = user.bandwidth.bytes_per_sec {
+            anyhow::ensure!(
+                bytes_per_sec > 0,
+                "remote.users.bandwidth.bytes_per_sec must be greater than 0"
+            );
+        }
     }
     let mut names = std::collections::BTreeSet::new();
     for user in &config.remote.users {
@@ -434,6 +473,10 @@ fn default_backpressure_cooldown_ms() -> u64 {
 
 fn default_tunnel_buffer() -> usize {
     1024 * 1024
+}
+
+fn default_user_quota_window_secs() -> u64 {
+    24 * 60 * 60
 }
 
 fn default_socks5_listen() -> Option<SocketAddr> {

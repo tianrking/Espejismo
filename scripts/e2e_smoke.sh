@@ -87,6 +87,13 @@ cold_start_delay_ms = 20
 name = "smoke"
 psk = "${PSK}"
 
+[remote.users.quota]
+bytes = 10485760
+window_secs = 60
+
+[remote.users.bandwidth]
+bytes_per_sec = 10485760
+
 [remote.egress]
 allow_ports = [${HTTP_PORT}, ${UDP_PORT}]
 EOF
