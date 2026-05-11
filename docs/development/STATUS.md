@@ -1,6 +1,6 @@
 # Implementation Status
 
-Current release target: `v0.0.5`.
+Current release target: `v0.0.6`.
 
 ## Implemented
 
@@ -27,11 +27,14 @@ Current release target: `v0.0.5`.
   by request timeouts, and reload/apply failures return generic client-facing
   errors while detailed causes stay in logs.
 - Admin `/connections` and enriched `/status` runtime health with tunnel state,
-  reconnect count, recent errors, egress policy version, and config apply time.
+  reconnect count, recent errors, egress policy version, config apply time,
+  lane RTT samples, session age, rotation counters, stream failure reasons, and
+  egress deny counters.
 - Runtime config reload/apply through the authenticated admin endpoint. Remote
   apply updates users, quotas, egress, fallback, and transport policy; local
   apply rebuilds the tunnel pool and updates server/auth/pacing/mux settings for
   new flows.
+- Built-in config profiles through `--profile fast|balanced|low-latency|stealth|server-safe`.
 - Config diagnostics through `--check-config` for both local and remote.
 - Shared TCP socket options: TCP_NODELAY, keepalive, heartbeat frames, socket
   buffers, Linux TCP_USER_TIMEOUT, and optional congestion-control selection.
@@ -54,14 +57,17 @@ Current release target: `v0.0.5`.
 - Optional local native TUN ingress that maps virtual-interface TCP/UDP traffic
   into the existing encrypted TCP mux tunnel.
 - Linux, macOS, and Windows TUN route/DNS managers with remote-server route
-  protection, route takeover, DNS takeover, and best-effort shutdown restore.
+  protection, route takeover, DNS takeover, saved recovery state, best-effort
+  shutdown restore, and explicit `--tun-route-cleanup` recovery.
 - Client and remote release update checks with configurable metadata URL.
 - Server-side egress policy for host/port allow and block rules.
 - SOCKS5 chained TCP egress and SOCKS5 UDP ASSOCIATE chained UDP egress.
 - Variable-length masked handshake envelope with authenticated payload.
-- Protocol version and capability negotiation in the authenticated handshake.
+- Protocol version, mux mode, and capability negotiation in the authenticated
+  handshake.
 - X25519 ephemeral key exchange and HKDF session keys.
-- XChaCha20-Poly1305 encrypted frames with fail-fast authentication.
+- XChaCha20-Poly1305 encrypted frames with fail-fast authentication and
+  encrypted frame-level `KEY_UPDATE` traffic-key rotation.
 - HKDF-derived masked frame length headers.
 - Stealth obfuscation profile with fixed-size encrypted frames, masked
   handshake blocks, padding warmup, paced writes, and idle cadence decay.
@@ -80,6 +86,8 @@ Current release target: `v0.0.5`.
 - TCP stress smoke test covering single-stream download-like traffic, many small
   requests, mixed interactive/bulk requests, remote restart recovery, and
   optional soak loops.
+- JSON mux benchmark script comparing yamux/native for one-stream throughput,
+  32 small requests, mixed bulk/interactive traffic, and session rotation.
 - CI for Linux, macOS, and Windows.
 - Release artifact workflow for Linux x86_64/i686/aarch64/armv7, macOS
   aarch64, and Windows x86_64/i686/aarch64.

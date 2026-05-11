@@ -495,13 +495,14 @@ dependencies = [
 
 [[package]]
 name = "espejismo-client"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "clap",
  "espejismo-core",
  "futures",
  "netstack-smoltcp",
+ "serde",
  "serde_json",
  "tokio",
  "toml",
@@ -511,7 +512,7 @@ dependencies = [
 
 [[package]]
 name = "espejismo-core"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "base64",
@@ -536,11 +537,12 @@ dependencies = [
  "tracing-subscriber",
  "ureq",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]
 name = "espejismo-server"
-version = "0.0.5"
+version = "0.0.6"
 dependencies = [
  "anyhow",
  "clap",

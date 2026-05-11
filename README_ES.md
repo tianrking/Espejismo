@@ -17,7 +17,7 @@ directo con X25519, frames cifrados con XChaCha20-Poly1305, multiplexacion
 logica seleccionable, padding adaptativo, pacing amigable con TCP, y puzzles de
 cliente.
 
-Version actual: `v0.0.5`.
+Version actual: `v0.0.6`.
 
 ## Arquitectura
 
@@ -96,7 +96,9 @@ servidor. Dentro del envelope enmascarado, el cliente resuelve un puzzle acotado
 de SHA-256 con ceros iniciales sobre el cuerpo antes de calcular el HMAC. El
 remoto verifica el puzzle, comprueba la desviacion de timestamp, valida el HMAC
 en tiempo constante, y registra la clave publica efimera en una cache de replay
-acotada. Las claves de sesion se derivan con X25519 y HKDF-SHA256.
+acotada. Las claves de sesion se derivan con X25519 y HKDF-SHA256. El handshake
+tambien negocia la capacidad de mux, por lo que una configuracion `yamux`
+contra `native` falla temprano con un error claro.
 
 Cuando `profile = "stealth"`, el intercambio hello se envuelve en dos bloques
 de tamano fijo que coinciden con `shared.stealth.frame_size`. La carga util
@@ -114,6 +116,9 @@ Los perfiles estandar usan frames AEAD con longitud prefijada enmascarada:
 `low_latency`, `balanced`, y `high_entropy` ajustan la aleatorizacion de
 fragmentos, jitter, y padding adaptativo alrededor de ese formato de frame
 estandar.
+
+Los tuneles fisicos largos rotan claves de trafico con un frame de control
+cifrado `KEY_UPDATE` cada `shared.key_update_frames` frames transmitidos.
 
 El modo stealth usa frames AEAD de tamano fijo sin cabecera de longitud:
 
@@ -546,6 +551,8 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   del sistema. Convierte flujos TCP y datagramas UDP de la interfaz virtual al
   tunel cifrado TCP con mux existente. La toma de rutas y DNS en Linux, macOS, y Windows es
   explicita con `[local.tun.route]`; ver [docs/deployment/TUN.md](docs/deployment/TUN.md).
+- `espejismo-local --tun-route-cleanup` restaura estado guardado de rutas/DNS
+  despues de un crash o desde un hook de servicio.
 - `[local.auth]` habilita autenticacion SOCKS5 por usuario/contrasena y
   autenticacion HTTP Basic del proxy. Omitir para un listener sin autenticacion
   solo en loopback confiable.
@@ -556,6 +563,9 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - `[admin]` habilita un endpoint HTTP admin con `/healthz`, `/status`,
   `/connections`, `/metrics`, y `/reload`/`/apply` en el remoto. Usar `token`
   fuera de entornos loopback confiables.
+- `/status`, `/connections`, y `/metrics` incluyen muestras RTT por lane, edad
+  de sesion, contadores de rotacion de sesion/clave, razones de fallo de
+  streams, y denegaciones de egress.
 - `[remote.egress]` controla la politica de salida del servidor con listas de
   hosts y puertos permitidos/bloqueados.
 - `local.server` y `--server` aceptan `ip:puerto` o `dominio:puerto`; el
@@ -578,6 +588,8 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   y benchmarks. El mux nativo usa control de flujo por ventana de bytes, colas
   acotadas por stream, colas acotadas de comandos/pendientes, limite de
   streams, RST para DATA de streams desconocidos, y timeout idle con GOAWAY.
+- `shared.key_update_frames` controla la rotacion de claves de trafico dentro
+  de un tunel fisico largo.
 - `shared.max_physical_connections` limita las conexiones TCP fisicas
   simultaneas aceptadas por el remoto. `shared.max_streams` limita los streams
   mux logicos y el semaforo global de streams del remoto.

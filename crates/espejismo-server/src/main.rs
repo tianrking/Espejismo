@@ -7,7 +7,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use espejismo_core::config::example_config;
 use espejismo_core::{
-    apply_log_overrides, apply_tcp_options, bind_tcp_listener, config_to_toml,
+    apply_log_overrides, apply_named_profile, apply_tcp_options, bind_tcp_listener, config_to_toml,
     encode_config_base64, init_logging, load_config, load_config_base64, parse_config, parse_psk,
     print_update_check, report_config_check, spawn_admin_server, AdminAction, AdminState,
     ConfigInput, EgressPolicy, EspejismoConfig, FrameOptionOverrides, FrameOptions,
@@ -42,6 +42,8 @@ pub(crate) struct Args {
     print_example_config: bool,
     #[arg(long)]
     print_example_config_base64: bool,
+    #[arg(long)]
+    profile: Option<String>,
     #[arg(long)]
     print_config_base64: bool,
     #[arg(long)]
@@ -146,7 +148,11 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     if args.print_example_config || args.print_example_config_base64 {
-        let example = example_config();
+        let mut example_config = parse_config(&example_config())?;
+        if let Some(profile) = &args.profile {
+            apply_named_profile(&mut example_config, profile)?;
+        }
+        let example = config_to_toml(&example_config)?;
         if args.print_example_config_base64 {
             println!("{}", encode_config_base64(&example));
         } else {
@@ -160,6 +166,9 @@ async fn main() -> Result<()> {
         base64: args.config_base64.clone(),
     };
     let mut config = load_config(config_input.clone())?;
+    if let Some(profile) = &args.profile {
+        apply_named_profile(&mut config, profile)?;
+    }
     if args.check_config {
         check_remote_config(&config, &args).await?;
         return Ok(());
@@ -316,7 +325,8 @@ fn build_handshake_users(
                         .unwrap_or(config.remote.max_handshake_padding),
                     args.puzzle_bits.unwrap_or(config.shared.puzzle_bits),
                 )
-                .with_stealth_frame_size(stealth_handshake),
+                .with_stealth_frame_size(stealth_handshake)
+                .with_mux_mode(config.shared.mux.mode),
             });
         }
         return Ok(users);
@@ -337,7 +347,8 @@ fn build_handshake_users(
                 .unwrap_or(config.remote.max_handshake_padding),
             args.puzzle_bits.unwrap_or(config.shared.puzzle_bits),
         )
-        .with_stealth_frame_size(stealth_handshake),
+        .with_stealth_frame_size(stealth_handshake)
+        .with_mux_mode(config.shared.mux.mode),
     });
     Ok(users)
 }

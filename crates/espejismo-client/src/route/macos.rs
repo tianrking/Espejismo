@@ -1,9 +1,10 @@
 use std::net::{IpAddr, Ipv4Addr};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use espejismo_core::config::LocalTunConfig;
 use espejismo_core::split_authority;
+use serde::{Deserialize, Serialize};
 use tokio::net::lookup_host;
 use tracing::{debug, info, warn};
 
@@ -21,16 +22,24 @@ pub struct MacosRouteGuard {
     active: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct ProtectedRoute {
     ip: Ipv4Addr,
     original: Option<HostRoute>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct ServiceDnsRestore {
     service: String,
     dns: DnsRestore,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct MacosRouteState {
+    tun_name: String,
+    split_default_installed: bool,
+    protected_routes: Vec<ProtectedRoute>,
+    dns_restore: Vec<ServiceDnsRestore>,
 }
 
 pub async fn install(config: &LocalTunConfig, server: &str) -> Result<MacosRouteGuard> {
@@ -63,6 +72,7 @@ pub async fn install(config: &LocalTunConfig, server: &str) -> Result<MacosRoute
         guard.dns_restore = read_dns_restore()?;
         apply_dns(&config.route.dns_servers).context("apply macOS DNS")?;
     }
+    write_state(&guard)?;
 
     info!(
         tun = %config.name,
@@ -109,12 +119,58 @@ impl MacosRouteGuard {
         }
 
         if errors.is_empty() {
+            let _ = std::fs::remove_file(super::state_path(&self.tun_name));
             info!(tun = %self.tun_name, "macOS TUN route manager restored");
             Ok(())
         } else {
             anyhow::bail!(errors.join("; "))
         }
     }
+}
+
+pub async fn cleanup(config: &LocalTunConfig) -> Result<()> {
+    let path = super::state_path(&config.name);
+    let state = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<MacosRouteState>(&content).ok());
+    if let Some(state) = state {
+        let mut guard = MacosRouteGuard {
+            tun_name: state.tun_name,
+            split_default_installed: state.split_default_installed,
+            protected_routes: state.protected_routes,
+            dns_restore: state.dns_restore,
+            active: true,
+        };
+        guard.restore()?;
+        return Ok(());
+    }
+
+    if let Err(err) = run_quiet("route", &["-n", "delete", "-net", "0.0.0.0/1"]) {
+        debug!(error = %err, "macOS split route cleanup skipped");
+    }
+    if let Err(err) = run_quiet("route", &["-n", "delete", "-net", "128.0.0.0/1"]) {
+        debug!(error = %err, "macOS split route cleanup skipped");
+    }
+    anyhow::ensure!(
+        !path.exists(),
+        "macOS DNS restore state at {} could not be decoded; repair DNS manually with networksetup",
+        path.display()
+    );
+    Ok(())
+}
+
+fn write_state(guard: &MacosRouteGuard) -> Result<()> {
+    let state = MacosRouteState {
+        tun_name: guard.tun_name.clone(),
+        split_default_installed: guard.split_default_installed,
+        protected_routes: guard.protected_routes.clone(),
+        dns_restore: guard.dns_restore.clone(),
+    };
+    std::fs::write(
+        super::state_path(&guard.tun_name),
+        serde_json::to_vec_pretty(&state)?,
+    )
+    .context("write macOS route recovery state")
 }
 
 impl Drop for MacosRouteGuard {
@@ -293,6 +349,20 @@ fn output(program: &str, args: &[&str]) -> Result<String> {
 fn run(program: &str, args: &[&str]) -> Result<()> {
     let status = Command::new(program)
         .args(args)
+        .status()
+        .with_context(|| format!("run {program} {}", args.join(" ")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("{program} {} exited with {status}", args.join(" "))
+    }
+}
+
+fn run_quiet(program: &str, args: &[&str]) -> Result<()> {
+    let status = Command::new(program)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .with_context(|| format!("run {program} {}", args.join(" ")))?;
     if status.success() {

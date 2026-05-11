@@ -26,6 +26,7 @@ pub enum FrameType {
     Data = 2,
     Close = 3,
     Padding = 4,
+    KeyUpdate = 5,
 }
 
 impl TryFrom<u8> for FrameType {
@@ -37,6 +38,7 @@ impl TryFrom<u8> for FrameType {
             2 => Ok(Self::Data),
             3 => Ok(Self::Close),
             4 => Ok(Self::Padding),
+            5 => Ok(Self::KeyUpdate),
             _ => bail!("unknown frame type {value}"),
         }
     }
@@ -112,6 +114,8 @@ pub struct FrameOptions {
     pub pacing_burst_bytes: usize,
     pub pacing_min_write_bytes: usize,
     pub heartbeat_secs: u64,
+    pub key_update_frames: u64,
+    pub metrics: Option<crate::metrics::Metrics>,
 }
 
 impl Default for FrameOptions {
@@ -134,6 +138,8 @@ impl Default for FrameOptions {
             pacing_burst_bytes: 64 * 1024,
             pacing_min_write_bytes: 1024,
             heartbeat_secs: 30,
+            key_update_frames: 16_384,
+            metrics: None,
         }
     }
 }
@@ -243,7 +249,7 @@ where
     pub async fn send(&mut self, frame: Frame) -> Result<()> {
         send_with_optional_padding(
             &mut self.stream,
-            &self.keys,
+            &mut self.keys,
             &mut self.tx_seq,
             &self.options,
             &mut self.padding_disabled_until,
@@ -262,12 +268,12 @@ where
         loop {
             let frame = read_one(
                 &mut self.stream,
-                &self.keys,
+                &mut self.keys,
                 &mut self.rx_seq,
                 &self.options,
             )
             .await?;
-            if frame.ty != FrameType::Padding {
+            if frame.ty != FrameType::Padding && frame.ty != FrameType::KeyUpdate {
                 return Ok(frame);
             }
         }
@@ -296,7 +302,7 @@ where
     pub async fn send(&mut self, frame: Frame) -> Result<()> {
         send_with_optional_padding(
             &mut self.writer,
-            &self.keys,
+            &mut self.keys,
             &mut self.tx_seq,
             &self.options,
             &mut self.padding_disabled_until,
@@ -329,12 +335,12 @@ where
         loop {
             let frame = read_one(
                 &mut self.reader,
-                &self.keys,
+                &mut self.keys,
                 &mut self.rx_seq,
                 &self.options,
             )
             .await?;
-            if frame.ty != FrameType::Padding {
+            if frame.ty != FrameType::Padding && frame.ty != FrameType::KeyUpdate {
                 return Ok(frame);
             }
         }
@@ -386,7 +392,7 @@ where
 
 async fn write_one<S>(
     stream: &mut S,
-    keys: &SessionKeys,
+    keys: &mut SessionKeys,
     tx_seq: &mut u64,
     options: &FrameOptions,
     next_pace_at: &mut Option<Instant>,
@@ -421,7 +427,7 @@ where
 
 async fn send_with_optional_padding<W>(
     writer: &mut W,
-    keys: &SessionKeys,
+    keys: &mut SessionKeys,
     tx_seq: &mut u64,
     options: &FrameOptions,
     padding_disabled_until: &mut Option<Instant>,
@@ -431,7 +437,27 @@ async fn send_with_optional_padding<W>(
 where
     W: AsyncWrite + Unpin,
 {
-    if !options.is_stealth() && frame.ty != FrameType::Padding {
+    if should_key_update(options, *tx_seq, frame.ty) {
+        let elapsed = write_one(
+            writer,
+            keys,
+            tx_seq,
+            options,
+            next_pace_at,
+            Frame {
+                ty: FrameType::KeyUpdate,
+                payload: Vec::new(),
+            },
+        )
+        .await?;
+        observe_write_backpressure(options, padding_disabled_until, elapsed);
+        if let Some(metrics) = &options.metrics {
+            metrics.inc_key_update();
+        }
+        keys.update_tx()?;
+        *tx_seq = 0;
+    }
+    if !options.is_stealth() && frame.ty != FrameType::Padding && frame.ty != FrameType::KeyUpdate {
         maybe_write_padding(
             writer,
             keys,
@@ -449,7 +475,7 @@ where
 
 async fn maybe_write_padding<W>(
     writer: &mut W,
-    keys: &SessionKeys,
+    keys: &mut SessionKeys,
     tx_seq: &mut u64,
     options: &FrameOptions,
     padding_disabled_until: &mut Option<Instant>,
@@ -490,7 +516,7 @@ fn observe_write_backpressure(
 
 async fn read_one<S>(
     stream: &mut S,
-    keys: &SessionKeys,
+    keys: &mut SessionKeys,
     rx_seq: &mut u64,
     options: &FrameOptions,
 ) -> Result<Frame>
@@ -515,12 +541,16 @@ where
     }
     let ty = FrameType::try_from(plain[0])?;
     plain.drain(..1);
+    if ty == FrameType::KeyUpdate {
+        keys.update_rx()?;
+        *rx_seq = 0;
+    }
     Ok(Frame { ty, payload: plain })
 }
 
 async fn write_stealth_one<S>(
     stream: &mut S,
-    keys: &SessionKeys,
+    keys: &mut SessionKeys,
     tx_seq: &mut u64,
     options: &FrameOptions,
     next_pace_at: &mut Option<Instant>,
@@ -586,7 +616,7 @@ async fn pace_before_write(
 
 async fn read_stealth_one<S>(
     stream: &mut S,
-    keys: &SessionKeys,
+    keys: &mut SessionKeys,
     rx_seq: &mut u64,
     options: &FrameOptions,
 ) -> Result<Frame>
@@ -610,7 +640,19 @@ where
     let ty = FrameType::try_from(plain[0])?;
     plain.drain(..STEALTH_HEADER_LEN);
     plain.truncate(payload_len);
+    if ty == FrameType::KeyUpdate {
+        keys.update_rx()?;
+        *rx_seq = 0;
+    }
     Ok(Frame { ty, payload: plain })
+}
+
+fn should_key_update(options: &FrameOptions, tx_seq: u64, ty: FrameType) -> bool {
+    options.key_update_frames > 0
+        && tx_seq > 0
+        && tx_seq.is_multiple_of(options.key_update_frames)
+        && ty != FrameType::Padding
+        && ty != FrameType::KeyUpdate
 }
 
 async fn maybe_jitter(options: &FrameOptions) {
@@ -739,5 +781,52 @@ mod tests {
         let frame = reader.recv().await.unwrap();
         assert_eq!(frame.ty, FrameType::Data);
         assert_eq!(frame.payload, b"hello stealth");
+    }
+
+    #[tokio::test]
+    async fn key_update_frames_rotate_traffic_keys() {
+        let cfg = HandshakeConfig::new(b"test-secret-that-is-long-enough".to_vec(), 30, 128, 4);
+        let (mut client, mut server) = duplex(8192);
+        let client_cfg = cfg.clone();
+        let server_cfg = cfg.clone();
+        let client_task = tokio::spawn(async move {
+            let keys = connect_handshake(&mut client, &client_cfg).await?;
+            anyhow::Ok((client, keys))
+        });
+        let server_task = tokio::spawn(async move {
+            let keys = accept_handshake(&mut server, &server_cfg).await?;
+            anyhow::Ok((server, keys))
+        });
+        let (client, client_keys) = client_task.await.unwrap().unwrap();
+        let (server, server_keys) = server_task.await.unwrap().unwrap();
+
+        let options = FrameOptions {
+            max_padding: 0,
+            padding_chance_percent: 0,
+            key_update_frames: 1,
+            ..FrameOptions::default()
+        };
+        let mut writer = FrameWriter::new(client, client_keys, options.clone());
+        let mut reader = FrameReader::new(server, server_keys, options);
+
+        writer
+            .send(Frame {
+                ty: FrameType::Data,
+                payload: b"before".to_vec(),
+            })
+            .await
+            .unwrap();
+        writer
+            .send(Frame {
+                ty: FrameType::Data,
+                payload: b"after".to_vec(),
+            })
+            .await
+            .unwrap();
+
+        let before = reader.recv().await.unwrap();
+        let after = reader.recv().await.unwrap();
+        assert_eq!(before.payload, b"before");
+        assert_eq!(after.payload, b"after");
     }
 }

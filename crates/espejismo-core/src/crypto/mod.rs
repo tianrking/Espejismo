@@ -1,3 +1,4 @@
+use std::fmt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -14,7 +15,9 @@ use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::sync::Mutex;
 use x25519_dalek::{PublicKey, StaticSecret};
+use zeroize::Zeroize;
 
+use crate::config::MuxMode;
 use crate::protocol::puzzle;
 use crate::protocol::replay::ReplayCache;
 
@@ -32,9 +35,11 @@ const VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX: usize = 512;
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const CAP_TCP_CONNECT: u64 = 1 << 0;
 pub const CAP_UDP_ASSOCIATE: u64 = 1 << 1;
-pub const DEFAULT_CAPABILITIES: u64 = CAP_TCP_CONNECT | CAP_UDP_ASSOCIATE;
+pub const CAP_MUX_YAMUX: u64 = 1 << 8;
+pub const CAP_MUX_NATIVE: u64 = 1 << 9;
+pub const DEFAULT_CAPABILITIES: u64 = CAP_TCP_CONNECT | CAP_UDP_ASSOCIATE | CAP_MUX_YAMUX;
 
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 pub struct HandshakeConfig {
     pub psk: Vec<u8>,
     pub auth_key: [u8; 32],
@@ -42,6 +47,7 @@ pub struct HandshakeConfig {
     pub max_handshake_padding: usize,
     pub puzzle_difficulty_bits: u8,
     pub stealth_frame_size: Option<usize>,
+    pub mux_mode: MuxMode,
 }
 
 impl HandshakeConfig {
@@ -59,6 +65,7 @@ impl HandshakeConfig {
             max_handshake_padding,
             puzzle_difficulty_bits,
             stealth_frame_size: None,
+            mux_mode: MuxMode::Yamux,
         }
     }
 
@@ -66,15 +73,79 @@ impl HandshakeConfig {
         self.stealth_frame_size = frame_size;
         self
     }
+
+    pub fn with_mux_mode(mut self, mux_mode: MuxMode) -> Self {
+        self.mux_mode = mux_mode;
+        self
+    }
+}
+
+impl fmt::Debug for HandshakeConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HandshakeConfig")
+            .field("psk", &"<redacted>")
+            .field("auth_key", &"<redacted>")
+            .field("clock_skew_secs", &self.clock_skew_secs)
+            .field("max_handshake_padding", &self.max_handshake_padding)
+            .field("puzzle_difficulty_bits", &self.puzzle_difficulty_bits)
+            .field("stealth_frame_size", &self.stealth_frame_size)
+            .field("mux_mode", &self.mux_mode)
+            .finish()
+    }
+}
+
+impl Drop for HandshakeConfig {
+    fn drop(&mut self) {
+        self.psk.zeroize();
+        self.auth_key.zeroize();
+    }
 }
 
 #[derive(Clone)]
 pub struct SessionKeys {
     pub tx: XChaCha20Poly1305,
     pub rx: XChaCha20Poly1305,
+    tx_key: [u8; 32],
+    rx_key: [u8; 32],
     pub(crate) tx_len_mask: [u8; 32],
     pub(crate) rx_len_mask: [u8; 32],
     pub(crate) nonce_tag: [u8; 8],
+    tx_generation: u64,
+    rx_generation: u64,
+    tx_update_label: &'static [u8],
+    rx_update_label: &'static [u8],
+}
+
+impl SessionKeys {
+    pub(crate) fn update_tx(&mut self) -> Result<()> {
+        self.tx_generation = self.tx_generation.saturating_add(1);
+        let (key, len_mask) =
+            update_secret(&self.tx_key, self.tx_update_label, self.tx_generation)?;
+        self.tx_key = key;
+        self.tx_len_mask = len_mask;
+        self.tx = XChaCha20Poly1305::new((&self.tx_key).into());
+        Ok(())
+    }
+
+    pub(crate) fn update_rx(&mut self) -> Result<()> {
+        self.rx_generation = self.rx_generation.saturating_add(1);
+        let (key, len_mask) =
+            update_secret(&self.rx_key, self.rx_update_label, self.rx_generation)?;
+        self.rx_key = key;
+        self.rx_len_mask = len_mask;
+        self.rx = XChaCha20Poly1305::new((&self.rx_key).into());
+        Ok(())
+    }
+}
+
+impl Drop for SessionKeys {
+    fn drop(&mut self) {
+        self.tx_key.zeroize();
+        self.rx_key.zeroize();
+        self.tx_len_mask.zeroize();
+        self.rx_len_mask.zeroize();
+        self.nonce_tag.zeroize();
+    }
 }
 
 pub struct AuthenticatedSession {
@@ -283,7 +354,7 @@ where
     let shared = secret.diffie_hellman(&client_public);
 
     let client_capabilities = u64::from_be_bytes(client_hello.fixed_body[66..74].try_into()?);
-    let server_capabilities = DEFAULT_CAPABILITIES & client_capabilities;
+    let server_capabilities = negotiated_capabilities(cfg, client_capabilities)?;
     let tag = server_hmac(
         &cfg.auth_key,
         &client_hello.body,
@@ -357,7 +428,7 @@ fn build_client_hello(
     body.extend_from_slice(&nonce);
     body.extend_from_slice(public.as_bytes());
     body.extend_from_slice(&PROTOCOL_VERSION.to_be_bytes());
-    body.extend_from_slice(&DEFAULT_CAPABILITIES.to_be_bytes());
+    body.extend_from_slice(&handshake_capabilities(cfg).to_be_bytes());
     body.extend_from_slice(&0_u64.to_be_bytes());
     body.extend_from_slice(&(padding_len as u16).to_be_bytes());
     body.extend_from_slice(&padding);
@@ -390,6 +461,7 @@ fn finish_client_handshake(
     if server_capabilities & CAP_TCP_CONNECT == 0 {
         bail!("server does not support TCP CONNECT");
     }
+    ensure_mux_capability(cfg, server_capabilities, "server")?;
     let expected = server_hmac(
         &cfg.auth_key,
         body,
@@ -403,6 +475,37 @@ fn finish_client_handshake(
 
     let shared = secret.diffie_hellman(&server_public);
     derive_keys(&cfg.psk, shared.as_bytes(), nonce, b"client")
+}
+
+fn handshake_capabilities(cfg: &HandshakeConfig) -> u64 {
+    let mux = match cfg.mux_mode {
+        MuxMode::Yamux => CAP_MUX_YAMUX,
+        MuxMode::Native => CAP_MUX_NATIVE,
+    };
+    CAP_TCP_CONNECT | CAP_UDP_ASSOCIATE | mux
+}
+
+fn negotiated_capabilities(cfg: &HandshakeConfig, peer_capabilities: u64) -> Result<u64> {
+    ensure_mux_capability(cfg, peer_capabilities, "peer")?;
+    Ok(handshake_capabilities(cfg) & peer_capabilities)
+}
+
+fn ensure_mux_capability(
+    cfg: &HandshakeConfig,
+    peer_capabilities: u64,
+    peer_label: &str,
+) -> Result<()> {
+    let required = match cfg.mux_mode {
+        MuxMode::Yamux => CAP_MUX_YAMUX,
+        MuxMode::Native => CAP_MUX_NATIVE,
+    };
+    if peer_capabilities & required == 0 {
+        bail!(
+            "{peer_label} does not support configured mux mode {:?}; check shared.mux.mode on both endpoints",
+            cfg.mux_mode
+        );
+    }
+    Ok(())
 }
 
 async fn read_plain_client_hello<S>(
@@ -635,6 +738,7 @@ async fn verify_client_hello(
     if client_capabilities & CAP_TCP_CONNECT == 0 {
         bail!("client does not support TCP CONNECT");
     }
+    ensure_mux_capability(cfg, client_capabilities, "client")?;
     let now = unix_now()?;
     if (now - timestamp).abs() > cfg.clock_skew_secs {
         bail!("handshake timestamp outside allowed window");
@@ -861,7 +965,7 @@ fn derive_keys(psk: &[u8], shared: &[u8; 32], nonce: &[u8], role: &[u8]) -> Resu
     let mut salt = Sha256::new();
     salt.update(psk);
     salt.update(nonce);
-    let salt = salt.finalize();
+    let mut salt = salt.finalize();
 
     let hk = Hkdf::<Sha256>::new(Some(&salt), shared);
     let mut client_to_server = [0_u8; 32];
@@ -880,12 +984,15 @@ fn derive_keys(psk: &[u8], shared: &[u8; 32], nonce: &[u8], role: &[u8]) -> Resu
     hk.expand(b"espejismo v1 nonce-tag", &mut nonce_tag)
         .map_err(|_| anyhow!("hkdf expansion failed"))?;
 
-    let (tx, rx, tx_len_mask, rx_len_mask) = if role == b"client" {
+    let (tx, rx, tx_len_mask, rx_len_mask, tx_update_label, rx_update_label) = if role == b"client"
+    {
         (
             client_to_server,
             server_to_client,
             client_len_mask,
             server_len_mask,
+            b"client-to-server".as_slice(),
+            b"server-to-client".as_slice(),
         )
     } else {
         (
@@ -893,16 +1000,53 @@ fn derive_keys(psk: &[u8], shared: &[u8; 32], nonce: &[u8], role: &[u8]) -> Resu
             client_to_server,
             server_len_mask,
             client_len_mask,
+            b"server-to-client".as_slice(),
+            b"client-to-server".as_slice(),
         )
     };
 
-    Ok(SessionKeys {
+    let keys = SessionKeys {
         tx: XChaCha20Poly1305::new((&tx).into()),
         rx: XChaCha20Poly1305::new((&rx).into()),
+        tx_key: tx,
+        rx_key: rx,
         tx_len_mask,
         rx_len_mask,
         nonce_tag,
-    })
+        tx_generation: 0,
+        rx_generation: 0,
+        tx_update_label,
+        rx_update_label,
+    };
+
+    client_to_server.zeroize();
+    server_to_client.zeroize();
+    client_len_mask.zeroize();
+    server_len_mask.zeroize();
+    salt.zeroize();
+
+    Ok(keys)
+}
+
+fn update_secret(
+    current: &[u8; 32],
+    direction: &[u8],
+    generation: u64,
+) -> Result<([u8; 32], [u8; 32])> {
+    let hk = Hkdf::<Sha256>::new(None, current);
+    let mut next = [0_u8; 32];
+    let mut len_mask = [0_u8; 32];
+    let mut info = Vec::with_capacity(32);
+    info.extend_from_slice(b"espejismo v1 key-update ");
+    info.extend_from_slice(direction);
+    info.extend_from_slice(&generation.to_be_bytes());
+    hk.expand(&info, &mut next)
+        .map_err(|_| anyhow!("hkdf key update failed"))?;
+    info.extend_from_slice(b" length-mask");
+    hk.expand(&info, &mut len_mask)
+        .map_err(|_| anyhow!("hkdf key update failed"))?;
+    info.zeroize();
+    Ok((next, len_mask))
 }
 
 pub(crate) fn encrypt(
@@ -1002,6 +1146,7 @@ mod tests {
         accept_handshake, accept_handshake_with_users, connect_handshake, parse_plain_client_hello,
         HandshakeConfig, HandshakeUser, VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
     };
+    use crate::config::MuxMode;
     use crate::protocol::replay::ReplayCache;
     use std::sync::Arc;
     use tokio::io::duplex;
@@ -1021,6 +1166,29 @@ mod tests {
 
         client_task.await.unwrap().unwrap();
         server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_mismatched_mux_mode() {
+        let client_cfg =
+            HandshakeConfig::new(b"test-secret-that-is-long-enough".to_vec(), 30, 128, 4)
+                .with_mux_mode(MuxMode::Yamux);
+        let server_cfg =
+            HandshakeConfig::new(b"test-secret-that-is-long-enough".to_vec(), 30, 128, 4)
+                .with_mux_mode(MuxMode::Native);
+        let (mut client, mut server) = duplex(4096);
+
+        let client_task =
+            tokio::spawn(async move { connect_handshake(&mut client, &client_cfg).await });
+        let server_task =
+            tokio::spawn(async move { accept_handshake(&mut server, &server_cfg).await });
+
+        let server_err = match server_task.await.unwrap() {
+            Ok(_) => panic!("mismatched mux modes should fail"),
+            Err(err) => err.to_string(),
+        };
+        assert!(server_err.contains("mux mode"), "{server_err}");
+        assert!(client_task.await.unwrap().is_err());
     }
 
     #[test]

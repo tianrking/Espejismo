@@ -62,6 +62,10 @@ pub(super) fn default_tcp_heartbeat_secs() -> u64 {
     30
 }
 
+pub(super) fn default_key_update_frames() -> u64 {
+    16_384
+}
+
 pub(super) fn default_pacing_enabled() -> bool {
     true
 }

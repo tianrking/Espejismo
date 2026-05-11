@@ -27,6 +27,8 @@ pub struct TunnelLaneSnapshot {
     pub bytes_remote_to_client: u64,
     pub last_open_latency_ms: u64,
     pub last_mux_rtt_ms: Option<u64>,
+    pub mux_rtt_trend_ms: Vec<u64>,
+    pub session_age_secs: Option<u64>,
     pub last_error: Option<String>,
 }
 

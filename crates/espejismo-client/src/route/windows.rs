@@ -1,9 +1,10 @@
 use std::net::{IpAddr, Ipv4Addr};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use espejismo_core::config::LocalTunConfig;
 use espejismo_core::split_authority;
+use serde::{Deserialize, Serialize};
 use tokio::net::lookup_host;
 use tracing::{debug, info, warn};
 
@@ -17,30 +18,39 @@ pub struct WindowsRouteGuard {
     active: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct DefaultRoute {
     gateway: Ipv4Addr,
     interface_index: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct ProtectedRoute {
     ip: Ipv4Addr,
     installed_interface_index: u32,
     original: Option<HostRoute>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct HostRoute {
     gateway: Ipv4Addr,
     interface_index: u32,
     metric: u32,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 enum DnsRestore {
     Dhcp,
     Static(Vec<IpAddr>),
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct WindowsRouteState {
+    tun_name: String,
+    tun_ifindex: u32,
+    split_default_installed: bool,
+    protected_routes: Vec<ProtectedRoute>,
+    dns_restore: Option<DnsRestore>,
 }
 
 pub async fn install(config: &LocalTunConfig, server: &str) -> Result<WindowsRouteGuard> {
@@ -86,6 +96,7 @@ pub async fn install(config: &LocalTunConfig, server: &str) -> Result<WindowsRou
         guard.dns_restore = Some(read_dns_restore(&config.name)?);
         apply_dns(&config.name, &config.route.dns_servers).context("apply Windows TUN DNS")?;
     }
+    write_state(&guard)?;
 
     info!(
         tun = %config.name,
@@ -150,12 +161,70 @@ impl WindowsRouteGuard {
         }
 
         if errors.is_empty() {
+            let _ = std::fs::remove_file(super::state_path(&self.tun_name));
             info!("Windows TUN route manager restored");
             Ok(())
         } else {
             anyhow::bail!(errors.join("; "))
         }
     }
+}
+
+pub async fn cleanup(config: &LocalTunConfig) -> Result<()> {
+    let path = super::state_path(&config.name);
+    let state = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<WindowsRouteState>(&content).ok());
+    if let Some(state) = state {
+        let mut guard = WindowsRouteGuard {
+            tun_name: state.tun_name,
+            tun_ifindex: state.tun_ifindex,
+            split_default_installed: state.split_default_installed,
+            protected_routes: state.protected_routes,
+            dns_restore: state.dns_restore,
+            active: true,
+        };
+        guard.restore()?;
+        return Ok(());
+    }
+
+    let tun_ifindex = find_interface_index(&config.name)
+        .with_context(|| format!("find Windows TUN interface '{}'", config.name))?;
+    if let Err(err) = delete_ipv4_route_quiet(
+        Ipv4Addr::new(0, 0, 0, 0),
+        Ipv4Addr::new(128, 0, 0, 0),
+        tun_ifindex,
+    ) {
+        debug!(error = %err, "Windows split route cleanup skipped");
+    }
+    if let Err(err) = delete_ipv4_route_quiet(
+        Ipv4Addr::new(128, 0, 0, 0),
+        Ipv4Addr::new(128, 0, 0, 0),
+        tun_ifindex,
+    ) {
+        debug!(error = %err, "Windows split route cleanup skipped");
+    }
+    anyhow::ensure!(
+        !path.exists(),
+        "Windows route restore state at {} could not be decoded; repair DNS manually with netsh",
+        path.display()
+    );
+    Ok(())
+}
+
+fn write_state(guard: &WindowsRouteGuard) -> Result<()> {
+    let state = WindowsRouteState {
+        tun_name: guard.tun_name.clone(),
+        tun_ifindex: guard.tun_ifindex,
+        split_default_installed: guard.split_default_installed,
+        protected_routes: guard.protected_routes.clone(),
+        dns_restore: guard.dns_restore.clone(),
+    };
+    std::fs::write(
+        super::state_path(&guard.tun_name),
+        serde_json::to_vec_pretty(&state)?,
+    )
+    .context("write Windows route recovery state")
 }
 
 impl Drop for WindowsRouteGuard {
@@ -334,6 +403,19 @@ fn delete_ipv4_route(destination: Ipv4Addr, mask: Ipv4Addr, ifindex: u32) -> Res
     run_route(&args)
 }
 
+fn delete_ipv4_route_quiet(destination: Ipv4Addr, mask: Ipv4Addr, ifindex: u32) -> Result<()> {
+    let args = [
+        "DELETE".to_string(),
+        destination.to_string(),
+        "MASK".to_string(),
+        mask.to_string(),
+        "IF".to_string(),
+        ifindex.to_string(),
+    ];
+    let refs: Vec<&str> = args.iter().map(String::as_str).collect();
+    run_quiet("route", &refs)
+}
+
 fn read_dns_restore(name: &str) -> Result<DnsRestore> {
     let output = netsh(&[
         "interface",
@@ -446,6 +528,20 @@ fn output(program: &str, args: &[&str]) -> Result<String> {
 fn run(program: &str, args: &[&str]) -> Result<()> {
     let status = Command::new(program)
         .args(args)
+        .status()
+        .with_context(|| format!("run {program} {}", args.join(" ")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("{program} {} exited with {status}", args.join(" "))
+    }
+}
+
+fn run_quiet(program: &str, args: &[&str]) -> Result<()> {
+    let status = Command::new(program)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .with_context(|| format!("run {program} {}", args.join(" ")))?;
     if status.success() {

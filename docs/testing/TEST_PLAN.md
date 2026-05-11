@@ -28,7 +28,7 @@ cargo check --manifest-path fuzz/Cargo.toml --bins
 ./scripts/e2e_smoke.sh
 REQUESTS=200 CONCURRENCY=32 ./scripts/stress_smoke.sh
 MUX_MODE=native ./scripts/e2e_smoke.sh
-REQUESTS=128 CONCURRENCY=32 ./scripts/benchmark_mux.sh
+OUT=target/mux-benchmark.json ./scripts/benchmark_mux.sh
 ./scripts/package-release.sh
 ```
 
@@ -85,6 +85,8 @@ performance path after the basic e2e probe passes:
   to run the same proxy checks through the in-tree mux instead of yamux.
   Unit tests also cover native max-stream enforcement, idle session GOAWAY, and
   byte-window write blocking until the remote reader releases window.
+- `scripts/benchmark_mux.sh` emits fixed JSON for yamux/native one-stream,
+  32-small-request, mixed bulk/interactive, and session-rotation scenarios.
 
 The fixture returns JSON containing method, path, probe header, and request
 body. The script checks that the returned JSON contains the expected token,
@@ -96,6 +98,8 @@ Current unit tests cover:
 
 - Variable-length authenticated handshake completion.
 - Multi-user plain and stealth handshake selection.
+- Mismatched mux mode/capability rejection during authenticated handshake.
+- Frame-level KEY_UPDATE roundtrip across traffic-key rotation.
 - Stealth handshake completion and fixed-size frame roundtrip behavior.
 - Client puzzle solving and verification.
 - Replay cache duplicate rejection.

@@ -8,7 +8,7 @@ mod defaults;
 mod types;
 
 use crate::ingress::ProxyAuth;
-use crate::protocol::framing::ObfuscationProfile;
+use crate::protocol::framing::{ChunkPolicy, ObfuscationProfile};
 pub use types::*;
 
 pub fn load_config(input: ConfigInput) -> Result<EspejismoConfig> {
@@ -84,6 +84,10 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     anyhow::ensure!(
         config.shared.max_physical_connections <= 65_535,
         "shared.max_physical_connections must be <= 65535"
+    );
+    anyhow::ensure!(
+        config.shared.key_update_frames > 0,
+        "shared.key_update_frames must be greater than 0"
     );
     for user in &config.remote.users {
         anyhow::ensure!(
@@ -214,6 +218,86 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     Ok(config)
 }
 
+pub fn apply_named_profile(config: &mut EspejismoConfig, name: &str) -> Result<()> {
+    let normalized = name.trim().to_ascii_lowercase().replace('_', "-");
+    match normalized.as_str() {
+        "fast" => {
+            config.shared.max_padding = 0;
+            config.shared.padding_chance_percent = 0;
+            config.shared.jitter_ms = 0;
+            config.shared.obfuscation.profile = ObfuscationProfile::Bulk;
+            config.shared.obfuscation.chunk_policy = ChunkPolicy::Bulk;
+            config.shared.obfuscation.randomize_chunks = false;
+            config.shared.pacing.enabled = true;
+            config.shared.pacing.burst_bytes = 128 * 1024;
+            config.shared.pacing.min_write_bytes = 4096;
+            config.shared.tunnel_buffer = 256 * 1024;
+            config.local.tunnel_pool.min_connections = 1;
+            config.local.tunnel_pool.max_connections = 4;
+            config.local.tunnel_pool.interactive_lanes = 1;
+            config.local.tunnel_pool.bulk_lanes = 2;
+        }
+        "balanced" => {
+            config.shared.obfuscation.profile = ObfuscationProfile::Balanced;
+            config.shared.obfuscation.chunk_policy = ChunkPolicy::Balanced;
+            config.shared.max_padding = defaults::default_max_padding();
+            config.shared.padding_chance_percent = defaults::default_padding_chance_percent();
+            config.shared.jitter_ms = 0;
+            config.shared.pacing.enabled = true;
+            config.local.tunnel_pool.min_connections = 1;
+            config.local.tunnel_pool.max_connections = 4;
+            config.local.tunnel_pool.interactive_lanes = 1;
+            config.local.tunnel_pool.bulk_lanes = 2;
+        }
+        "low-latency" | "latency" => {
+            config.shared.max_padding = 16;
+            config.shared.padding_chance_percent = 5;
+            config.shared.jitter_ms = 0;
+            config.shared.obfuscation.profile = ObfuscationProfile::LowLatency;
+            config.shared.obfuscation.chunk_policy = ChunkPolicy::LowLatency;
+            config.shared.obfuscation.randomize_chunks = true;
+            config.shared.tcp.nodelay = true;
+            config.shared.pacing.enabled = true;
+            config.shared.pacing.burst_bytes = 32 * 1024;
+            config.shared.pacing.min_write_bytes = 512;
+            config.local.tunnel_pool.min_connections = 1;
+            config.local.tunnel_pool.max_connections = 2;
+            config.local.tunnel_pool.interactive_lanes = 1;
+            config.local.tunnel_pool.bulk_lanes = 1;
+        }
+        "stealth" => {
+            config.shared.obfuscation.profile = ObfuscationProfile::Stealth;
+            config.shared.obfuscation.chunk_policy = ChunkPolicy::Stealth;
+            config.shared.obfuscation.randomize_chunks = false;
+            config.shared.max_padding = 0;
+            config.shared.padding_chance_percent = 0;
+            config.shared.jitter_ms = 3;
+            config.shared.stealth.frame_size = 4096;
+            config.shared.stealth.tick_ms = 20;
+            config.shared.key_update_frames = 8192;
+            config.local.handshake_padding = config.local.handshake_padding.max(256);
+            config.local.tunnel_pool.min_connections = 1;
+            config.local.tunnel_pool.max_connections = 2;
+            config.local.tunnel_pool.interactive_lanes = 1;
+            config.local.tunnel_pool.bulk_lanes = 1;
+        }
+        "server-safe" | "safe" => {
+            config.remote.egress.deny_private_ips = true;
+            config.remote.egress.allow_ports = vec![80, 443];
+            config.remote.tarpit_max = config.remote.tarpit_max.min(512);
+            config.shared.max_streams = config.shared.max_streams.clamp(1, 128);
+            config.shared.max_physical_connections =
+                config.shared.max_physical_connections.clamp(1, 512);
+            config.shared.pacing.enabled = true;
+            config.shared.pacing.burst_bytes = config.shared.pacing.burst_bytes.min(64 * 1024);
+        }
+        _ => anyhow::bail!(
+            "unknown profile '{name}', expected fast, balanced, low-latency, stealth, or server-safe"
+        ),
+    }
+    Ok(())
+}
+
 pub fn example_config() -> String {
     let config = EspejismoConfig {
         shared: SharedConfig {
@@ -246,7 +330,8 @@ pub fn encode_config_base64(toml: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        config_to_toml, encode_config_base64, example_config, load_config_base64, parse_config,
+        apply_named_profile, config_to_toml, encode_config_base64, example_config,
+        load_config_base64, parse_config,
     };
 
     #[test]
@@ -325,6 +410,7 @@ mod tests {
                 "[local.tunnel_pool]\nmax_connection_age_secs = 0\n",
                 "max_connection_age_secs",
             ),
+            ("[shared]\nkey_update_frames = 0\n", "key_update_frames"),
         ] {
             let err = parse_config(config).unwrap_err().to_string();
             assert!(err.contains(expected), "{err}");
@@ -343,5 +429,23 @@ mod tests {
 
         let err = parse_config(config).unwrap_err().to_string();
         assert!(err.contains("stealth.frame_size"), "{err}");
+    }
+
+    #[test]
+    fn named_profiles_apply_expected_runtime_shape() {
+        let mut config = parse_config("").unwrap();
+        apply_named_profile(&mut config, "low-latency").unwrap();
+        assert_eq!(
+            format!("{:?}", config.shared.obfuscation.chunk_policy),
+            "LowLatency"
+        );
+        assert_eq!(config.local.tunnel_pool.max_connections, 2);
+
+        apply_named_profile(&mut config, "stealth").unwrap();
+        assert!(config.shared.obfuscation.profile.is_stealth());
+        assert_eq!(config.shared.stealth.frame_size, 4096);
+
+        let err = apply_named_profile(&mut config, "unknown").unwrap_err();
+        assert!(err.to_string().contains("unknown profile"));
     }
 }

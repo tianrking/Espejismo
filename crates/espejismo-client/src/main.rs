@@ -7,11 +7,12 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use espejismo_core::config::example_config;
 use espejismo_core::{
-    apply_log_overrides, bind_tcp_listener, config_to_toml, decode_profile_url,
-    encode_config_base64, encode_profile_url, init_logging, load_config, load_config_base64,
-    parse_psk, print_update_check, report_config_check, spawn_admin_server, AdminAction,
-    AdminState, ClientProfile, ConfigInput, EspejismoConfig, FrameOptionOverrides, FrameOptions,
-    HandshakeConfig, LogOverrides, Metrics, ProxyAuth, RuntimeState, TcpConfig, TunnelPoolConfig,
+    apply_log_overrides, apply_named_profile, bind_tcp_listener, config_to_toml,
+    decode_profile_url, encode_config_base64, encode_profile_url, init_logging, load_config,
+    load_config_base64, parse_psk, print_update_check, report_config_check, spawn_admin_server,
+    AdminAction, AdminState, ClientProfile, ConfigInput, EspejismoConfig, FrameOptionOverrides,
+    FrameOptions, HandshakeConfig, LogOverrides, Metrics, ProxyAuth, RuntimeState, TcpConfig,
+    TunnelPoolConfig,
 };
 use serde_json::json;
 use tokio::net::lookup_host;
@@ -39,6 +40,8 @@ struct Args {
     print_example_config: bool,
     #[arg(long)]
     print_example_config_base64: bool,
+    #[arg(long)]
+    profile: Option<String>,
     #[arg(long)]
     print_config_base64: bool,
     #[arg(long)]
@@ -75,6 +78,8 @@ struct Args {
     tun_auto_route: bool,
     #[arg(long)]
     tun_auto_dns: bool,
+    #[arg(long)]
+    tun_route_cleanup: bool,
     #[arg(long, value_delimiter = ',')]
     tun_dns: Vec<IpAddr>,
     #[arg(long)]
@@ -177,7 +182,11 @@ async fn main() -> Result<()> {
         return Ok(());
     }
     if args.print_example_config || args.print_example_config_base64 {
-        let example = example_config();
+        let mut example_config = espejismo_core::parse_config(&example_config())?;
+        if let Some(profile) = &args.profile {
+            apply_named_profile(&mut example_config, profile)?;
+        }
+        let example = config_to_toml(&example_config)?;
         if args.print_example_config_base64 {
             println!("{}", encode_config_base64(&example));
         } else {
@@ -193,6 +202,15 @@ async fn main() -> Result<()> {
     let mut config = load_config(config_input.clone())?;
     if let Some(profile_url) = &args.import_profile {
         decode_profile_url(profile_url)?.apply_to_config(&mut config);
+    }
+    if let Some(profile) = &args.profile {
+        apply_named_profile(&mut config, profile)?;
+    }
+    if args.tun_route_cleanup {
+        apply_tun_cli_overrides(&mut config, &args);
+        route::cleanup_tun_routes(&config.local.tun).await?;
+        println!("TUN route cleanup completed for {}", config.local.tun.name);
+        return Ok(());
     }
     if args.check_config {
         check_local_config(&config, &args).await?;
@@ -433,6 +451,36 @@ fn log_overrides(args: &Args) -> LogOverrides {
     }
 }
 
+fn apply_tun_cli_overrides(config: &mut EspejismoConfig, args: &Args) {
+    if args.tun_enabled {
+        config.local.tun.enabled = true;
+    }
+    if let Some(value) = &args.tun_name {
+        config.local.tun.name = value.clone();
+    }
+    if let Some(value) = args.tun_address {
+        config.local.tun.address = value;
+    }
+    if let Some(value) = args.tun_destination {
+        config.local.tun.destination = value;
+    }
+    if let Some(value) = args.tun_prefix {
+        config.local.tun.prefix = value;
+    }
+    if let Some(value) = args.tun_mtu {
+        config.local.tun.mtu = value;
+    }
+    if args.tun_auto_route {
+        config.local.tun.route.enabled = true;
+    }
+    if args.tun_auto_dns {
+        config.local.tun.route.dns_enabled = true;
+    }
+    if !args.tun_dns.is_empty() {
+        config.local.tun.route.dns_servers = args.tun_dns.clone();
+    }
+}
+
 fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
     let psk = args
         .psk
@@ -492,6 +540,11 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
         tun.route.dns_servers = args.tun_dns.clone();
     }
 
+    let mux = espejismo_core::mux::MuxRuntimeConfig::from_config(
+        config.shared.max_streams,
+        &config.shared.mux,
+    );
+
     Ok(LocalRuntime {
         server,
         socks5_listen: args.socks5_listen.or(config.local.socks5_listen),
@@ -504,7 +557,8 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
                 .unwrap_or(config.local.handshake_padding),
             args.puzzle_bits.unwrap_or(config.shared.puzzle_bits),
         )
-        .with_stealth_frame_size(stealth_handshake),
+        .with_stealth_frame_size(stealth_handshake)
+        .with_mux_mode(config.shared.mux.mode),
         frames: config.shared.frame_options(&FrameOptionOverrides {
             max_padding: args.max_padding,
             jitter_ms: args.jitter_ms,
@@ -513,10 +567,7 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
             backpressure_cooldown_ms: args.backpressure_cooldown_ms,
         }),
         tcp: config.shared.tcp.clone(),
-        mux: espejismo_core::mux::MuxRuntimeConfig::from_config(
-            config.shared.max_streams,
-            &config.shared.mux,
-        ),
+        mux,
         tunnel_buffer: args.tunnel_buffer.unwrap_or(config.shared.tunnel_buffer),
         tunnel_pool,
         auth: config.local.auth,

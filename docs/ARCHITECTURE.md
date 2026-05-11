@@ -41,8 +41,10 @@ clear wire image. Inside the envelope, the client solves a bounded SHA-256
 leading-zero puzzle over the body before it computes the HMAC. The remote
 verifies the puzzle before the HMAC, checks timestamp skew, and records the
 ephemeral public key in a bounded replay cache. The current protocol version is
-`1`; capability bit 0 enables TCP CONNECT and bit 1 enables SOCKS5 UDP ASSOCIATE
-datagram relay.
+`1`; capability bit 0 enables TCP CONNECT, bit 1 enables SOCKS5 UDP ASSOCIATE
+datagram relay, bit 8 enables `yamux`, and bit 9 enables the in-tree native mux.
+The configured mux mode must be present in the peer capability set. Mismatches
+fail during the authenticated handshake with an explicit mux capability error.
 
 ## Frame Pipeline
 
@@ -59,6 +61,14 @@ framing model while removing the plaintext TLV length signal from the wire. Any
 AEAD failure is fail-fast: the caller receives an error and the physical TCP
 connection is discarded. The protocol does not try to resynchronize inside a
 corrupted byte stream.
+
+Every `shared.key_update_frames` transmitted frames, the sender emits an
+encrypted `KEY_UPDATE` control frame under the current traffic key. After that
+frame is authenticated, both directions independently derive the next traffic
+secret and length-mask key from the previous traffic secret with HKDF. This
+keeps a very long physical tunnel from using a single frame key indefinitely;
+physical connection age rotation still creates fresh X25519 handshakes for new
+streams.
 
 `spawn_frame_transport` bridges the frame codec into a Tokio `DuplexStream`.
 This gives upper layers a normal `AsyncRead + AsyncWrite` object while keeping
@@ -131,6 +141,8 @@ Both binaries read the same TOML document and use their relevant sections:
 Operators can provide TOML from a path with `--config` or from a base64 string
 with `--config-base64`. `--print-example-config` and
 `--print-example-config-base64` generate deployable starter configs.
+`--profile fast|balanced|low-latency|stealth|server-safe` applies an official
+config overlay before printing, checking, or running.
 `--print-config-base64` converts a selected config into a one-line import
 string, and `--decode-config-base64` prints that string back as TOML.
 `--check-config` performs deployment diagnostics before startup.

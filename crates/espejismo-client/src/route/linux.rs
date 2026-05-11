@@ -1,9 +1,10 @@
 use std::net::{IpAddr, Ipv4Addr};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{Context, Result};
 use espejismo_core::config::LocalTunConfig;
 use espejismo_core::split_authority;
+use serde::{Deserialize, Serialize};
 use tokio::net::lookup_host;
 use tracing::{debug, info, warn};
 
@@ -16,17 +17,25 @@ pub struct LinuxRouteGuard {
     active: bool,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct DefaultRoute {
     gateway: Option<Ipv4Addr>,
     dev: String,
     metric: Option<u32>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 struct ProtectedRoute {
     ip: Ipv4Addr,
     original: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct LinuxRouteState {
+    tun_name: String,
+    original_default: Option<DefaultRoute>,
+    protected_routes: Vec<ProtectedRoute>,
+    dns_revert: bool,
 }
 
 pub async fn install(config: &LocalTunConfig, server: &str) -> Result<LinuxRouteGuard> {
@@ -59,6 +68,7 @@ pub async fn install(config: &LocalTunConfig, server: &str) -> Result<LinuxRoute
             .context("apply systemd-resolved DNS to TUN")?;
         guard.dns_revert = true;
     }
+    write_state(&guard)?;
 
     info!(
         tun = %config.name,
@@ -102,12 +112,72 @@ impl LinuxRouteGuard {
         }
 
         if errors.is_empty() {
+            let _ = std::fs::remove_file(super::state_path(&self.tun_name));
             info!("Linux TUN route manager restored");
             Ok(())
         } else {
             anyhow::bail!(errors.join("; "))
         }
     }
+}
+
+pub async fn cleanup(config: &LocalTunConfig) -> Result<()> {
+    let path = super::state_path(&config.name);
+    let state = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|content| serde_json::from_str::<LinuxRouteState>(&content).ok());
+    let mut errors = Vec::new();
+    if let Some(state) = state {
+        let mut guard = LinuxRouteGuard {
+            tun_name: state.tun_name,
+            original_default: state.original_default,
+            protected_routes: state.protected_routes,
+            dns_revert: state.dns_revert,
+            active: true,
+        };
+        guard.restore()?;
+        return Ok(());
+    }
+
+    if let Err(err) = run_quiet("resolvectl", &["revert", &config.name]) {
+        debug!(error = %err, "Linux DNS cleanup skipped");
+    }
+    if let Err(err) = run_quiet("ip", &["route", "del", "0.0.0.0/1"]) {
+        debug!(error = %err, "Linux split route cleanup skipped");
+    }
+    if let Err(err) = run_quiet("ip", &["route", "del", "128.0.0.0/1"]) {
+        debug!(error = %err, "Linux split route cleanup skipped");
+    }
+    if read_default_route()
+        .ok()
+        .flatten()
+        .is_some_and(|route| route.dev == config.name)
+    {
+        errors.push(format!(
+            "default route still points to {}; no saved state was found at {}",
+            config.name,
+            path.display()
+        ));
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(errors.join("; "))
+    }
+}
+
+fn write_state(guard: &LinuxRouteGuard) -> Result<()> {
+    let state = LinuxRouteState {
+        tun_name: guard.tun_name.clone(),
+        original_default: guard.original_default.clone(),
+        protected_routes: guard.protected_routes.clone(),
+        dns_revert: guard.dns_revert,
+    };
+    std::fs::write(
+        super::state_path(&guard.tun_name),
+        serde_json::to_vec_pretty(&state)?,
+    )
+    .context("write Linux route recovery state")
 }
 
 impl Drop for LinuxRouteGuard {
@@ -266,6 +336,20 @@ fn output(program: &str, args: &[&str]) -> Result<String> {
 fn run(program: &str, args: &[&str]) -> Result<()> {
     let status = Command::new(program)
         .args(args)
+        .status()
+        .with_context(|| format!("run {program} {}", args.join(" ")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("{program} {} exited with {status}", args.join(" "))
+    }
+}
+
+fn run_quiet(program: &str, args: &[&str]) -> Result<()> {
+    let status = Command::new(program)
+        .args(args)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
         .status()
         .with_context(|| format!("run {program} {}", args.join(" ")))?;
     if status.success() {

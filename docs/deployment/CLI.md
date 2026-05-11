@@ -45,6 +45,17 @@ espejismo-local --print-example-config
 espejismo-local --print-example-config-base64
 ```
 
+Print a starter config with an official tuning profile applied:
+
+```bash
+espejismo-local --profile balanced --print-example-config > espejismo.toml
+espejismo-remote --profile server-safe --print-example-config > espejismo-server.toml
+```
+
+Available built-in profiles are `fast`, `balanced`, `low-latency`, `stealth`,
+and `server-safe`. Profiles are ordinary config overlays; explicit CLI options
+can still override individual fields.
+
 ## Config Diagnostics
 
 Validate a config before running a long-lived service:
@@ -92,6 +103,13 @@ Optional native TUN ingress:
 ```bash
 sudo espejismo-local --config espejismo.toml --tun-enabled --tun-name esptun0
 sudo espejismo-local --config espejismo.toml --tun-enabled --tun-auto-route --tun-auto-dns
+```
+
+Recover TUN routes/DNS after a crash or service-manager stop hook:
+
+```bash
+sudo espejismo-local --config espejismo.toml --tun-route-cleanup
+sudo espejismo-local --tun-name esptun0 --tun-route-cleanup
 ```
 
 Common direct overrides:

@@ -1,20 +1,21 @@
 use std::net::{IpAddr, Ipv4Addr};
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct DefaultRoute {
     pub(super) gateway: Ipv4Addr,
     pub(super) interface: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) struct HostRoute {
     pub(super) gateway: Option<Ipv4Addr>,
     pub(super) interface: Option<String>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub(super) enum DnsRestore {
     Empty,
     Static(Vec<IpAddr>),

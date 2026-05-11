@@ -62,6 +62,8 @@ pub struct SharedConfig {
     pub max_streams: u32,
     #[serde(default = "default_max_physical_connections")]
     pub max_physical_connections: u32,
+    #[serde(default = "default_key_update_frames")]
+    pub key_update_frames: u64,
     #[serde(default)]
     pub tcp: TcpConfig,
     #[serde(default)]
@@ -155,6 +157,8 @@ impl SharedConfig {
             pacing_burst_bytes: self.pacing.burst_bytes,
             pacing_min_write_bytes: self.pacing.min_write_bytes,
             heartbeat_secs: self.tcp.heartbeat_secs,
+            key_update_frames: self.key_update_frames,
+            metrics: None,
         }
     }
 }
@@ -403,6 +407,7 @@ impl Default for SharedConfig {
             idle_timeout_secs: default_idle_timeout_secs(),
             max_streams: default_max_streams(),
             max_physical_connections: default_max_physical_connections(),
+            key_update_frames: default_key_update_frames(),
             tcp: TcpConfig::default(),
             mux: MuxConfig::default(),
             pacing: PacingConfig::default(),

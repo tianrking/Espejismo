@@ -18,9 +18,13 @@ struct MetricsInner {
     handshake_failure: AtomicU64,
     stream_opened: AtomicU64,
     stream_failed: AtomicU64,
+    egress_denied: AtomicU64,
+    session_rotations: AtomicU64,
+    key_updates: AtomicU64,
     bytes_client_to_remote: AtomicU64,
     bytes_remote_to_client: AtomicU64,
     users: Mutex<BTreeMap<String, UserMetricsSnapshot>>,
+    stream_failure_reasons: Mutex<BTreeMap<String, u64>>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -33,9 +37,19 @@ pub struct MetricsSnapshot {
     pub handshake_failure: u64,
     pub stream_opened: u64,
     pub stream_failed: u64,
+    pub egress_denied: u64,
+    pub session_rotations: u64,
+    pub key_updates: u64,
     pub bytes_client_to_remote: u64,
     pub bytes_remote_to_client: u64,
+    pub stream_failure_reasons: Vec<ReasonCountSnapshot>,
     pub users: Vec<UserMetricsSnapshot>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct ReasonCountSnapshot {
+    pub reason: String,
+    pub count: u64,
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
@@ -90,6 +104,25 @@ impl Metrics {
         self.inner.stream_failed.fetch_add(1, Ordering::Relaxed);
     }
 
+    pub fn inc_stream_failed_reason(&self, reason: impl AsRef<str>) {
+        self.inc_stream_failed();
+        let mut reasons = lock_reason_metrics(&self.inner.stream_failure_reasons);
+        let key = sanitize_reason(reason.as_ref());
+        *reasons.entry(key).or_insert(0) += 1;
+    }
+
+    pub fn inc_egress_denied(&self) {
+        self.inner.egress_denied.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_session_rotation(&self) {
+        self.inner.session_rotations.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub fn inc_key_update(&self) {
+        self.inner.key_updates.fetch_add(1, Ordering::Relaxed);
+    }
+
     pub fn add_tunnel_bytes(&self, client_to_remote: u64, remote_to_client: u64) {
         self.inner
             .bytes_client_to_remote
@@ -123,6 +156,13 @@ impl Metrics {
             .values()
             .cloned()
             .collect();
+        let stream_failure_reasons = lock_reason_metrics(&self.inner.stream_failure_reasons)
+            .iter()
+            .map(|(reason, count)| ReasonCountSnapshot {
+                reason: reason.clone(),
+                count: *count,
+            })
+            .collect();
         MetricsSnapshot {
             role: role.into(),
             active_physical_connections: self
@@ -135,8 +175,12 @@ impl Metrics {
             handshake_failure: self.inner.handshake_failure.load(Ordering::Relaxed),
             stream_opened: self.inner.stream_opened.load(Ordering::Relaxed),
             stream_failed: self.inner.stream_failed.load(Ordering::Relaxed),
+            egress_denied: self.inner.egress_denied.load(Ordering::Relaxed),
+            session_rotations: self.inner.session_rotations.load(Ordering::Relaxed),
+            key_updates: self.inner.key_updates.load(Ordering::Relaxed),
             bytes_client_to_remote: self.inner.bytes_client_to_remote.load(Ordering::Relaxed),
             bytes_remote_to_client: self.inner.bytes_remote_to_client.load(Ordering::Relaxed),
+            stream_failure_reasons,
             users,
         }
     }
@@ -184,6 +228,19 @@ impl Metrics {
         metric(
             &mut output,
             role,
+            "egress_denied_total",
+            snapshot.egress_denied,
+        );
+        metric(
+            &mut output,
+            role,
+            "session_rotations_total",
+            snapshot.session_rotations,
+        );
+        metric(&mut output, role, "key_updates_total", snapshot.key_updates);
+        metric(
+            &mut output,
+            role,
             "bytes_client_to_remote_total",
             snapshot.bytes_client_to_remote,
         );
@@ -223,6 +280,15 @@ impl Metrics {
                 user.bytes_remote_to_client,
             );
         }
+        for reason in &snapshot.stream_failure_reasons {
+            reason_metric(
+                &mut output,
+                role,
+                &reason.reason,
+                "stream_failure_reason_total",
+                reason.count,
+            );
+        }
         output
     }
 
@@ -241,6 +307,14 @@ impl Metrics {
 fn lock_user_metrics(
     metrics: &Mutex<BTreeMap<String, UserMetricsSnapshot>>,
 ) -> MutexGuard<'_, BTreeMap<String, UserMetricsSnapshot>> {
+    metrics
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+fn lock_reason_metrics(
+    metrics: &Mutex<BTreeMap<String, u64>>,
+) -> MutexGuard<'_, BTreeMap<String, u64>> {
     metrics
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -266,4 +340,27 @@ fn user_metric(output: &mut String, role: &str, user: &str, name: &str, value: u
     output.push_str("\"} ");
     output.push_str(&value.to_string());
     output.push('\n');
+}
+
+fn reason_metric(output: &mut String, role: &str, reason: &str, name: &str, value: u64) {
+    output.push_str("espejismo_");
+    output.push_str(name);
+    output.push_str("{role=\"");
+    output.push_str(role);
+    output.push_str("\",reason=\"");
+    output.push_str(reason);
+    output.push_str("\"} ");
+    output.push_str(&value.to_string());
+    output.push('\n');
+}
+
+fn sanitize_reason(reason: &str) -> String {
+    reason
+        .chars()
+        .map(|ch| match ch {
+            'a'..='z' | 'A'..='Z' | '0'..='9' | '_' | '-' => ch,
+            _ => '_',
+        })
+        .take(64)
+        .collect()
 }

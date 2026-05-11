@@ -16,7 +16,7 @@ networks. SOCKS5, HTTP, and optional native TUN local ingress, X25519 forward
 secrecy, XChaCha20-Poly1305 encrypted frames, selectable logical stream
 multiplexing, adaptive padding, TCP-friendly pacing, and client puzzles.
 
-Current release: `v0.0.5`.
+Current release: `v0.0.6`.
 
 ## Architecture
 
@@ -92,7 +92,9 @@ offset or a fixed server-reply size. Inside the masked envelope, the client
 solves a bounded SHA-256 leading-zero puzzle over the body before computing the
 HMAC. The remote verifies the puzzle, checks timestamp skew, validates the HMAC
 in constant time, and records the ephemeral public key in a bounded replay
-cache. Session keys are derived with X25519 and HKDF-SHA256.
+cache. Session keys are derived with X25519 and HKDF-SHA256. The handshake
+also negotiates mux capability, so a `yamux` client and `native` server fail
+early with a clear protocol error instead of parsing each other incorrectly.
 
 When `profile = "stealth"`, the hello exchange is wrapped in two fixed-size
 blocks that match `shared.stealth.frame_size`. The block payload is masked with
@@ -109,6 +111,11 @@ Standard profiles use masked length-prefixed AEAD frames:
 
 `low_latency`, `balanced`, and `high_entropy` tune chunk randomization, jitter,
 and adaptive padding around that standard frame format.
+
+Long-lived physical tunnels rotate frame traffic keys with an encrypted
+`KEY_UPDATE` control frame after `shared.key_update_frames` transmitted frames.
+The control frame is AEAD-protected under the current key, then both sides
+derive the next traffic secret and length-mask key with HKDF.
 
 Stealth mode uses fixed-size AEAD frames without a length header:
 
@@ -239,6 +246,13 @@ Or install the remote endpoint on Ubuntu with one command:
 ```bash
 curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
   | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=latest bash
+```
+
+Generate a tuned starter config instead of hand-editing every transport knob:
+
+```bash
+./bin/espejismo-local --profile balanced --print-example-config > espejismo.toml
+./bin/espejismo-remote --profile server-safe --print-example-config > espejismo-server.toml
 ```
 
 ### macOS Client
@@ -536,6 +550,9 @@ internals and wire format specification live in
   the existing encrypted TCP mux tunnel. Route and DNS takeover are explicit
   Linux, macOS, and Windows opt-in settings under `[local.tun.route]`; see
   [docs/deployment/TUN.md](docs/deployment/TUN.md).
+- `espejismo-local --tun-route-cleanup` restores saved TUN route/DNS state after
+  a crash or service-manager stop hook. It is available on Linux, macOS, and
+  Windows and is intended for `systemd ExecStopPost` or manual recovery.
 - `[local.auth]` enables local SOCKS5 username/password auth and HTTP Basic
   proxy auth. Omit it for a trusted loopback-only no-auth listener.
 - `[logging]` controls structured logs. `format` can be `compact`, `pretty`, or
@@ -545,6 +562,9 @@ internals and wire format specification live in
 - `[admin]` enables an HTTP admin endpoint with `/healthz`, `/status`,
   `/connections`, `/metrics`, and remote-side runtime `/reload`/`/apply`. Use
   `token` outside trusted loopback-only environments.
+- `/status`, `/connections`, and `/metrics` include lane RTT samples, session
+  age, session/key rotation counters, stream open failure reasons, and egress
+  deny counters for troubleshooting long-running deployments.
 - `[remote.egress]` controls server-side outbound policy with host and port
   allow/block lists.
 - `local.server` and `--server` accept either `ip:port` or `domain:port`; the
@@ -566,6 +586,8 @@ internals and wire format specification live in
   The native mux uses byte-window flow control, bounded per-stream receive
   queues, bounded command/pending queues, a max-stream limit, RST for unknown
   stream DATA, and an idle GOAWAY timeout.
+- `shared.key_update_frames` controls frame-level traffic-key rotation inside a
+  long-lived physical tunnel.
 - `shared.max_physical_connections` caps concurrently accepted remote-side
   physical TCP connections. `shared.max_streams` caps logical mux streams and
   the remote global stream semaphore.

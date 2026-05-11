@@ -11,6 +11,7 @@ tunnel_buffer = 1048576
 idle_timeout_secs = 300
 max_streams = 256
 max_physical_connections = 1024
+key_update_frames = 16384
 
 [shared.tcp]
 nodelay = true

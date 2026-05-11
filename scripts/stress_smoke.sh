@@ -14,6 +14,7 @@ HTTP_PROXY_ADDR="127.0.0.1:$((PORT_BASE + 3))"
 CONFIG_FILE="$(mktemp -t espejismo-stress.XXXXXX.toml)"
 PROBE_TOKEN="stress-$(date +%s)-$$"
 MUX_MODE="${MUX_MODE:-yamux}"
+MAX_CONNECTION_AGE_SECS="${MAX_CONNECTION_AGE_SECS:-3600}"
 PIDS=()
 
 cleanup() {
@@ -141,6 +142,7 @@ max_connections = 4
 interactive_lanes = 1
 bulk_lanes = 2
 max_reconnect_attempts = 3
+max_connection_age_secs = ${MAX_CONNECTION_AGE_SECS}
 
 [logging]
 level = "info"

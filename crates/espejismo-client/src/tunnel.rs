@@ -1,3 +1,4 @@
+use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
@@ -41,6 +42,7 @@ struct LaneHealth {
     bytes_remote_to_client: u64,
     last_open_latency_ms: u64,
     last_mux_rtt_ms: Option<u64>,
+    mux_rtt_trend_ms: VecDeque<u64>,
     connected_at: Option<Instant>,
     last_error: Option<String>,
 }
@@ -158,6 +160,8 @@ impl TunnelManager {
         metrics: Metrics,
         runtime_state: RuntimeState,
     ) -> Self {
+        let mut frames = config.frames;
+        frames.metrics = Some(metrics.clone());
         let mut kinds = Vec::new();
         for _ in 0..config.pool.interactive_lanes.max(1) {
             kinds.push(LaneKind::Interactive);
@@ -191,7 +195,7 @@ impl TunnelManager {
         Self {
             server: config.server,
             handshake: config.handshake,
-            frames: config.frames,
+            frames,
             tcp: config.tcp,
             mux: config.mux,
             tunnel_buffer: config.tunnel_buffer,
@@ -239,7 +243,10 @@ impl TunnelManager {
         let started = Instant::now();
         let max_attempts = self.max_reconnect_attempts.max(1);
         for attempt in 1..=max_attempts {
-            self.ensure_lane_control(lane.clone()).await?;
+            if let Err(err) = self.ensure_lane_control(lane.clone()).await {
+                self.metrics.inc_stream_failed_reason("lane_connect");
+                return Err(err);
+            }
             let result = {
                 let mut guard = lane.control.lock().await;
                 let Some(control) = guard.as_mut() else {
@@ -262,6 +269,7 @@ impl TunnelManager {
                         format!("mux stream open attempt {attempt}/{max_attempts} failed: {err}"),
                     )
                     .await;
+                    self.metrics.inc_stream_failed_reason("mux_open");
                 }
             }
         }
@@ -332,6 +340,9 @@ impl TunnelManager {
         self.runtime_state.record_connect_success();
         {
             let mut health = lane.health.lock().await;
+            if health.reconnect_count > 0 {
+                self.metrics.inc_session_rotation();
+            }
             health.reconnect_count = health.reconnect_count.saturating_add(1);
             health.connected_at = Some(Instant::now());
             health.last_error = None;
@@ -356,7 +367,12 @@ impl TunnelManager {
         });
         if let Ok(Some(rtt)) = control.ping_rtt().await {
             let mut health = lane.health.lock().await;
-            health.last_mux_rtt_ms = Some(rtt.as_millis().min(u64::MAX as u128) as u64);
+            let rtt_ms = rtt.as_millis().min(u64::MAX as u128) as u64;
+            health.last_mux_rtt_ms = Some(rtt_ms);
+            health.mux_rtt_trend_ms.push_back(rtt_ms);
+            while health.mux_rtt_trend_ms.len() > 16 {
+                health.mux_rtt_trend_ms.pop_front();
+            }
             self.publish_lane(&lane, &health, "connected");
         }
         Ok(control)
@@ -409,6 +425,10 @@ impl TunnelManager {
             bytes_remote_to_client: health.bytes_remote_to_client,
             last_open_latency_ms: health.last_open_latency_ms,
             last_mux_rtt_ms: health.last_mux_rtt_ms,
+            mux_rtt_trend_ms: health.mux_rtt_trend_ms.iter().copied().collect(),
+            session_age_secs: health
+                .connected_at
+                .map(|connected_at| connected_at.elapsed().as_secs()),
             last_error: health.last_error.clone(),
         });
     }

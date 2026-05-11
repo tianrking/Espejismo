@@ -29,12 +29,14 @@ curl -X POST -H 'Authorization: Bearer change-me-admin-token' --data-binary @esp
 ```
 
 Metrics include active physical connections, active logical streams, accepted
-connections, handshake success/failure counters, stream counters, and byte
-totals.
+connections, handshake success/failure counters, stream counters, byte totals,
+egress deny counters, stream failure reason counters, session rotation counters,
+and frame key-update counters.
 
 `/status` and `/connections` also include runtime state: tunnel state,
 reconnect count, consecutive failures, recent errors, egress policy version,
-process start time, and last config apply time.
+process start time, last config apply time, lane RTT samples, per-lane session
+age, active streams, and per-lane byte totals.
 
 Runtime apply updates new tunnels and newly opened logical streams. A restart is
 still required for process-owned resources such as listener sockets,

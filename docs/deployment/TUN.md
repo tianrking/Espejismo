@@ -91,8 +91,26 @@ Important deployment notes:
 - On Ctrl-C or SIGTERM, Espejismo restores the original default route, reverts
   the TUN DNS settings, and removes the protected remote routes on a best-effort
   basis.
+- During route takeover Espejismo writes a small recovery state file under the
+  OS temporary directory. If the process is killed before `Drop` can run, use
+  `--tun-route-cleanup` to replay that state and remove the saved file.
 - The current TUN implementation is intended for TCP-first deployments. UDP is
   supported as application-level datagram relay over the encrypted TCP mux tunnel.
+
+Crash recovery command:
+
+```bash
+sudo espejismo-local --config espejismo.toml --tun-route-cleanup
+sudo espejismo-local --tun-name esptun0 --tun-route-cleanup
+```
+
+Systemd stop hook example:
+
+```ini
+[Service]
+ExecStart=/usr/local/bin/espejismo-local --config /etc/espejismo.toml --tun-enabled --tun-auto-route --tun-auto-dns
+ExecStopPost=/usr/local/bin/espejismo-local --config /etc/espejismo.toml --tun-route-cleanup
+```
 
 Linux manual route equivalent:
 

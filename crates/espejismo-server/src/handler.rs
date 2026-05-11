@@ -88,12 +88,9 @@ pub(crate) async fn handle_peer(
     let user = keys.user;
     runtime.runtime_state.record_connect_success();
     info!(user = %user, "authenticated tunnel accepted");
-    let transport = spawn_frame_transport(
-        inbound,
-        keys.keys,
-        settings.frames.clone(),
-        runtime.tunnel_buffer,
-    );
+    let mut frames = settings.frames.clone();
+    frames.metrics = Some(metrics.clone());
+    let transport = spawn_frame_transport(inbound, keys.keys, frames, runtime.tunnel_buffer);
     let mut session = server_session(transport, settings.mux);
     let stream_limit = Arc::new(Semaphore::new(settings.max_streams as usize));
     while let Some(stream) = session.next().await {
@@ -161,8 +158,12 @@ async fn handle_mux_stream(
     metrics.inc_user_stream_opened(&user);
     let result =
         handle_mux_stream_inner(&mut stream, metrics.clone(), egress, limits, idle, &user).await;
-    if result.is_err() {
-        metrics.inc_stream_failed();
+    if let Err(err) = &result {
+        let reason = classify_stream_failure(err);
+        metrics.inc_stream_failed_reason(reason);
+        if reason == "egress_denied" {
+            metrics.inc_egress_denied();
+        }
     }
     metrics.dec_active_stream();
     result
@@ -216,4 +217,22 @@ async fn handle_mux_stream_inner(
         }
     }
     Ok(())
+}
+
+fn classify_stream_failure(err: &anyhow::Error) -> &'static str {
+    let text = err.to_string();
+    if text.contains("egress policy")
+        || text.contains("egress host")
+        || text.contains("egress port")
+        || text.contains("egress IP")
+        || text.contains("no allowed UDP egress")
+    {
+        "egress_denied"
+    } else if text.contains("timed out") {
+        "timeout"
+    } else if text.contains("quota") {
+        "quota"
+    } else {
+        "other"
+    }
 }
