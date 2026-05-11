@@ -7,25 +7,23 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use espejismo_core::config::example_config;
 use espejismo_core::{
-    apply_log_overrides, bind_tcp_listener, config_to_toml, connect_handshake, connect_tcp_stream,
-    decode_profile_url, encode_config_base64, encode_profile_url, http_proxy,
-    idle_copy_bidirectional, init_logging, load_config, load_config_base64, parse_psk,
-    print_update_check, report_config_check, socks5, spawn_admin_server, spawn_frame_transport,
-    write_tcp_connect, write_udp_datagram, AdminState, ClientProfile, ConfigInput, EspejismoConfig,
-    FrameOptions, HandshakeConfig, LogOverrides, Metrics, ProxyAuth, RuntimeState, TcpConfig,
+    apply_log_overrides, bind_tcp_listener, config_to_toml, decode_profile_url,
+    encode_config_base64, encode_profile_url, init_logging, load_config, load_config_base64,
+    parse_psk, print_update_check, report_config_check, spawn_admin_server, AdminState,
+    ClientProfile, ConfigInput, EspejismoConfig, FrameOptions, HandshakeConfig, LogOverrides,
+    Metrics, ProxyAuth, RuntimeState, TcpConfig,
 };
-use futures::StreamExt;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{lookup_host, TcpStream, UdpSocket};
-use tokio::sync::Mutex;
+use tokio::net::lookup_host;
 use tokio::task::JoinSet;
-use tokio::time::timeout;
-use tokio_yamux::{Config as YamuxConfig, Control, Session, StreamHandle};
 use tracing::{debug, info};
 
+mod handler;
 mod route;
 mod tun;
+mod tunnel;
 
+use handler::{handle_http_client, handle_socks5_client};
+use tunnel::TunnelManager;
 #[derive(Parser, Debug)]
 #[command(name = "espejismo-local")]
 struct Args {
@@ -111,7 +109,6 @@ struct Args {
     admin_token: Option<String>,
 }
 
-#[derive(Clone)]
 struct LocalRuntime {
     server: String,
     socks5_listen: Option<SocketAddr>,
@@ -523,260 +520,4 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args) -> Result<()>
         errors.push("TUN auto-DNS is currently implemented only on Linux".to_string());
     }
     report_config_check(warnings, errors)
-}
-
-#[derive(Clone)]
-struct TunnelManager {
-    server: String,
-    handshake: HandshakeConfig,
-    frames: FrameOptions,
-    tcp: TcpConfig,
-    tunnel_buffer: usize,
-    metrics: Metrics,
-    runtime_state: RuntimeState,
-    control: Arc<Mutex<Option<Control>>>,
-}
-
-impl TunnelManager {
-    fn new(
-        server: String,
-        handshake: HandshakeConfig,
-        frames: FrameOptions,
-        tcp: TcpConfig,
-        tunnel_buffer: usize,
-        metrics: Metrics,
-        runtime_state: RuntimeState,
-    ) -> Self {
-        Self {
-            server,
-            handshake,
-            frames,
-            tcp,
-            tunnel_buffer,
-            metrics,
-            runtime_state,
-            control: Arc::new(Mutex::new(None)),
-        }
-    }
-
-    async fn open_stream(&self) -> Result<StreamHandle> {
-        let mut guard = self.control.lock().await;
-        if guard.is_none() {
-            *guard = Some(
-                connect_mux(
-                    self.server.clone(),
-                    self.handshake.clone(),
-                    self.frames.clone(),
-                    self.tcp.clone(),
-                    self.tunnel_buffer,
-                    self.metrics.clone(),
-                    self.runtime_state.clone(),
-                )
-                .await?,
-            );
-        }
-        if let Some(control) = guard.as_mut() {
-            match control.open_stream().await {
-                Ok(stream) => return Ok(stream),
-                Err(err) => {
-                    debug!(error = %err, "yamux stream open failed; reconnecting tunnel");
-                    self.runtime_state
-                        .record_error(format!("yamux stream open failed: {err}"));
-                    *guard = None;
-                }
-            }
-        }
-        *guard = Some(
-            connect_mux(
-                self.server.clone(),
-                self.handshake.clone(),
-                self.frames.clone(),
-                self.tcp.clone(),
-                self.tunnel_buffer,
-                self.metrics.clone(),
-                self.runtime_state.clone(),
-            )
-            .await?,
-        );
-        guard
-            .as_mut()
-            .context("tunnel reconnect did not install control")?
-            .open_stream()
-            .await
-            .context("open yamux stream after reconnect")
-    }
-}
-
-async fn connect_mux(
-    server: String,
-    cfg: HandshakeConfig,
-    options: FrameOptions,
-    tcp: TcpConfig,
-    tunnel_buffer: usize,
-    metrics: Metrics,
-    runtime_state: RuntimeState,
-) -> Result<Control> {
-    runtime_state.set_tunnel_state("connecting");
-    apply_reconnect_backoff(&runtime_state).await;
-    let mut upstream = match connect_tcp_stream(server.as_str(), &tcp).await {
-        Ok(stream) => stream,
-        Err(err) => {
-            runtime_state.record_error(format!("connect {server}: {err}"));
-            return Err(err);
-        }
-    };
-    metrics.inc_active_physical();
-    let keys = match connect_handshake(&mut upstream, &cfg).await {
-        Ok(keys) => {
-            metrics.inc_handshake_success();
-            keys
-        }
-        Err(err) => {
-            metrics.inc_handshake_failure();
-            metrics.dec_active_physical();
-            runtime_state.record_error(format!("handshake {server}: {err}"));
-            return Err(err);
-        }
-    };
-    runtime_state.record_connect_success();
-    let transport = spawn_frame_transport(upstream, keys, options, tunnel_buffer);
-    let mut session = Session::new_client(transport, YamuxConfig::default());
-    let control = session.control();
-
-    tokio::spawn(async move {
-        while let Some(event) = session.next().await {
-            if let Err(err) = event {
-                debug!(error = %err, "yamux client session stopped");
-                runtime_state.record_error(format!("yamux client session stopped: {err}"));
-                break;
-            }
-        }
-        runtime_state.set_tunnel_state("disconnected");
-        metrics.dec_active_physical();
-    });
-
-    Ok(control)
-}
-
-async fn apply_reconnect_backoff(runtime_state: &RuntimeState) {
-    let failures = runtime_state.snapshot().consecutive_failures;
-    if failures == 0 {
-        return;
-    }
-    let exponent = failures.min(6) as u32;
-    let delay = Duration::from_millis(250_u64.saturating_mul(1_u64 << exponent));
-    tokio::time::sleep(delay).await;
-}
-
-async fn handle_socks5_client(
-    mut local: TcpStream,
-    tunnel: Arc<TunnelManager>,
-    auth: Option<ProxyAuth>,
-    metrics: Metrics,
-    idle: Duration,
-) -> Result<()> {
-    metrics.inc_active_stream();
-    metrics.inc_stream_opened();
-    let result = handle_socks5_client_inner(&mut local, tunnel, auth, metrics.clone(), idle).await;
-    if result.is_err() {
-        metrics.inc_stream_failed();
-    }
-    metrics.dec_active_stream();
-    result
-}
-
-async fn handle_socks5_client_inner(
-    local: &mut TcpStream,
-    tunnel: Arc<TunnelManager>,
-    auth: Option<ProxyAuth>,
-    metrics: Metrics,
-    idle: Duration,
-) -> Result<()> {
-    match socks5::accept_request_with_auth(local, auth.as_ref()).await? {
-        socks5::SocksRequest::Connect(target) => {
-            let mut stream = tunnel.open_stream().await?;
-            write_tcp_connect(&mut stream, &target.authority()).await?;
-            let (client_to_remote, remote_to_client) =
-                idle_copy_bidirectional(local, &mut stream, idle).await?;
-            metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
-            Ok(())
-        }
-        socks5::SocksRequest::UdpAssociate => {
-            handle_udp_associate(local, tunnel, metrics, idle).await
-        }
-    }
-}
-
-async fn handle_http_client(
-    mut local: TcpStream,
-    tunnel: Arc<TunnelManager>,
-    auth: Option<ProxyAuth>,
-    metrics: Metrics,
-    idle: Duration,
-) -> Result<()> {
-    metrics.inc_active_stream();
-    metrics.inc_stream_opened();
-    let result = handle_http_client_inner(&mut local, tunnel, auth, metrics.clone(), idle).await;
-    if result.is_err() {
-        metrics.inc_stream_failed();
-    }
-    metrics.dec_active_stream();
-    result
-}
-
-async fn handle_http_client_inner(
-    local: &mut TcpStream,
-    tunnel: Arc<TunnelManager>,
-    auth: Option<ProxyAuth>,
-    metrics: Metrics,
-    idle: Duration,
-) -> Result<()> {
-    let target = http_proxy::accept_http_proxy_with_auth(local, auth.as_ref()).await?;
-    let mut stream = tunnel.open_stream().await?;
-    write_tcp_connect(&mut stream, &target.authority).await?;
-    if !target.prebuffer.is_empty() {
-        stream.write_all(&target.prebuffer).await?;
-    }
-    let (client_to_remote, remote_to_client) =
-        idle_copy_bidirectional(local, &mut stream, idle).await?;
-    metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
-    Ok(())
-}
-
-async fn handle_udp_associate(
-    control_stream: &mut TcpStream,
-    tunnel: Arc<TunnelManager>,
-    metrics: Metrics,
-    idle: Duration,
-) -> Result<()> {
-    let bind_addr = if control_stream.local_addr()?.is_ipv4() {
-        "127.0.0.1:0"
-    } else {
-        "[::1]:0"
-    };
-    let udp = UdpSocket::bind(bind_addr).await?;
-    let udp_addr = udp.local_addr()?;
-    socks5::reply_udp_associate(control_stream, udp_addr).await?;
-    let mut buf = vec![0_u8; 65_535];
-    loop {
-        let (n, peer) = timeout(idle, udp.recv_from(&mut buf)).await??;
-        let packet = socks5::parse_udp_packet(&buf[..n])?;
-        let response = relay_udp_packet(tunnel.clone(), &packet.target, &packet.payload).await?;
-        let wrapped = socks5::build_udp_packet(&packet.target, &response)?;
-        udp.send_to(&wrapped, peer).await?;
-        metrics.add_tunnel_bytes(packet.payload.len() as u64, response.len() as u64);
-    }
-}
-
-async fn relay_udp_packet(
-    tunnel: Arc<TunnelManager>,
-    target: &socks5::SocksTarget,
-    payload: &[u8],
-) -> Result<Vec<u8>> {
-    let mut stream = tunnel.open_stream().await?;
-    write_udp_datagram(&mut stream, &target.authority(), payload).await?;
-    let len = timeout(Duration::from_secs(15), stream.read_u16()).await?? as usize;
-    let mut response = vec![0_u8; len];
-    timeout(Duration::from_secs(15), stream.read_exact(&mut response)).await??;
-    Ok(response)
 }
