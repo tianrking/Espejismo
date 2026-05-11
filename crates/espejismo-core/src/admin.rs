@@ -6,6 +6,7 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::json;
+use subtle::ConstantTimeEq;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, info};
@@ -200,10 +201,17 @@ fn authorized(headers: &[&str], token: Option<&str>) -> bool {
         line.split_once(':').is_some_and(|(name, value)| {
             let value = value.trim();
             (name.eq_ignore_ascii_case("authorization")
-                && value.strip_prefix("Bearer ") == Some(token))
-                || (name.eq_ignore_ascii_case("x-espejismo-admin-token") && value == token)
+                && value
+                    .strip_prefix("Bearer ")
+                    .is_some_and(|candidate| token_matches(candidate, token)))
+                || (name.eq_ignore_ascii_case("x-espejismo-admin-token")
+                    && token_matches(value, token))
         })
     })
+}
+
+fn token_matches(candidate: &str, expected: &str) -> bool {
+    candidate.as_bytes().ct_eq(expected.as_bytes()).into()
 }
 
 fn content_length(headers: &[&str]) -> Result<usize> {

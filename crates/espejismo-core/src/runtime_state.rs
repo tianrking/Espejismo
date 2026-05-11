@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
@@ -55,35 +55,35 @@ impl Default for RuntimeState {
 
 impl RuntimeState {
     pub fn snapshot(&self) -> RuntimeStateSnapshot {
-        self.inner.lock().expect("runtime state lock").clone()
+        lock_runtime_state(&self.inner).clone()
     }
 
     pub fn set_tunnel_state(&self, state: impl Into<String>) {
-        self.inner.lock().expect("runtime state lock").tunnel_state = state.into();
+        lock_runtime_state(&self.inner).tunnel_state = state.into();
     }
 
     pub fn record_connect_success(&self) {
-        let mut inner = self.inner.lock().expect("runtime state lock");
+        let mut inner = lock_runtime_state(&self.inner);
         inner.tunnel_state = "connected".to_string();
         inner.consecutive_failures = 0;
         inner.tunnel_reconnect_count = inner.tunnel_reconnect_count.saturating_add(1);
     }
 
     pub fn record_error(&self, error: impl Into<String>) {
-        let mut inner = self.inner.lock().expect("runtime state lock");
+        let mut inner = lock_runtime_state(&self.inner);
         inner.tunnel_state = "degraded".to_string();
         inner.consecutive_failures = inner.consecutive_failures.saturating_add(1);
         push_recent_error(&mut inner.recent_errors, error.into());
     }
 
     pub fn mark_config_applied(&self) {
-        let mut inner = self.inner.lock().expect("runtime state lock");
+        let mut inner = lock_runtime_state(&self.inner);
         inner.config_applied_unix_secs = unix_now_secs();
         inner.egress_policy_version = inner.egress_policy_version.saturating_add(1);
     }
 
     pub fn update_tunnel_lane(&self, lane: TunnelLaneSnapshot) {
-        let mut inner = self.inner.lock().expect("runtime state lock");
+        let mut inner = lock_runtime_state(&self.inner);
         if let Some(existing) = inner
             .tunnel_lanes
             .iter_mut()
@@ -95,6 +95,12 @@ impl RuntimeState {
             inner.tunnel_lanes.sort_by_key(|lane| lane.id);
         }
     }
+}
+
+fn lock_runtime_state(state: &Mutex<RuntimeStateSnapshot>) -> MutexGuard<'_, RuntimeStateSnapshot> {
+    state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn push_recent_error(errors: &mut Vec<String>, error: String) {

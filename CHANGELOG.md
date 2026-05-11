@@ -13,6 +13,19 @@
 - Release workflow checksum generation and draft GitHub release creation on tag
   pushes.
 
+### Fixed
+
+- macOS route manager now imports the split parser types required by darwin
+  release builds.
+- Native mux batches WINDOW_UPDATE frames until buffered payload is consumed and
+  reports writes after peer FIN/RST as `BrokenPipe` instead of silently dropping
+  data.
+- Admin token checks use constant-time comparison.
+- TUN UDP relay tasks and remote mux stream tasks are bounded to reduce local
+  resource exhaustion risk.
+- Runtime state and user metrics recover poisoned mutexes instead of panicking
+  through the admin/status path.
+
 ### Clarified
 
 - Wire design does not impersonate TLS, HTTP/2, QUIC, or another named protocol;

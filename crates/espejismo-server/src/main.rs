@@ -15,7 +15,7 @@ use espejismo_core::{
 };
 use serde_json::json;
 use tokio::net::lookup_host;
-use tokio::sync::RwLock;
+use tokio::sync::{RwLock, Semaphore};
 use tracing::{debug, info};
 
 mod fallback;
@@ -113,6 +113,7 @@ pub(crate) struct RemoteRuntime {
     pub(crate) reload_source: Option<ConfigInput>,
     pub(crate) reload_args: Args,
     pub(crate) runtime_state: RuntimeState,
+    pub(crate) global_stream_limit: Arc<Semaphore>,
 }
 
 #[derive(Clone)]
@@ -358,6 +359,7 @@ fn build_runtime(
             .then_some(reload_source),
         reload_args: args.clone(),
         runtime_state: RuntimeState::default(),
+        global_stream_limit: Arc::new(Semaphore::new(config.shared.max_streams.max(1) as usize)),
     })
 }
 

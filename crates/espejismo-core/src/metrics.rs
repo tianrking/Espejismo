@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
 
@@ -119,11 +119,7 @@ impl Metrics {
     }
 
     pub fn snapshot(&self, role: impl Into<String>) -> MetricsSnapshot {
-        let users = self
-            .inner
-            .users
-            .lock()
-            .expect("user metrics mutex poisoned")
+        let users = lock_user_metrics(&self.inner.users)
             .values()
             .cloned()
             .collect();
@@ -231,11 +227,7 @@ impl Metrics {
     }
 
     fn with_user(&self, user: &str, f: impl FnOnce(&mut UserMetricsSnapshot)) {
-        let mut users = self
-            .inner
-            .users
-            .lock()
-            .expect("user metrics mutex poisoned");
+        let mut users = lock_user_metrics(&self.inner.users);
         let entry = users
             .entry(user.to_string())
             .or_insert_with(|| UserMetricsSnapshot {
@@ -244,6 +236,14 @@ impl Metrics {
             });
         f(entry);
     }
+}
+
+fn lock_user_metrics(
+    metrics: &Mutex<BTreeMap<String, UserMetricsSnapshot>>,
+) -> MutexGuard<'_, BTreeMap<String, UserMetricsSnapshot>> {
+    metrics
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn metric(output: &mut String, role: &str, name: &str, value: u64) {

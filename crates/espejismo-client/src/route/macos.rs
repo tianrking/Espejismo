@@ -8,8 +8,8 @@ use tokio::net::lookup_host;
 use tracing::{debug, info, warn};
 
 use super::macos_parse::{
-    parse_default_route, parse_host_route, parse_network_services, parse_service_dns, DnsRestore,
-    HostRoute,
+    parse_default_route, parse_host_route, parse_network_services, parse_service_dns, DefaultRoute,
+    DnsRestore, HostRoute,
 };
 
 #[derive(Debug)]

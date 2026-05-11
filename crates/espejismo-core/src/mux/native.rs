@@ -63,6 +63,7 @@ pub struct NativeStream {
     flow: Arc<Mutex<FlowState>>,
     read_buf: Vec<u8>,
     read_offset: usize,
+    pending_window_update: usize,
     remote_closed: bool,
     local_closed: bool,
 }
@@ -111,6 +112,7 @@ struct FlowState {
     available: usize,
     queued_send_frames: usize,
     send_queue_limit: usize,
+    closed: bool,
     waker: Option<Waker>,
 }
 
@@ -120,6 +122,7 @@ impl FlowState {
             available: window,
             queued_send_frames: 0,
             send_queue_limit,
+            closed: false,
             waker: None,
         }
     }
@@ -130,6 +133,9 @@ impl FlowState {
     }
 
     fn reserve_send_slot(&mut self) -> bool {
+        if self.closed {
+            return false;
+        }
         if self.queued_send_frames >= self.send_queue_limit {
             return false;
         }
@@ -139,6 +145,11 @@ impl FlowState {
 
     fn release_send_slot(&mut self) {
         self.queued_send_frames = self.queued_send_frames.saturating_sub(1);
+        self.wake();
+    }
+
+    fn close(&mut self) {
+        self.closed = true;
         self.wake();
     }
 
@@ -253,17 +264,16 @@ impl AsyncRead for NativeStream {
                 let n = available.len().min(buf.remaining());
                 buf.put_slice(&available[..n]);
                 self.read_offset += n;
-                let _ = self.tx.send(Command::WindowUpdate {
-                    stream_id: self.id,
-                    amount: n.min(u32::MAX as usize) as u32,
-                });
+                self.pending_window_update = self.pending_window_update.saturating_add(n);
                 if self.read_offset == self.read_buf.len() {
                     self.read_buf.clear();
                     self.read_offset = 0;
+                    self.flush_pending_window_update();
                 }
                 return Poll::Ready(Ok(()));
             }
             if self.remote_closed {
+                self.flush_pending_window_update();
                 return Poll::Ready(Ok(()));
             }
             match Pin::new(&mut self.rx).poll_recv(cx) {
@@ -273,10 +283,26 @@ impl AsyncRead for NativeStream {
                 }
                 Poll::Ready(None) => {
                     self.remote_closed = true;
+                    self.flush_pending_window_update();
                     return Poll::Ready(Ok(()));
                 }
                 Poll::Pending => return Poll::Pending,
             }
+        }
+    }
+}
+
+impl NativeStream {
+    fn flush_pending_window_update(&mut self) {
+        let mut amount = self.pending_window_update;
+        self.pending_window_update = 0;
+        while amount > 0 {
+            let chunk = amount.min(u32::MAX as usize);
+            let _ = self.tx.send(Command::WindowUpdate {
+                stream_id: self.id,
+                amount: chunk as u32,
+            });
+            amount -= chunk;
         }
     }
 }
@@ -303,6 +329,12 @@ impl AsyncWrite for NativeStream {
                 .flow
                 .lock()
                 .map_err(|_| io::Error::other("native mux flow state poisoned"))?;
+            if flow.closed {
+                return Poll::Ready(Err(io::Error::new(
+                    io::ErrorKind::BrokenPipe,
+                    "native mux stream closed by peer",
+                )));
+            }
             if flow.available == 0 || !flow.reserve_send_slot() {
                 flow.waker = Some(cx.waker().clone());
                 return Poll::Pending;
@@ -613,6 +645,7 @@ async fn handle_frame(
             }
         }
         FRAME_FIN | FRAME_RST => {
+            mark_stream_closed(ctx.streams, stream_id);
             ctx.streams.remove(&stream_id);
         }
         FRAME_PING => {
@@ -692,6 +725,14 @@ fn release_send_slot(streams: &HashMap<u32, StreamEntry>, stream_id: u32) {
     }
 }
 
+fn mark_stream_closed(streams: &HashMap<u32, StreamEntry>, stream_id: u32) {
+    if let Some(stream) = streams.get(&stream_id) {
+        if let Ok(mut flow) = stream.flow.lock() {
+            flow.close();
+        }
+    }
+}
+
 fn new_stream(
     stream_id: u32,
     priority: StreamPriority,
@@ -715,6 +756,7 @@ fn new_stream(
         read_offset: 0,
         remote_closed: false,
         local_closed: false,
+        pending_window_update: 0,
     };
     let entry = StreamEntry { tx, flow };
     (stream, entry)
@@ -776,6 +818,7 @@ pub fn validate_frame_bytes_for_fuzz(input: &[u8]) -> Result<Option<(u8, u32, us
 
 #[cfg(test)]
 mod tests {
+    use std::io;
     use std::time::Duration;
 
     use super::{client_session, server_session, NativeMuxConfig};
@@ -890,6 +933,75 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(unblocked, 1);
+    }
+
+    #[tokio::test]
+    async fn native_mux_batches_window_update_until_payload_consumed() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let config = NativeMuxConfig {
+            initial_window_bytes: 4,
+            ..NativeMuxConfig::default()
+        };
+        let (mut client_control, mut client_session) = client_session(client_io, config);
+        let (_server_control, mut server_session) = server_session(server_io, config);
+
+        tokio::spawn(async move { while client_session.next().await.is_some() {} });
+
+        let mut client_stream = client_control
+            .open_stream(StreamPriority::Interactive)
+            .await
+            .unwrap();
+        let mut server_stream = server_session.next().await.unwrap().unwrap();
+
+        client_stream.write_all(b"abcd").await.unwrap();
+        let mut one = [0_u8; 1];
+        server_stream.read_exact(&mut one).await.unwrap();
+        assert_eq!(&one, b"a");
+
+        let blocked =
+            tokio::time::timeout(Duration::from_millis(50), client_stream.write(b"e")).await;
+        assert!(blocked.is_err());
+
+        let mut rest = [0_u8; 3];
+        server_stream.read_exact(&mut rest).await.unwrap();
+        assert_eq!(&rest, b"bcd");
+
+        let unblocked = tokio::time::timeout(Duration::from_secs(1), client_stream.write(b"e"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(unblocked, 1);
+    }
+
+    #[tokio::test]
+    async fn native_mux_write_errors_after_peer_rst() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let (mut client_control, mut client_session) =
+            client_session(client_io, NativeMuxConfig::default());
+        let (_server_control, mut server_session) =
+            server_session(server_io, NativeMuxConfig::default());
+
+        tokio::spawn(async move { while client_session.next().await.is_some() {} });
+
+        let mut client_stream = client_control
+            .open_stream(StreamPriority::Interactive)
+            .await
+            .unwrap();
+        let server_stream = server_session.next().await.unwrap().unwrap();
+        tokio::spawn(async move { while server_session.next().await.is_some() {} });
+
+        drop(server_stream);
+        let result = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                match client_stream.write(b"x").await {
+                    Ok(_) => tokio::time::sleep(Duration::from_millis(10)).await,
+                    Err(err) => break err,
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(result.kind(), io::ErrorKind::BrokenPipe);
     }
 
     #[tokio::test]

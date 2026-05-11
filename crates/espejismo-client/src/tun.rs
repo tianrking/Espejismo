@@ -11,12 +11,15 @@ use espejismo_core::{
 use futures::{SinkExt, StreamExt};
 use netstack_smoltcp::{StackBuilder, TcpListener, UdpSocket};
 use tokio::io::AsyncReadExt;
+use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tracing::{debug, info, warn};
 use tun_rs::DeviceBuilder;
 
 use crate::route;
 use crate::tunnel::TunnelService;
+
+const MAX_TUN_UDP_TASKS: usize = 1024;
 
 pub async fn run_tun_ingress(
     config: LocalTunConfig,
@@ -147,6 +150,7 @@ async fn handle_tun_tcp(
 }
 
 async fn handle_tun_udp(udp_socket: UdpSocket, tunnel: Arc<TunnelService>, metrics: Metrics) {
+    let task_limit = Arc::new(Semaphore::new(MAX_TUN_UDP_TASKS));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let (mut read_half, mut write_half) = udp_socket.split();
     tokio::spawn(async move {
@@ -158,10 +162,21 @@ async fn handle_tun_udp(udp_socket: UdpSocket, tunnel: Arc<TunnelService>, metri
     });
 
     while let Some((payload, local, remote)) = read_half.next().await {
+        let Ok(permit) = task_limit.clone().try_acquire_owned() else {
+            metrics.inc_stream_failed();
+            debug!(
+                %local,
+                %remote,
+                max = MAX_TUN_UDP_TASKS,
+                "TUN UDP datagram dropped because relay task limit is full"
+            );
+            continue;
+        };
         let tx = tx.clone();
         let tunnel = tunnel.clone();
         let metrics = metrics.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let authority = authority_from_socket(remote);
             match relay_udp_authority(tunnel, &authority, &payload).await {
                 Ok(response) => {

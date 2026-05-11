@@ -113,6 +113,12 @@ pub(crate) async fn handle_peer(
             continue;
         }
 
+        let global_stream_permit = runtime
+            .global_stream_limit
+            .clone()
+            .acquire_owned()
+            .await
+            .map_err(|err| anyhow::anyhow!("global stream limit closed: {err}"))?;
         let stream_permit = stream_limit
             .clone()
             .acquire_owned()
@@ -125,6 +131,7 @@ pub(crate) async fn handle_peer(
         let idle = current.idle_timeout;
         let user = user.clone();
         tokio::spawn(async move {
+            let _global_stream_permit = global_stream_permit;
             let _stream_permit = stream_permit;
             if let Err(err) = handle_mux_stream(stream, metrics, egress, limits, idle, user).await {
                 debug!(error = %err, "mux stream ended");
