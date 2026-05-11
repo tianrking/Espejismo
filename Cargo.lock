@@ -503,7 +503,6 @@ dependencies = [
  "futures",
  "netstack-smoltcp",
  "tokio",
- "tokio-yamux",
  "tracing",
  "tun-rs",
 ]
@@ -528,6 +527,7 @@ dependencies = [
  "subtle",
  "thiserror",
  "tokio",
+ "tokio-yamux",
  "toml",
  "tracing",
  "tracing-appender",
@@ -547,7 +547,6 @@ dependencies = [
  "rand",
  "serde_json",
  "tokio",
- "tokio-yamux",
  "tracing",
 ]
 

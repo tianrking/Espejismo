@@ -117,6 +117,9 @@ recv_buffer_bytes = 1048576
 
 [shared.mux]
 mode = "${MUX_MODE}"
+native_initial_window_bytes = 1048576
+native_stream_buffer_frames = 128
+native_idle_timeout_secs = 60
 
 [shared.pacing]
 enabled = true
@@ -135,6 +138,7 @@ min_connections = 1
 max_connections = 4
 interactive_lanes = 1
 bulk_lanes = 2
+max_reconnect_attempts = 3
 
 [logging]
 level = "info"

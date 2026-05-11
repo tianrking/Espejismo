@@ -125,7 +125,7 @@ struct LocalRuntime {
     handshake: HandshakeConfig,
     frames: FrameOptions,
     tcp: TcpConfig,
-    mux_mode: espejismo_core::MuxMode,
+    mux: espejismo_core::mux::MuxRuntimeConfig,
     tunnel_buffer: usize,
     tunnel_pool: TunnelPoolConfig,
     auth: Option<ProxyAuth>,
@@ -201,7 +201,7 @@ async fn main() -> Result<()> {
             handshake: runtime.handshake,
             frames: runtime.frames,
             tcp: runtime.tcp.clone(),
-            mux_mode: runtime.mux_mode,
+            mux: runtime.mux,
             tunnel_buffer: runtime.tunnel_buffer,
             pool: runtime.tunnel_pool.clone(),
         },
@@ -281,7 +281,7 @@ async fn main() -> Result<()> {
         !listeners.is_empty(),
         "enable at least one local ingress: socks5_listen, http_listen, or local.tun.enabled"
     );
-    info!(server = %runtime.server, mux = ?runtime.mux_mode, "local proxy ready with reconnecting tunnel manager");
+    info!(server = %runtime.server, mux = ?runtime.mux.mode, "local proxy ready with reconnecting tunnel manager");
 
     tokio::select! {
         result = listeners.join_next() => {
@@ -431,7 +431,10 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
             heartbeat_secs: config.shared.tcp.heartbeat_secs,
         },
         tcp: config.shared.tcp.clone(),
-        mux_mode: config.shared.mux.mode,
+        mux: espejismo_core::mux::MuxRuntimeConfig::from_config(
+            config.shared.max_streams,
+            &config.shared.mux,
+        ),
         tunnel_buffer: args.tunnel_buffer.unwrap_or(config.shared.tunnel_buffer),
         tunnel_pool,
         auth: config.local.auth,

@@ -33,8 +33,9 @@ Current release target: `v0.0.3`.
   health-scored stream placement, per-lane reconnect/error/latency/byte status,
   and logical stream muxing wrapped behind a replaceable module.
 - Native mux alpha with OPEN, DATA, WINDOW_UPDATE, FIN, RST, PING, and GOAWAY
-  frame types. It is selectable through `[shared.mux].mode = "native"` while
-  `yamux` remains the production default.
+  frame types, byte-window flow control, bounded per-stream receive queues,
+  max-stream enforcement, and idle GOAWAY shutdown. It is selectable through
+  `[shared.mux].mode = "native"` while `yamux` remains the production default.
 - Stream priority field in TCP CONNECT and UDP DATAGRAM tunnel requests.
 - Adaptive chunk policies for low-latency, balanced, bulk, stealth, and custom
   frame sizing.

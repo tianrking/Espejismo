@@ -6,15 +6,14 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use espejismo_core::{
     connect_handshake, connect_tcp_stream, spawn_frame_transport, FrameOptions, HandshakeConfig,
-    Metrics, MuxMode, RuntimeState, StreamPriority, TcpConfig, TunnelLaneSnapshot,
-    TunnelPoolConfig,
+    Metrics, RuntimeState, StreamPriority, TcpConfig, TunnelLaneSnapshot, TunnelPoolConfig,
 };
 use futures::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::Mutex;
 use tracing::debug;
 
-use crate::mux::{client_session, MuxControl, MuxStream};
+use crate::mux::{client_session, MuxControl, MuxRuntimeConfig, MuxStream};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LaneKind {
@@ -53,8 +52,9 @@ pub(crate) struct TunnelManager {
     handshake: HandshakeConfig,
     frames: FrameOptions,
     tcp: TcpConfig,
-    mux_mode: MuxMode,
+    mux: MuxRuntimeConfig,
     tunnel_buffer: usize,
+    max_reconnect_attempts: u32,
     metrics: Metrics,
     runtime_state: RuntimeState,
     lanes: Vec<Arc<TunnelLane>>,
@@ -65,7 +65,7 @@ pub(crate) struct TunnelManagerConfig {
     pub(crate) handshake: HandshakeConfig,
     pub(crate) frames: FrameOptions,
     pub(crate) tcp: TcpConfig,
-    pub(crate) mux_mode: MuxMode,
+    pub(crate) mux: MuxRuntimeConfig,
     pub(crate) tunnel_buffer: usize,
     pub(crate) pool: TunnelPoolConfig,
 }
@@ -152,8 +152,9 @@ impl TunnelManager {
             handshake: config.handshake,
             frames: config.frames,
             tcp: config.tcp,
-            mux_mode: config.mux_mode,
+            mux: config.mux,
             tunnel_buffer: config.tunnel_buffer,
+            max_reconnect_attempts: config.pool.max_reconnect_attempts.max(1),
             metrics,
             runtime_state,
             lanes,
@@ -191,31 +192,30 @@ impl TunnelManager {
     async fn open_stream_on_lane(&self, lane: Arc<TunnelLane>) -> Result<MuxStream> {
         let started = Instant::now();
         let mut guard = lane.control.lock().await;
-        if guard.is_none() {
-            *guard = Some(self.connect_lane(lane.clone()).await?);
-        }
-        if let Some(control) = guard.as_mut() {
+        let max_attempts = self.max_reconnect_attempts.max(1);
+        for attempt in 1..=max_attempts {
+            if guard.is_none() {
+                *guard = Some(self.connect_lane(lane.clone()).await?);
+            }
+            let Some(control) = guard.as_mut() else {
+                continue;
+            };
             match control.open_stream().await {
                 Ok(stream) => {
                     self.record_open_success(&lane, started.elapsed()).await;
                     return Ok(stream);
                 }
                 Err(err) => {
-                    self.record_lane_error(&lane, format!("mux stream open failed: {err}"))
-                        .await;
+                    self.record_lane_error(
+                        &lane,
+                        format!("mux stream open attempt {attempt}/{max_attempts} failed: {err}"),
+                    )
+                    .await;
                     *guard = None;
                 }
             }
         }
-        *guard = Some(self.connect_lane(lane.clone()).await?);
-        let stream = guard
-            .as_mut()
-            .context("tunnel reconnect did not install control")?
-            .open_stream()
-            .await
-            .context("open mux stream after reconnect")?;
-        self.record_open_success(&lane, started.elapsed()).await;
-        Ok(stream)
+        anyhow::bail!("mux stream open failed after {max_attempts} attempts")
     }
 
     async fn connect_lane(&self, lane: Arc<TunnelLane>) -> Result<MuxControl> {
@@ -252,7 +252,7 @@ impl TunnelManager {
         }
         let transport =
             spawn_frame_transport(upstream, keys, self.frames.clone(), self.tunnel_buffer);
-        let (control, mut session) = client_session(transport, self.mux_mode);
+        let (control, mut session) = client_session(transport, self.mux);
         let metrics = self.metrics.clone();
         let runtime_state = self.runtime_state.clone();
         let lane_for_task = lane.clone();

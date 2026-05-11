@@ -29,6 +29,7 @@ pub use egress::{split_authority, EgressPolicy};
 pub use ingress::{http_proxy, socks5, ProxyAuth};
 pub use logging::{init_logging, LogGuard};
 pub use metrics::{Metrics, MetricsSnapshot};
+pub use mux::MuxRuntimeConfig;
 pub use profile::{decode_profile_url, encode_profile_url, ClientProfile};
 pub use protocol::framing::{
     copy_encrypted, read_frame, send_frame, ChunkPolicy, Frame, FrameCodec, FrameOptions,

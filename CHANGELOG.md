@@ -17,6 +17,10 @@
 - Native mux alpha selectable with `[shared.mux].mode = "native"` while yamux
   remains the default fallback.
 - Mux benchmark helper comparing yamux and native stress runs.
+- Native mux resource controls: byte-window flow control, bounded per-stream
+  receive queues, max-stream enforcement, idle GOAWAY shutdown, and session
+  task abort on drop.
+- Configurable per-request tunnel reconnect attempt limit.
 
 ## v0.0.3
 

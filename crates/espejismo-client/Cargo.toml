@@ -19,6 +19,5 @@ espejismo-core = { path = "../espejismo-core" }
 futures.workspace = true
 netstack-smoltcp.workspace = true
 tokio.workspace = true
-tokio-yamux.workspace = true
 tracing.workspace = true
 tun-rs.workspace = true

@@ -91,7 +91,7 @@ pub(crate) async fn handle_peer(
         settings.frames.clone(),
         runtime.tunnel_buffer,
     );
-    let mut session = server_session(transport, settings.mux_mode);
+    let mut session = server_session(transport, settings.mux);
     let stream_limit = Arc::new(Semaphore::new(settings.max_streams as usize));
     while let Some(stream) = session.next().await {
         let stream = match stream {

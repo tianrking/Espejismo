@@ -29,6 +29,7 @@ $Socks5Addr = "127.0.0.1:$($PortBase + 2)"
 $HttpProxyAddr = "127.0.0.1:$($PortBase + 3)"
 $ConfigFile = Join-Path ([System.IO.Path]::GetTempPath()) "espejismo-stress-$PID.toml"
 $ProbeToken = "stress-$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())-$PID"
+$MuxMode = if ($env:MUX_MODE) { $env:MUX_MODE } else { "yamux" }
 $Processes = @()
 
 function Start-ProbeProcess {
@@ -82,6 +83,12 @@ puzzle_bits = 8
 max_streams = 32
 idle_timeout_secs = 60
 
+[shared.mux]
+mode = "$MuxMode"
+native_initial_window_bytes = 1048576
+native_stream_buffer_frames = 128
+native_idle_timeout_secs = 60
+
 [shared.obfuscation]
 profile = "high_entropy"
 randomize_chunks = true
@@ -93,6 +100,13 @@ server = "$RemoteAddr"
 socks5_listen = "$Socks5Addr"
 http_listen = "$HttpProxyAddr"
 handshake_padding = 512
+
+[local.tunnel_pool]
+min_connections = 1
+max_connections = 4
+interactive_lanes = 1
+bulk_lanes = 2
+max_reconnect_attempts = 3
 
 [logging]
 level = "info"

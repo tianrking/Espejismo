@@ -180,6 +180,13 @@ The most important knobs are:
 - `shared.idle_timeout_secs`: idle stream timeout.
 - `shared.mux.mode`: logical stream multiplexer. Keep `yamux` for production
   stability; use `native` for the in-tree alpha mux test path.
+- `shared.mux.native_initial_window_bytes`: native mux send window per stream.
+- `shared.mux.native_stream_buffer_frames`: native mux bounded receive queue per
+  stream.
+- `shared.mux.native_idle_timeout_secs`: idle native mux session timeout before
+  GOAWAY.
+- `local.tunnel_pool.max_reconnect_attempts`: per-request reconnect attempts
+  before returning an explicit local proxy error.
 - `shared.obfuscation.profile`: sender-side traffic shape. Use `low_latency`,
   `balanced`, `high_entropy`, `bulk`, or `stealth`.
 - `shared.obfuscation.chunk_policy`: adaptive data chunk sizing. Use

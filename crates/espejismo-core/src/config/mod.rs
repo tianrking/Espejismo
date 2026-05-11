@@ -108,6 +108,22 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
             <= config.local.tunnel_pool.max_connections,
         "local.tunnel_pool interactive_lanes + bulk_lanes must be <= max_connections"
     );
+    anyhow::ensure!(
+        config.local.tunnel_pool.max_reconnect_attempts > 0,
+        "local.tunnel_pool.max_reconnect_attempts must be greater than 0"
+    );
+    anyhow::ensure!(
+        config.shared.mux.native_initial_window_bytes > 0,
+        "shared.mux.native_initial_window_bytes must be greater than 0"
+    );
+    anyhow::ensure!(
+        config.shared.mux.native_stream_buffer_frames > 0,
+        "shared.mux.native_stream_buffer_frames must be greater than 0"
+    );
+    anyhow::ensure!(
+        config.shared.mux.native_idle_timeout_secs > 0,
+        "shared.mux.native_idle_timeout_secs must be greater than 0"
+    );
     if let Some(algorithm) = &config.shared.tcp.congestion_control {
         anyhow::ensure!(
             !algorithm.trim().is_empty(),

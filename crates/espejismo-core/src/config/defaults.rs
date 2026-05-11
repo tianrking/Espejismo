@@ -173,6 +173,22 @@ pub(super) fn default_max_streams() -> u32 {
     256
 }
 
+pub(super) fn default_native_mux_initial_window_bytes() -> usize {
+    1024 * 1024
+}
+
+pub(super) fn default_native_mux_stream_buffer_frames() -> usize {
+    128
+}
+
+pub(super) fn default_native_mux_idle_timeout_secs() -> u64 {
+    300
+}
+
+pub(super) fn default_tunnel_pool_max_reconnect_attempts() -> u32 {
+    3
+}
+
 pub(super) fn default_randomize_chunks() -> bool {
     true
 }

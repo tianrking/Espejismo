@@ -89,10 +89,27 @@ pub enum MuxMode {
     Native,
 }
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct MuxConfig {
     #[serde(default)]
     pub mode: MuxMode,
+    #[serde(default = "default_native_mux_initial_window_bytes")]
+    pub native_initial_window_bytes: usize,
+    #[serde(default = "default_native_mux_stream_buffer_frames")]
+    pub native_stream_buffer_frames: usize,
+    #[serde(default = "default_native_mux_idle_timeout_secs")]
+    pub native_idle_timeout_secs: u64,
+}
+
+impl Default for MuxConfig {
+    fn default() -> Self {
+        Self {
+            mode: MuxMode::default(),
+            native_initial_window_bytes: default_native_mux_initial_window_bytes(),
+            native_stream_buffer_frames: default_native_mux_stream_buffer_frames(),
+            native_idle_timeout_secs: default_native_mux_idle_timeout_secs(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -156,6 +173,8 @@ pub struct TunnelPoolConfig {
     pub interactive_lanes: usize,
     #[serde(default = "default_tunnel_pool_bulk_lanes")]
     pub bulk_lanes: usize,
+    #[serde(default = "default_tunnel_pool_max_reconnect_attempts")]
+    pub max_reconnect_attempts: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -410,6 +429,7 @@ impl Default for TunnelPoolConfig {
             max_connections: default_tunnel_pool_max_connections(),
             interactive_lanes: default_tunnel_pool_interactive_lanes(),
             bulk_lanes: default_tunnel_pool_bulk_lanes(),
+            max_reconnect_attempts: default_tunnel_pool_max_reconnect_attempts(),
         }
     }
 }

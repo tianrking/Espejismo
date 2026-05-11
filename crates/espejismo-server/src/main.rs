@@ -119,7 +119,7 @@ pub(crate) struct RemoteRuntime {
 pub(crate) struct RemoteSettings {
     pub(crate) users: Arc<Vec<HandshakeUser>>,
     pub(crate) frames: FrameOptions,
-    pub(crate) mux_mode: espejismo_core::MuxMode,
+    pub(crate) mux: espejismo_core::mux::MuxRuntimeConfig,
     pub(crate) handshake_timeout: Duration,
     pub(crate) reject_delay: Duration,
     pub(crate) cold_start_delay: Duration,
@@ -188,7 +188,7 @@ async fn main() -> Result<()> {
     let replay = Arc::new(tokio::sync::Mutex::new(ReplayCache::new(
         runtime.replay_window_secs,
     )));
-    let mux_mode = runtime.settings.read().await.mux_mode;
+    let mux_mode = runtime.settings.read().await.mux.mode;
     info!(listen = %runtime.listen, mux = ?mux_mode, "remote listening with mux tunnel support");
 
     loop {
@@ -397,7 +397,10 @@ fn build_remote_settings(config: &EspejismoConfig, args: &Args) -> Result<Remote
             pacing_min_write_bytes: config.shared.pacing.min_write_bytes,
             heartbeat_secs: config.shared.tcp.heartbeat_secs,
         },
-        mux_mode: config.shared.mux.mode,
+        mux: espejismo_core::mux::MuxRuntimeConfig::from_config(
+            config.shared.max_streams,
+            &config.shared.mux,
+        ),
         handshake_timeout: Duration::from_millis(
             args.handshake_timeout_ms
                 .unwrap_or(config.remote.handshake_timeout_ms),

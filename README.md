@@ -383,6 +383,9 @@ max_chunk = 16384
 
 [shared.mux]
 mode = "yamux"
+native_initial_window_bytes = 1048576
+native_stream_buffer_frames = 128
+native_idle_timeout_secs = 300
 
 [shared.stealth]
 frame_size = 4096
@@ -403,6 +406,7 @@ min_connections = 1
 max_connections = 4
 interactive_lanes = 1
 bulk_lanes = 2
+max_reconnect_attempts = 3
 
 [logging]
 level = "info"
@@ -544,8 +548,12 @@ internals and wire format specification live in
 - `[local.tunnel_pool]` keeps multiple physical TCP tunnels available. New
   streams are assigned to interactive or bulk lanes by health score so small
   proxy requests do not queue behind large TUN or download flows.
+  `max_reconnect_attempts` bounds per-request reconnect attempts before the
+  local proxy returns a clear error.
 - `[shared.mux]` selects the logical stream multiplexer. `yamux` is the stable
   default; `native` enables the in-tree alpha mux for testing and benchmarking.
+  The native mux uses byte-window flow control, bounded per-stream receive
+  queues, a max-stream limit, and an idle GOAWAY timeout.
 - `[[remote.users]]` enables multiple independent server users, each with its
   own PSK. If no users are configured, the server falls back to `shared.psk`.
 - `[remote.users.quota]` sets an optional per-user rolling byte quota. `bytes`

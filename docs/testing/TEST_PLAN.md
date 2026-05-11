@@ -83,6 +83,8 @@ performance path after the basic e2e probe passes:
   run.
 - Native mux alpha coverage. Set `MUX_MODE=native` on the e2e or stress scripts
   to run the same proxy checks through the in-tree mux instead of yamux.
+  Unit tests also cover native max-stream enforcement, idle session GOAWAY, and
+  byte-window write blocking until the remote reader releases window.
 
 The fixture returns JSON containing method, path, probe header, and request
 body. The script checks that the returned JSON contains the expected token,

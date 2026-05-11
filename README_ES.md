@@ -392,6 +392,9 @@ max_chunk = 16384
 
 [shared.mux]
 mode = "yamux"
+native_initial_window_bytes = 1048576
+native_stream_buffer_frames = 128
+native_idle_timeout_secs = 300
 
 [shared.stealth]
 frame_size = 4096
@@ -412,6 +415,7 @@ min_connections = 1
 max_connections = 4
 interactive_lanes = 1
 bulk_lanes = 2
+max_reconnect_attempts = 3
 
 [logging]
 level = "info"
@@ -557,9 +561,12 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - `[local.tunnel_pool]` mantiene varios tuneles TCP fisicos disponibles. Los
   nuevos streams se asignan a lanes interactive o bulk segun su salud, para que
   solicitudes pequenas no queden detras de descargas o flujos TUN grandes.
+  `max_reconnect_attempts` limita los reintentos por solicitud antes de devolver
+  un error claro en el proxy local.
 - `[shared.mux]` selecciona el multiplexor de streams logicos. `yamux` es el
   valor estable por defecto; `native` activa el mux alpha del arbol para pruebas
-  y benchmarks.
+  y benchmarks. El mux nativo usa control de flujo por ventana de bytes, colas
+  acotadas por stream, limite de streams, y timeout idle con GOAWAY.
 - `[[remote.users]]` habilita multiples usuarios remotos independientes, cada
   uno con su propia PSK. Si no hay usuarios configurados, el servidor usa
   `shared.psk`.
