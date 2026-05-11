@@ -20,6 +20,9 @@ use crate::relay::{connect_egress_tcp, limited_copy_bidirectional, relay_udp_dat
 use crate::tarpit;
 use crate::RemoteRuntime;
 
+const STREAM_PERMIT_TIMEOUT: Duration = Duration::from_secs(15);
+const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(15);
+
 pub(crate) async fn handle_peer(
     mut inbound: TcpStream,
     runtime: RemoteRuntime,
@@ -116,14 +119,15 @@ pub(crate) async fn handle_peer(
         let global_stream_permit = runtime
             .global_stream_limit
             .clone()
-            .acquire_owned()
-            .await
-            .map_err(|err| anyhow::anyhow!("global stream limit closed: {err}"))?;
-        let stream_permit = stream_limit
-            .clone()
-            .acquire_owned()
-            .await
-            .map_err(|err| anyhow::anyhow!("stream limit closed: {err}"))?;
+            .try_acquire_owned()
+            .map_err(|_| anyhow::anyhow!("global stream limit reached"))?;
+        let Ok(stream_permit) =
+            timeout(STREAM_PERMIT_TIMEOUT, stream_limit.clone().acquire_owned())
+                .await
+                .map_err(|_| anyhow::anyhow!("stream limit wait timed out"))?
+        else {
+            return Err(anyhow::anyhow!("stream limit closed"));
+        };
         let metrics = metrics.clone();
         let current = runtime.settings.read().await.clone();
         let egress = current.egress.clone();
@@ -172,7 +176,10 @@ async fn handle_mux_stream_inner(
     idle: Duration,
     user: &str,
 ) -> Result<()> {
-    match read_tunnel_request(stream).await? {
+    match timeout(REQUEST_READ_TIMEOUT, read_tunnel_request(stream))
+        .await
+        .map_err(|_| anyhow::anyhow!("tunnel request read timed out"))??
+    {
         TunnelRequest::TcpConnect {
             authority,
             priority,

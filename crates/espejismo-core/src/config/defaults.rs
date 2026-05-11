@@ -173,6 +173,10 @@ pub(super) fn default_max_streams() -> u32 {
     256
 }
 
+pub(super) fn default_max_physical_connections() -> u32 {
+    1024
+}
+
 pub(super) fn default_native_mux_initial_window_bytes() -> usize {
     1024 * 1024
 }
@@ -195,6 +199,10 @@ pub(super) fn default_native_mux_drain_timeout_secs() -> u64 {
 
 pub(super) fn default_tunnel_pool_max_reconnect_attempts() -> u32 {
     3
+}
+
+pub(super) fn default_tunnel_pool_max_connection_age_secs() -> u64 {
+    3600
 }
 
 pub(super) fn default_randomize_chunks() -> bool {

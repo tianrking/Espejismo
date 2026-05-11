@@ -194,6 +194,8 @@ The most important knobs are:
 
 - `shared.psk`: shared secret. Keep it private.
 - `shared.max_streams`: concurrent logical stream limit per physical tunnel.
+- `shared.max_physical_connections`: concurrent physical TCP connection cap on
+  the remote before new peers are dropped.
 - `shared.idle_timeout_secs`: idle stream timeout.
 - `shared.mux.mode`: logical stream multiplexer. Keep `yamux` for production
   stability; use `native` for the in-tree beta mux test path.
@@ -208,6 +210,8 @@ The most important knobs are:
   existing streams.
 - `local.tunnel_pool.max_reconnect_attempts`: per-request reconnect attempts
   before returning an explicit local proxy error.
+- `local.tunnel_pool.max_connection_age_secs`: maximum physical tunnel age
+  before new streams rotate to a fresh X25519/HKDF session.
 - `shared.obfuscation.profile`: sender-side traffic shape. Use `low_latency`,
   `balanced`, `high_entropy`, `bulk`, or `stealth`.
 - `shared.obfuscation.chunk_policy`: adaptive data chunk sizing. Use

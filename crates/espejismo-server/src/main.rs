@@ -114,6 +114,7 @@ pub(crate) struct RemoteRuntime {
     pub(crate) reload_source: Option<ConfigInput>,
     pub(crate) reload_args: Args,
     pub(crate) runtime_state: RuntimeState,
+    pub(crate) global_connection_limit: Arc<Semaphore>,
     pub(crate) global_stream_limit: Arc<Semaphore>,
 }
 
@@ -196,12 +197,18 @@ async fn main() -> Result<()> {
     loop {
         let (socket, peer) = listener.accept().await?;
         let _ = apply_tcp_options(&socket, &runtime.tcp);
+        let Ok(connection_permit) = runtime.global_connection_limit.clone().try_acquire_owned()
+        else {
+            debug!(%peer, "remote peer dropped because global connection limit is full");
+            continue;
+        };
         let replay = replay.clone();
         let runtime = runtime.clone();
         let tarpit = tarpit.clone();
         let metrics = metrics.clone();
         metrics.inc_accepted();
         tokio::spawn(async move {
+            let _connection_permit = connection_permit;
             if let Err(err) = handle_peer(socket, runtime, replay, tarpit, metrics).await {
                 debug!(%peer, error = %err, "remote peer ended");
             }
@@ -358,10 +365,20 @@ fn build_runtime(
         admin_token: args.admin_token.clone().or(config.admin.token),
         reload_source: (reload_source.path.is_some() || reload_source.base64.is_some())
             .then_some(reload_source),
-        reload_args: args.clone(),
+        reload_args: sanitized_reload_args(args),
         runtime_state: RuntimeState::default(),
+        global_connection_limit: Arc::new(Semaphore::new(
+            config.shared.max_physical_connections.max(1) as usize,
+        )),
         global_stream_limit: Arc::new(Semaphore::new(config.shared.max_streams.max(1) as usize)),
     })
+}
+
+fn sanitized_reload_args(args: &Args) -> Args {
+    let mut sanitized = args.clone();
+    sanitized.psk = None;
+    sanitized.admin_token = None;
+    sanitized
 }
 
 fn build_remote_settings(config: &EspejismoConfig, args: &Args) -> Result<RemoteSettings> {

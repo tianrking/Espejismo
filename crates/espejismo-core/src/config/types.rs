@@ -60,6 +60,8 @@ pub struct SharedConfig {
     pub idle_timeout_secs: u64,
     #[serde(default = "default_max_streams")]
     pub max_streams: u32,
+    #[serde(default = "default_max_physical_connections")]
+    pub max_physical_connections: u32,
     #[serde(default)]
     pub tcp: TcpConfig,
     #[serde(default)]
@@ -220,6 +222,8 @@ pub struct TunnelPoolConfig {
     pub bulk_lanes: usize,
     #[serde(default = "default_tunnel_pool_max_reconnect_attempts")]
     pub max_reconnect_attempts: u32,
+    #[serde(default = "default_tunnel_pool_max_connection_age_secs")]
+    pub max_connection_age_secs: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -398,6 +402,7 @@ impl Default for SharedConfig {
             tunnel_buffer: default_tunnel_buffer(),
             idle_timeout_secs: default_idle_timeout_secs(),
             max_streams: default_max_streams(),
+            max_physical_connections: default_max_physical_connections(),
             tcp: TcpConfig::default(),
             mux: MuxConfig::default(),
             pacing: PacingConfig::default(),
@@ -475,6 +480,7 @@ impl Default for TunnelPoolConfig {
             interactive_lanes: default_tunnel_pool_interactive_lanes(),
             bulk_lanes: default_tunnel_pool_bulk_lanes(),
             max_reconnect_attempts: default_tunnel_pool_max_reconnect_attempts(),
+            max_connection_age_secs: default_tunnel_pool_max_connection_age_secs(),
         }
     }
 }

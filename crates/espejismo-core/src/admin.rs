@@ -9,10 +9,14 @@ use serde_json::json;
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio::time::{timeout, Duration};
 use tracing::{debug, info};
 
 use crate::metrics::Metrics;
 use crate::runtime_state::RuntimeState;
+
+const ADMIN_HEADER_TIMEOUT: Duration = Duration::from_secs(15);
+const ADMIN_BODY_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub type AdminAction = Arc<
     dyn Fn(Option<String>) -> Pin<Box<dyn Future<Output = Result<serde_json::Value>> + Send>>
@@ -69,8 +73,13 @@ async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<(
             write_response(&mut stream, 431, "text/plain", b"request header too large").await?;
             return Ok(());
         }
-        if stream.read_exact(&mut byte).await.is_err() {
-            return Ok(());
+        match timeout(ADMIN_HEADER_TIMEOUT, stream.read_exact(&mut byte)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(_)) => return Ok(()),
+            Err(_) => {
+                write_response(&mut stream, 408, "text/plain", b"request timeout").await?;
+                return Ok(());
+            }
         }
         buffer.push(byte[0]);
     }
@@ -94,7 +103,14 @@ async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<(
             write_response(&mut stream, 413, "text/plain", b"request body too large").await?;
             return Ok(());
         }
-        stream.read_exact(&mut body).await?;
+        match timeout(ADMIN_BODY_TIMEOUT, stream.read_exact(&mut body)).await {
+            Ok(Ok(_)) => {}
+            Ok(Err(err)) => return Err(err.into()),
+            Err(_) => {
+                write_response(&mut stream, 408, "text/plain", b"request timeout").await?;
+                return Ok(());
+            }
+        }
     }
 
     match (method, path) {
@@ -146,9 +162,10 @@ async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<(
                     write_response(&mut stream, 200, "application/json", &body).await?;
                 }
                 Err(err) => {
+                    debug!(error = %err, "admin reload failed");
                     let body = serde_json::to_vec_pretty(&json!({
                         "ok": false,
-                        "error": err.to_string(),
+                        "error": "reload failed; check service logs",
                     }))?;
                     write_response(&mut stream, 500, "application/json", &body).await?;
                 }
@@ -172,9 +189,10 @@ async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<(
                     write_response(&mut stream, 200, "application/json", &body).await?;
                 }
                 Err(err) => {
+                    debug!(error = %err, "admin apply failed");
                     let body = serde_json::to_vec_pretty(&json!({
                         "ok": false,
-                        "error": err.to_string(),
+                        "error": "apply failed; check service logs",
                     }))?;
                     write_response(&mut stream, 500, "application/json", &body).await?;
                 }

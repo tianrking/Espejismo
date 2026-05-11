@@ -105,6 +105,9 @@ does not need a separate TUN-specific listener.
 logical stream is handled independently: read the command preface, validate
 egress policy, connect the outbound TCP destination or relay one UDP datagram,
 then return traffic through the tunnel.
+Remote physical connections are capped by `shared.max_physical_connections`.
+Logical stream permits and first tunnel-request reads use bounded timeouts so a
+slow peer cannot hold semaphores or tasks indefinitely.
 
 The current production tunnel still uses TCP as the physical underlay. The core
 crate also contains UDP underlay primitives: packet codec, session id, sequence

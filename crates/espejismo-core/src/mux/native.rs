@@ -543,7 +543,15 @@ async fn handle_command(command: Command, ctx: CommandContext<'_>) -> Result<Com
                 return Ok(CommandEffect::Continue);
             }
             let stream_id = *ctx.next_stream_id;
-            *ctx.next_stream_id = ctx.next_stream_id.saturating_add(2);
+            let Some(next_stream_id) = ctx.next_stream_id.checked_add(2) else {
+                let _ = reply.send(Err(anyhow::anyhow!("native mux stream id exhausted")));
+                return Ok(CommandEffect::StartDrain);
+            };
+            if ctx.streams.contains_key(&stream_id) {
+                let _ = reply.send(Err(anyhow::anyhow!("native mux stream id collision")));
+                return Ok(CommandEffect::StartDrain);
+            }
+            *ctx.next_stream_id = next_stream_id;
             let (stream, entry) = new_stream(
                 stream_id,
                 priority,

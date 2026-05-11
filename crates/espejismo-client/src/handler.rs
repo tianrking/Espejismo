@@ -41,14 +41,20 @@ async fn handle_socks5_client_inner(
             let priority = StreamPriority::Interactive;
             let mut stream = tunnel.open_stream(priority).await?;
             let lane_id = stream.lane_id();
-            write_tcp_connect_with_priority(&mut stream, &target.authority(), priority).await?;
-            let (client_to_remote, remote_to_client) =
-                idle_copy_bidirectional(local, &mut stream, idle).await?;
+            let mut client_to_remote = 0;
+            let mut remote_to_client = 0;
+            let result = async {
+                write_tcp_connect_with_priority(&mut stream, &target.authority(), priority).await?;
+                (client_to_remote, remote_to_client) =
+                    idle_copy_bidirectional(local, &mut stream, idle).await?;
+                anyhow::Ok(())
+            }
+            .await;
             metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
             tunnel
                 .record_stream_bytes(lane_id, client_to_remote, remote_to_client)
                 .await;
-            Ok(())
+            result
         }
         socks5::SocksRequest::UdpAssociate => {
             handle_udp_associate(local, tunnel, metrics, idle).await
@@ -84,17 +90,23 @@ async fn handle_http_client_inner(
     let priority = StreamPriority::Interactive;
     let mut stream = tunnel.open_stream(priority).await?;
     let lane_id = stream.lane_id();
-    write_tcp_connect_with_priority(&mut stream, &target.authority, priority).await?;
-    if !target.prebuffer.is_empty() {
-        stream.write_all(&target.prebuffer).await?;
+    let mut client_to_remote = 0;
+    let mut remote_to_client = 0;
+    let result = async {
+        write_tcp_connect_with_priority(&mut stream, &target.authority, priority).await?;
+        if !target.prebuffer.is_empty() {
+            stream.write_all(&target.prebuffer).await?;
+        }
+        (client_to_remote, remote_to_client) =
+            idle_copy_bidirectional(local, &mut stream, idle).await?;
+        anyhow::Ok(())
     }
-    let (client_to_remote, remote_to_client) =
-        idle_copy_bidirectional(local, &mut stream, idle).await?;
+    .await;
     metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
     tunnel
         .record_stream_bytes(lane_id, client_to_remote, remote_to_client)
         .await;
-    Ok(())
+    result
 }
 
 async fn handle_udp_associate(
@@ -130,12 +142,19 @@ async fn relay_udp_packet(
     let priority = StreamPriority::Interactive;
     let mut stream = tunnel.open_stream(priority).await?;
     let lane_id = stream.lane_id();
-    write_udp_datagram_with_priority(&mut stream, &target.authority(), priority, payload).await?;
-    let len = timeout(Duration::from_secs(15), stream.read_u16()).await?? as usize;
-    let mut response = vec![0_u8; len];
-    timeout(Duration::from_secs(15), stream.read_exact(&mut response)).await??;
+    let mut response = Vec::new();
+    let result = async {
+        write_udp_datagram_with_priority(&mut stream, &target.authority(), priority, payload)
+            .await?;
+        let len = timeout(Duration::from_secs(15), stream.read_u16()).await?? as usize;
+        response = vec![0_u8; len];
+        timeout(Duration::from_secs(15), stream.read_exact(&mut response)).await??;
+        anyhow::Ok(())
+    }
+    .await;
     tunnel
         .record_stream_bytes(lane_id, payload.len() as u64, response.len() as u64)
         .await;
+    result?;
     Ok(response)
 }

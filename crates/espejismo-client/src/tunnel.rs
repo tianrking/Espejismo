@@ -11,9 +11,12 @@ use espejismo_core::{
 use futures::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{Mutex, RwLock};
+use tokio::time::timeout;
 use tracing::debug;
 
 use crate::mux::{client_session, MuxControl, MuxRuntimeConfig, MuxStream};
+
+const LANE_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LaneKind {
@@ -38,6 +41,7 @@ struct LaneHealth {
     bytes_remote_to_client: u64,
     last_open_latency_ms: u64,
     last_mux_rtt_ms: Option<u64>,
+    connected_at: Option<Instant>,
     last_error: Option<String>,
 }
 
@@ -57,6 +61,7 @@ pub(crate) struct TunnelManager {
     mux: MuxRuntimeConfig,
     tunnel_buffer: usize,
     max_reconnect_attempts: u32,
+    max_connection_age: Duration,
     metrics: Metrics,
     runtime_state: RuntimeState,
     lanes: Vec<Arc<TunnelLane>>,
@@ -191,6 +196,7 @@ impl TunnelManager {
             mux: config.mux,
             tunnel_buffer: config.tunnel_buffer,
             max_reconnect_attempts: config.pool.max_reconnect_attempts.max(1),
+            max_connection_age: Duration::from_secs(config.pool.max_connection_age_secs.max(1)),
             metrics,
             runtime_state,
             lanes,
@@ -263,6 +269,9 @@ impl TunnelManager {
     }
 
     async fn ensure_lane_control(&self, lane: Arc<TunnelLane>) -> Result<()> {
+        if self.lane_connection_expired(&lane).await {
+            *lane.control.lock().await = None;
+        }
         if lane.control.lock().await.is_some() {
             return Ok(());
         }
@@ -277,14 +286,32 @@ impl TunnelManager {
         Ok(())
     }
 
+    async fn lane_connection_expired(&self, lane: &Arc<TunnelLane>) -> bool {
+        lane.health
+            .lock()
+            .await
+            .connected_at
+            .is_some_and(|connected_at| connected_at.elapsed() >= self.max_connection_age)
+    }
+
     async fn connect_lane(&self, lane: Arc<TunnelLane>) -> Result<MuxControl> {
         self.runtime_state.set_tunnel_state("connecting");
         apply_reconnect_backoff(&self.runtime_state).await;
-        let mut upstream = match connect_tcp_stream(self.server.as_str(), &self.tcp).await {
-            Ok(stream) => stream,
-            Err(err) => {
-                self.record_lane_error(&lane, format!("connect {}: {err}", self.server))
+        let mut upstream = match timeout(
+            LANE_CONNECT_TIMEOUT,
+            connect_tcp_stream(self.server.as_str(), &self.tcp),
+        )
+        .await
+        {
+            Ok(Ok(stream)) => stream,
+            Ok(Err(err)) => {
+                self.record_lane_error(&lane, format!("connect upstream: {err}"))
                     .await;
+                return Err(err);
+            }
+            Err(err) => {
+                let err = anyhow::anyhow!("connect upstream timed out: {err}");
+                self.record_lane_error(&lane, err.to_string()).await;
                 return Err(err);
             }
         };
@@ -306,6 +333,7 @@ impl TunnelManager {
         {
             let mut health = lane.health.lock().await;
             health.reconnect_count = health.reconnect_count.saturating_add(1);
+            health.connected_at = Some(Instant::now());
             health.last_error = None;
             self.publish_lane(&lane, &health, "connected");
         }

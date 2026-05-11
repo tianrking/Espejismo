@@ -53,6 +53,38 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     if let Some(token) = &config.admin.token {
         anyhow::ensure!(!token.is_empty(), "admin.token must not be empty");
     }
+    anyhow::ensure!(
+        config.shared.clock_skew_secs > 0,
+        "shared.clock_skew_secs must be greater than 0"
+    );
+    anyhow::ensure!(
+        config.remote.replay_window_secs > 0,
+        "remote.replay_window_secs must be greater than 0"
+    );
+    anyhow::ensure!(
+        config.remote.handshake_timeout_ms > 0,
+        "remote.handshake_timeout_ms must be greater than 0"
+    );
+    anyhow::ensure!(
+        config.shared.idle_timeout_secs > 0,
+        "shared.idle_timeout_secs must be greater than 0"
+    );
+    anyhow::ensure!(
+        config.shared.max_streams > 0,
+        "shared.max_streams must be greater than 0"
+    );
+    anyhow::ensure!(
+        config.shared.max_streams <= 65_535,
+        "shared.max_streams must be <= 65535"
+    );
+    anyhow::ensure!(
+        config.shared.max_physical_connections > 0,
+        "shared.max_physical_connections must be greater than 0"
+    );
+    anyhow::ensure!(
+        config.shared.max_physical_connections <= 65_535,
+        "shared.max_physical_connections must be <= 65535"
+    );
     for user in &config.remote.users {
         anyhow::ensure!(
             !user.name.trim().is_empty(),
@@ -113,6 +145,10 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
         "local.tunnel_pool.max_reconnect_attempts must be greater than 0"
     );
     anyhow::ensure!(
+        config.local.tunnel_pool.max_connection_age_secs > 0,
+        "local.tunnel_pool.max_connection_age_secs must be greater than 0"
+    );
+    anyhow::ensure!(
         config.shared.mux.native_initial_window_bytes > 0,
         "shared.mux.native_initial_window_bytes must be greater than 0"
     );
@@ -159,9 +195,10 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
             config.shared.stealth.frame_size <= 64 * 1024,
             "shared.stealth.frame_size must be <= 65536"
         );
+        let min_stealth_frame = 24 + 32 + 84 + 16 + 1;
         anyhow::ensure!(
-            config.shared.stealth.frame_size >= 140,
-            "shared.stealth.frame_size must be large enough for stealth handshake"
+            config.shared.stealth.frame_size >= min_stealth_frame,
+            "shared.stealth.frame_size must leave room for handshake, AEAD tag, and at least one payload byte"
         );
         anyhow::ensure!(
             config.shared.stealth.tick_ms > 0,
@@ -268,5 +305,43 @@ mod tests {
 
         let err = parse_config(config).unwrap_err().to_string();
         assert!(err.contains("dns_servers"));
+    }
+
+    #[test]
+    fn rejects_unsafe_shared_limits_and_time_values() {
+        for (config, expected) in [
+            ("[shared]\nmax_streams = 0\n", "max_streams"),
+            (
+                "[shared]\nmax_physical_connections = 0\n",
+                "max_physical_connections",
+            ),
+            ("[shared]\nclock_skew_secs = -1\n", "clock_skew_secs"),
+            ("[remote]\nreplay_window_secs = 0\n", "replay_window_secs"),
+            (
+                "[remote]\nhandshake_timeout_ms = 0\n",
+                "handshake_timeout_ms",
+            ),
+            (
+                "[local.tunnel_pool]\nmax_connection_age_secs = 0\n",
+                "max_connection_age_secs",
+            ),
+        ] {
+            let err = parse_config(config).unwrap_err().to_string();
+            assert!(err.contains(expected), "{err}");
+        }
+    }
+
+    #[test]
+    fn rejects_too_small_stealth_frame_for_payload() {
+        let config = r#"
+            [shared.obfuscation]
+            profile = "stealth"
+
+            [shared.stealth]
+            frame_size = 140
+        "#;
+
+        let err = parse_config(config).unwrap_err().to_string();
+        assert!(err.contains("stealth.frame_size"), "{err}");
     }
 }

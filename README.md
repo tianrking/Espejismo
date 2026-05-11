@@ -378,6 +378,7 @@ backpressure_cooldown_ms = 1000
 tunnel_buffer = 1048576
 idle_timeout_secs = 300
 max_streams = 256
+max_physical_connections = 1024
 
 [shared.obfuscation]
 profile = "balanced"
@@ -414,6 +415,7 @@ max_connections = 4
 interactive_lanes = 1
 bulk_lanes = 2
 max_reconnect_attempts = 3
+max_connection_age_secs = 3600
 
 [logging]
 level = "info"
@@ -556,12 +558,17 @@ internals and wire format specification live in
   streams are assigned to interactive or bulk lanes by health score so small
   proxy requests do not queue behind large TUN or download flows.
   `max_reconnect_attempts` bounds per-request reconnect attempts before the
-  local proxy returns a clear error.
+  local proxy returns a clear error. `max_connection_age_secs` rotates physical
+  tunnel sessions for new streams so long-running clients periodically perform a
+  fresh X25519/HKDF handshake without interrupting existing streams.
 - `[shared.mux]` selects the logical stream multiplexer. `yamux` is the stable
   default; `native` enables the in-tree beta mux for testing and benchmarking.
   The native mux uses byte-window flow control, bounded per-stream receive
   queues, bounded command/pending queues, a max-stream limit, RST for unknown
   stream DATA, and an idle GOAWAY timeout.
+- `shared.max_physical_connections` caps concurrently accepted remote-side
+  physical TCP connections. `shared.max_streams` caps logical mux streams and
+  the remote global stream semaphore.
 - `[[remote.users]]` enables multiple independent server users, each with its
   own PSK. If no users are configured, the server falls back to `shared.psk`.
 - `[remote.users.quota]` sets an optional per-user rolling byte quota. `bytes`
@@ -582,7 +589,8 @@ internals and wire format specification live in
   [docs/deployment/UPDATES.md](docs/deployment/UPDATES.md).
 - `--check-config --config espejismo.toml` validates common deployment mistakes:
   DNS resolution, listener bindability, weak PSKs, admin token exposure, egress
-  breadth, user duplication, quotas, bandwidth, and pacing bounds.
+  breadth, user duplication, quotas, bandwidth, stream limits, clock skew,
+  handshake timeouts, and pacing bounds.
 - SOCKS5 supports TCP `CONNECT` and UDP `ASSOCIATE`. UDP datagrams are relayed
   over authenticated mux streams and checked by remote egress policy.
 - The stable production path is TCP with `shared.mux.mode = "yamux"`. SOCKS5 UDP ASSOCIATE is currently an

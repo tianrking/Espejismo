@@ -1,8 +1,11 @@
 use anyhow::{bail, Context, Result};
 use base64::Engine;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::time::{timeout, Duration};
 
 use super::ProxyAuth;
+
+const HTTP_PROXY_HEADER_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug)]
 pub struct HttpTarget {
@@ -30,7 +33,9 @@ where
         if header.len() >= 32 * 1024 {
             bail!("HTTP proxy header too large");
         }
-        let n = stream.read(&mut read_buf).await?;
+        let n = timeout(HTTP_PROXY_HEADER_TIMEOUT, stream.read(&mut read_buf))
+            .await
+            .context("HTTP proxy header read timeout")??;
         if n == 0 {
             bail!("HTTP proxy connection closed before headers complete");
         }

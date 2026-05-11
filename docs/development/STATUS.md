@@ -23,7 +23,9 @@ Current release target: `v0.0.5`.
 - Per-user rolling byte quotas and aggregate relay bandwidth limits.
 - Configurable compact, pretty, or JSON logging with optional file output.
 - Admin HTTP endpoint with health, status, Prometheus-style metrics, reload, and
-  apply on both local and remote binaries.
+  apply on both local and remote binaries. Admin header/body reads are bounded
+  by request timeouts, and reload/apply failures return generic client-facing
+  errors while detailed causes stay in logs.
 - Admin `/connections` and enriched `/status` runtime health with tunnel state,
   reconnect count, recent errors, egress policy version, and config apply time.
 - Runtime config reload/apply through the authenticated admin endpoint. Remote
@@ -36,7 +38,10 @@ Current release target: `v0.0.5`.
 - TCP-friendly pacing knobs for burst budget, rate cap, and minimum write size.
 - Local tunnel pool with configurable interactive and bulk physical TCP lanes,
   health-scored stream placement, per-lane reconnect/error/latency/byte status,
-  and logical stream muxing wrapped behind a replaceable module.
+  maximum connection age rotation for new streams, and logical stream muxing
+  wrapped behind a replaceable module.
+- Remote physical connection limits and stream/request read timeouts bound
+  connection-flood and slow-request resource usage.
 - Native mux beta with OPEN, DATA, WINDOW_UPDATE, FIN, RST, PING, and GOAWAY
   frame types, PING RTT measurement, graceful GOAWAY drain, priority-aware data
   scheduling, byte-window flow control, bounded per-stream receive/send queues,

@@ -130,14 +130,22 @@ async fn handle_tun_tcp(
                 let priority = StreamPriority::Bulk;
                 let mut tunnel_stream = tunnel.open_stream(priority).await?;
                 let lane_id = tunnel_stream.lane_id();
-                write_tcp_connect_with_priority(&mut tunnel_stream, &authority, priority).await?;
-                let (client_to_remote, remote_to_client) =
-                    idle_copy_bidirectional(&mut local_stream, &mut tunnel_stream, idle).await?;
+                let mut client_to_remote = 0;
+                let mut remote_to_client = 0;
+                let result = async {
+                    write_tcp_connect_with_priority(&mut tunnel_stream, &authority, priority)
+                        .await?;
+                    (client_to_remote, remote_to_client) =
+                        idle_copy_bidirectional(&mut local_stream, &mut tunnel_stream, idle)
+                            .await?;
+                    anyhow::Ok(())
+                }
+                .await;
                 metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
                 tunnel
                     .record_stream_bytes(lane_id, client_to_remote, remote_to_client)
                     .await;
-                anyhow::Ok(())
+                result
             }
             .await;
             if let Err(err) = result {
@@ -200,13 +208,19 @@ async fn relay_udp_authority(
     let priority = StreamPriority::Bulk;
     let mut stream = tunnel.open_stream(priority).await?;
     let lane_id = stream.lane_id();
-    write_udp_datagram_with_priority(&mut stream, authority, priority, payload).await?;
-    let len = timeout(Duration::from_secs(15), stream.read_u16()).await?? as usize;
-    let mut response = vec![0_u8; len];
-    timeout(Duration::from_secs(15), stream.read_exact(&mut response)).await??;
+    let mut response = Vec::new();
+    let result = async {
+        write_udp_datagram_with_priority(&mut stream, authority, priority, payload).await?;
+        let len = timeout(Duration::from_secs(15), stream.read_u16()).await?? as usize;
+        response = vec![0_u8; len];
+        timeout(Duration::from_secs(15), stream.read_exact(&mut response)).await??;
+        anyhow::Ok(())
+    }
+    .await;
     tunnel
         .record_stream_bytes(lane_id, payload.len() as u64, response.len() as u64)
         .await;
+    result?;
     Ok(response)
 }
 

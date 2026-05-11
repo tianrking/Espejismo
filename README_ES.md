@@ -386,6 +386,7 @@ backpressure_cooldown_ms = 1000
 tunnel_buffer = 1048576
 idle_timeout_secs = 300
 max_streams = 256
+max_physical_connections = 1024
 
 [shared.obfuscation]
 profile = "balanced"
@@ -422,6 +423,7 @@ max_connections = 4
 interactive_lanes = 1
 bulk_lanes = 2
 max_reconnect_attempts = 3
+max_connection_age_secs = 3600
 
 [logging]
 level = "info"
@@ -568,12 +570,17 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   nuevos streams se asignan a lanes interactive o bulk segun su salud, para que
   solicitudes pequenas no queden detras de descargas o flujos TUN grandes.
   `max_reconnect_attempts` limita los reintentos por solicitud antes de devolver
-  un error claro en el proxy local.
+  un error claro en el proxy local. `max_connection_age_secs` rota sesiones
+  fisicas para nuevos streams, de modo que clientes de larga vida ejecuten
+  periodicamente un nuevo handshake X25519/HKDF sin cortar streams existentes.
 - `[shared.mux]` selecciona el multiplexor de streams logicos. `yamux` es el
   valor estable por defecto; `native` activa el mux beta del arbol para pruebas
   y benchmarks. El mux nativo usa control de flujo por ventana de bytes, colas
   acotadas por stream, colas acotadas de comandos/pendientes, limite de
   streams, RST para DATA de streams desconocidos, y timeout idle con GOAWAY.
+- `shared.max_physical_connections` limita las conexiones TCP fisicas
+  simultaneas aceptadas por el remoto. `shared.max_streams` limita los streams
+  mux logicos y el semaforo global de streams del remoto.
 - `[[remote.users]]` habilita multiples usuarios remotos independientes, cada
   uno con su propia PSK. Si no hay usuarios configurados, el servidor usa
   `shared.psk`.
@@ -596,7 +603,8 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   [docs/deployment/UPDATES.md](docs/deployment/UPDATES.md).
 - `--check-config --config espejismo.toml` valida errores comunes de despliegue:
   DNS, bind de listeners, PSK debil, admin sin token, egress amplio, usuarios
-  duplicados, cuotas, ancho de banda, y pacing.
+  duplicados, cuotas, ancho de banda, limites de streams, desvio de reloj,
+  timeouts de handshake, y pacing.
 - SOCKS5 soporta `CONNECT` TCP y `ASSOCIATE` UDP. Los datagramas UDP se
   transportan por streams mux autenticados y son verificados por la politica
   de salida remota.

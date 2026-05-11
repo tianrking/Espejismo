@@ -51,6 +51,19 @@ the v0.0.4 release candidate.
   relay copy buffers now use 32 KiB chunks for fewer syscalls on large flows.
 - Tunnel lane reconnects no longer hold the primary mux-control lock while
   dialing and handshaking a replacement physical connection.
+- Remote-side resource limits now include a configurable physical connection
+  cap, bounded stream-permit waits, bounded initial tunnel-request reads, and
+  bounded admin/HTTP proxy header reads.
+- Native mux now fail-fasts stream-id exhaustion instead of saturating into a
+  possible stream-id collision.
+- Config validation now rejects zero or excessive stream/connection limits,
+  non-positive clock skew/replay/timeout values, and too-small stealth frames.
+- Remote reload no longer keeps CLI PSK/admin-token overrides in the long-lived
+  runtime state, and admin reload/apply errors return generic client-facing
+  messages.
+- Local tunnel lanes now rotate physical connections for new streams after
+  `local.tunnel_pool.max_connection_age_secs`, giving long-lived clients fresh
+  X25519/HKDF sessions without interrupting existing streams.
 
 ### Clarified
 
