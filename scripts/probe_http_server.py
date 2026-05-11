@@ -9,6 +9,14 @@ class ProbeHandler(http.server.BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
     def do_GET(self):
+        if self.path == "/release/latest":
+            self._reply_json(
+                {
+                    "tag_name": "v99.0.0",
+                    "html_url": "https://example.test/espejismo/v99.0.0",
+                }
+            )
+            return
         self._reply(b"")
 
     def do_POST(self):
@@ -20,15 +28,17 @@ class ProbeHandler(http.server.BaseHTTPRequestHandler):
         print(fmt % args, flush=True)
 
     def _reply(self, body):
-        payload = json.dumps(
+        self._reply_json(
             {
                 "method": self.command,
                 "path": self.path,
                 "probe": self.headers.get("x-espejismo-probe", ""),
                 "body": body.decode("utf-8", errors="replace"),
             },
-            sort_keys=True,
-        ).encode()
+        )
+
+    def _reply_json(self, value):
+        payload = json.dumps(value, sort_keys=True).encode()
         self.send_response(200)
         self.send_header("content-type", "application/json")
         self.send_header("content-length", str(len(payload)))

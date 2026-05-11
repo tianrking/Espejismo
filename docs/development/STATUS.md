@@ -15,6 +15,7 @@
 - Configurable compact, pretty, or JSON logging with optional file output.
 - Admin HTTP endpoint with health, status, Prometheus-style metrics, and reload.
 - Remote runtime config reload/apply through the authenticated admin endpoint.
+- Client and remote release update checks with configurable metadata URL.
 - Server-side egress policy for host/port allow and block rules.
 - Variable-length authenticated first packet.
 - Protocol version and capability negotiation in the authenticated handshake.

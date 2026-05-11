@@ -7,10 +7,10 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use espejismo_core::config::{encode_config_base64, example_config};
 use espejismo_core::{
-    accept_handshake_with_users, init_logging, load_config, parse_config, parse_psk,
-    read_tunnel_request, spawn_admin_server, spawn_frame_transport, AdminAction, AdminState,
-    ConfigInput, EgressPolicy, EspejismoConfig, FrameOptions, HandshakeConfig, HandshakeUser,
-    LogConfig, LogFormat, Metrics, ProbeDefenseMode, ReplayCache, TunnelRequest,
+    accept_handshake_with_users, check_for_update, init_logging, load_config, parse_config,
+    parse_psk, read_tunnel_request, spawn_admin_server, spawn_frame_transport, AdminAction,
+    AdminState, ConfigInput, EgressPolicy, EspejismoConfig, FrameOptions, HandshakeConfig,
+    HandshakeUser, LogConfig, LogFormat, Metrics, ProbeDefenseMode, ReplayCache, TunnelRequest,
 };
 use futures::StreamExt;
 use rand::seq::SliceRandom;
@@ -39,6 +39,10 @@ struct Args {
     print_example_config: bool,
     #[arg(long)]
     print_example_config_base64: bool,
+    #[arg(long)]
+    check_update: bool,
+    #[arg(long)]
+    update_url: Option<String>,
     #[arg(long)]
     listen: Option<SocketAddr>,
     #[arg(long, env = "ESPEJISMO_PSK")]
@@ -127,6 +131,10 @@ struct FallbackHttpRuntime {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
+    if args.check_update {
+        print_update_check(args.update_url.as_deref())?;
+        return Ok(());
+    }
     if args.print_example_config || args.print_example_config_base64 {
         let example = example_config();
         if args.print_example_config_base64 {
@@ -179,6 +187,22 @@ async fn main() -> Result<()> {
             }
         });
     }
+}
+
+fn print_update_check(update_url: Option<&str>) -> Result<()> {
+    let info = check_for_update(env!("CARGO_PKG_VERSION"), update_url)?;
+    if info.update_available {
+        println!(
+            "update available: {} -> {}",
+            info.current_version, info.latest_version
+        );
+        if let Some(url) = info.release_url {
+            println!("release: {url}");
+        }
+    } else {
+        println!("up to date: {}", info.current_version);
+    }
+    Ok(())
 }
 
 fn apply_log_overrides(config: &mut LogConfig, args: &Args) -> Result<()> {

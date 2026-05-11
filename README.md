@@ -380,6 +380,13 @@ You can print an example directly as base64:
 cargo run --bin espejismo-local -- --print-example-config-base64
 ```
 
+Check for a newer release:
+
+```bash
+cargo run --bin espejismo-local -- --check-update
+cargo run --bin espejismo-remote -- --check-update
+```
+
 ## Handshake
 
 The handshake protocol is described in detail in the [Architecture](#architecture)
@@ -416,6 +423,10 @@ internals and wire format specification live in
 - `espejismo-local --print-client-profile` emits an
   `espejismo://import/...` profile URL that can be imported with
   `--import-profile`.
+- `--check-update` checks the latest release metadata and prints whether a newer
+  version is available. `--update-url` can point at a compatible JSON endpoint
+  with `tag_name` or `latest_version`. See
+  [docs/deployment/UPDATES.md](docs/deployment/UPDATES.md).
 - SOCKS5 supports TCP `CONNECT` and UDP `ASSOCIATE`. UDP datagrams are relayed
   over authenticated yamux streams and checked by remote egress policy.
 - `--max-padding` controls the maximum payload size of encrypted padding frames.

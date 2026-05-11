@@ -27,4 +27,5 @@ toml.workspace = true
 tracing.workspace = true
 tracing-appender.workspace = true
 tracing-subscriber.workspace = true
+ureq.workspace = true
 x25519-dalek.workspace = true

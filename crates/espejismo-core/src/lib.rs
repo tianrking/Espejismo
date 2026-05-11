@@ -8,6 +8,7 @@ pub mod metrics;
 pub mod profile;
 pub mod protocol;
 pub mod transport;
+pub mod updater;
 
 pub use admin::{spawn_admin_server, AdminAction, AdminState};
 pub use config::{
@@ -34,3 +35,4 @@ pub use protocol::request::{
     CMD_UDP_DATAGRAM,
 };
 pub use transport::{idle_copy_bidirectional, spawn_frame_transport};
+pub use updater::{check_for_update, default_release_url, UpdateInfo};
