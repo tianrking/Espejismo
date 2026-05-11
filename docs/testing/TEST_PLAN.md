@@ -81,7 +81,7 @@ performance path after the basic e2e probe passes:
 - Remote endpoint restart followed by new request recovery.
 - Optional soak loop. On Unix-like hosts, set `SOAK_SECS=1800` for a 30-minute
   run.
-- Native mux alpha coverage. Set `MUX_MODE=native` on the e2e or stress scripts
+- Native mux beta coverage. Set `MUX_MODE=native` on the e2e or stress scripts
   to run the same proxy checks through the in-tree mux instead of yamux.
   Unit tests also cover native max-stream enforcement, idle session GOAWAY, and
   byte-window write blocking until the remote reader releases window.

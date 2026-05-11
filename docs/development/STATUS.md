@@ -51,7 +51,7 @@ Current release target: `v0.0.4`.
 - Client and remote release update checks with configurable metadata URL.
 - Server-side egress policy for host/port allow and block rules.
 - SOCKS5 chained TCP egress and SOCKS5 UDP ASSOCIATE chained UDP egress.
-- Variable-length authenticated first packet.
+- Variable-length masked handshake envelope with authenticated payload.
 - Protocol version and capability negotiation in the authenticated handshake.
 - X25519 ephemeral key exchange and HKDF session keys.
 - XChaCha20-Poly1305 encrypted frames with fail-fast authentication.

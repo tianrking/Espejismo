@@ -25,17 +25,24 @@ stream with no stable cleartext TLV markers or borrowed protocol fingerprint.
 
 ## Handshake Pipeline
 
-The first packet is variable length and authenticated:
+The standard first packet is a variable-length masked envelope:
 
 ```text
-[ HMAC-SHA256 32 ][ UTC timestamp 8 ][ nonce 24 ][ X25519 public key 32 ][ protocol version 2 ][ capabilities 8 ][ puzzle nonce 8 ][ padding length 2 ][ padding 0..N ]
+[ random nonce 24 ][ masked payload length 4 ][ masked payload + random tail padding ]
+
+masked payload:
+[ HMAC-SHA256 ][ UTC timestamp ][ nonce ][ X25519 public key ][ protocol version ][ capabilities ][ puzzle nonce ][ padding length ][ padding ]
 ```
 
-The client solves a bounded SHA-256 leading-zero puzzle over the body before it
-computes the HMAC. The remote verifies the puzzle before the HMAC, checks the
-timestamp skew, and records the ephemeral public key in a bounded replay cache.
-The current protocol version is `1`; capability bit 0 enables TCP CONNECT and
-bit 1 enables SOCKS5 UDP ASSOCIATE datagram relay.
+The 4-byte envelope length and the payload are XOR-masked with HMAC-derived
+streams keyed by the PSK auth key. This keeps robust async parsing while moving
+the fixed HMAC/timestamp/public-key offsets and fixed server reply out of the
+clear wire image. Inside the envelope, the client solves a bounded SHA-256
+leading-zero puzzle over the body before it computes the HMAC. The remote
+verifies the puzzle before the HMAC, checks timestamp skew, and records the
+ephemeral public key in a bounded replay cache. The current protocol version is
+`1`; capability bit 0 enables TCP CONNECT and bit 1 enables SOCKS5 UDP ASSOCIATE
+datagram relay.
 
 ## Frame Pipeline
 
@@ -73,12 +80,13 @@ payload resets the cadence.
 
 ## Stealth Handshake Wrapper
 
-Plain mode uses the variable-length first packet described above. Stealth mode
-wraps the client hello and server hello in fixed-size blocks that match the
+Plain mode uses the variable-length masked envelope described above. Stealth
+mode wraps the client hello and server hello in fixed-size blocks that match the
 configured stealth frame size. Each block starts with a random 24-byte nonce and
 masks the hello plus random padding with an HMAC-derived XOR stream keyed by the
-PSK auth key. This removes the plain-mode client/server hello size signature
-without changing the underlying X25519/HMAC/puzzle handshake semantics.
+PSK auth key. This replaces the variable-length envelope with fixed-size
+handshake blocks without changing the underlying X25519/HMAC/puzzle handshake
+semantics.
 
 ## Multiplexing Pipeline
 

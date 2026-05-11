@@ -26,6 +26,9 @@ const PUZZLE_NONCE_RANGE: std::ops::Range<usize> = 74..82;
 const SERVER_HELLO_LEN: usize = 32 + 2 + 8 + 32;
 const MAX_HANDSHAKE_PADDING: usize = 1024;
 const STEALTH_HANDSHAKE_NONCE_LEN: usize = 24;
+const VARIABLE_HANDSHAKE_NONCE_LEN: usize = 24;
+const VARIABLE_HANDSHAKE_LEN_LEN: usize = 4;
+const VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX: usize = 512;
 pub const PROTOCOL_VERSION: u16 = 1;
 pub const CAP_TCP_CONNECT: u64 = 1 << 0;
 pub const CAP_UDP_ASSOCIATE: u64 = 1 << 1;
@@ -118,19 +121,34 @@ where
 {
     let secret = StaticSecret::random_from_rng(OsRng);
     let client_hello = build_client_hello(cfg, &secret, cfg.max_handshake_padding)?;
-    stream.write_all(&client_hello.wire).await?;
+    let envelope = mask_variable_handshake_envelope(
+        &cfg.auth_key,
+        b"plain-client",
+        &[],
+        &client_hello.wire,
+        VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+    )?;
+    stream.write_all(&envelope).await?;
 
-    let mut reply = [0_u8; SERVER_HELLO_LEN];
-    stream
-        .read_exact(&mut reply)
-        .await
-        .context("server handshake failed")?;
+    let reply_payload = read_variable_handshake_envelope(
+        stream,
+        &cfg.auth_key,
+        b"plain-server",
+        &client_hello.tag,
+        SERVER_HELLO_LEN,
+        SERVER_HELLO_LEN + VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+    )
+    .await
+    .context("server handshake failed")?;
+    if reply_payload.len() < SERVER_HELLO_LEN {
+        bail!("short server handshake reply");
+    }
     finish_client_handshake(
         cfg,
         &secret,
         &client_hello.body,
         &client_hello.nonce,
-        &reply,
+        &reply_payload[..SERVER_HELLO_LEN],
     )
 }
 
@@ -250,7 +268,14 @@ where
         )?;
         stream.write_all(&block).await?;
     } else {
-        stream.write_all(&reply).await?;
+        let envelope = mask_variable_handshake_envelope(
+            &cfg.auth_key,
+            b"plain-server",
+            &client_hello.tag,
+            &reply,
+            VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+        )?;
+        stream.write_all(&envelope).await?;
     }
 
     derive_keys(
@@ -275,7 +300,7 @@ where
     let client_hello = if let Some(frame_size) = first.config.stealth_frame_size {
         read_stealth_client_hello_for_users(stream, users, frame_size).await?
     } else {
-        read_plain_client_hello_with_max_padding(stream, max_user_padding(users)).await?
+        read_plain_client_hello_for_users(stream, users).await?
     };
 
     let mut matched = None;
@@ -322,7 +347,14 @@ where
         )?;
         stream.write_all(&block).await?;
     } else {
-        stream.write_all(&reply).await?;
+        let envelope = mask_variable_handshake_envelope(
+            &user.config.auth_key,
+            b"plain-server",
+            &client_hello.tag,
+            &reply,
+            VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+        )?;
+        stream.write_all(&envelope).await?;
     }
 
     Ok(AuthenticatedSession {
@@ -423,70 +455,97 @@ async fn read_plain_client_hello<S>(
 where
     S: AsyncRead + Unpin,
 {
-    let mut tag = [0_u8; CLIENT_HELLO_TAG_LEN];
-    let mut fixed_body = [0_u8; CLIENT_HELLO_FIXED_BODY_LEN];
-    stream
-        .read_exact(&mut tag)
-        .await
-        .context("client handshake tag failed")?;
-    stream
-        .read_exact(&mut fixed_body)
-        .await
-        .context("client handshake body failed")?;
-
-    let padding_len = u16::from_be_bytes(fixed_body[82..84].try_into()?) as usize;
-    let max_padding = cfg.max_handshake_padding.min(MAX_HANDSHAKE_PADDING);
-    if padding_len > max_padding {
-        bail!("handshake padding exceeds configured limit");
-    }
-    let mut padding = vec![0_u8; padding_len];
-    if padding_len > 0 {
-        stream
-            .read_exact(&mut padding)
-            .await
-            .context("client handshake padding failed")?;
-    }
-    let mut body = Vec::with_capacity(CLIENT_HELLO_FIXED_BODY_LEN + padding_len);
-    body.extend_from_slice(&fixed_body);
-    body.extend_from_slice(&padding);
-    Ok(ParsedClientHello {
-        tag,
-        fixed_body,
-        body,
-    })
+    let min_len = plain_client_hello_min_len();
+    let max_len = plain_client_hello_max_len(cfg.max_handshake_padding);
+    let payload = read_variable_handshake_envelope(
+        stream,
+        &cfg.auth_key,
+        b"plain-client",
+        &[],
+        min_len,
+        max_len,
+    )
+    .await
+    .context("client handshake failed")?;
+    parse_plain_client_hello(cfg, &payload)
 }
 
-async fn read_plain_client_hello_with_max_padding<S>(
+async fn read_plain_client_hello_for_users<S>(
     stream: &mut S,
-    max_padding: usize,
+    users: &[HandshakeUser],
 ) -> Result<ParsedClientHello>
 where
     S: AsyncRead + Unpin,
 {
-    let mut tag = [0_u8; CLIENT_HELLO_TAG_LEN];
-    let mut fixed_body = [0_u8; CLIENT_HELLO_FIXED_BODY_LEN];
+    let mut nonce = [0_u8; VARIABLE_HANDSHAKE_NONCE_LEN];
+    let mut masked_len = [0_u8; VARIABLE_HANDSHAKE_LEN_LEN];
     stream
-        .read_exact(&mut tag)
+        .read_exact(&mut nonce)
         .await
-        .context("client handshake tag failed")?;
+        .context("client handshake nonce failed")?;
     stream
-        .read_exact(&mut fixed_body)
+        .read_exact(&mut masked_len)
         .await
-        .context("client handshake body failed")?;
+        .context("client handshake length failed")?;
+
+    let mut candidates = Vec::new();
+    for (index, user) in users.iter().enumerate() {
+        let len = unmask_variable_handshake_len(
+            &user.config.auth_key,
+            b"plain-client",
+            &[],
+            &nonce,
+            masked_len,
+        )?;
+        if (plain_client_hello_min_len()
+            ..=plain_client_hello_max_len(user.config.max_handshake_padding))
+            .contains(&len)
+        {
+            candidates.push((index, len));
+        }
+    }
+
+    let (index, payload_len) = match candidates.as_slice() {
+        [(index, payload_len)] => (*index, *payload_len),
+        [] => bail!("client handshake did not match any configured user"),
+        _ => bail!("client handshake length matched multiple users"),
+    };
+
+    let mut payload = vec![0_u8; payload_len];
+    stream
+        .read_exact(&mut payload)
+        .await
+        .context("client handshake payload failed")?;
+    xor_variable_handshake_payload(
+        &users[index].config.auth_key,
+        b"plain-client",
+        &[],
+        &nonce,
+        &mut payload,
+    )?;
+    parse_plain_client_hello(&users[index].config, &payload)
+}
+
+fn parse_plain_client_hello(cfg: &HandshakeConfig, plain: &[u8]) -> Result<ParsedClientHello> {
+    if plain.len() < plain_client_hello_min_len() {
+        bail!("short client handshake");
+    }
+    let tag = slice_32(&plain[..CLIENT_HELLO_TAG_LEN])?;
+    let fixed_body: [u8; CLIENT_HELLO_FIXED_BODY_LEN] = plain
+        [CLIENT_HELLO_TAG_LEN..CLIENT_HELLO_TAG_LEN + CLIENT_HELLO_FIXED_BODY_LEN]
+        .try_into()
+        .map_err(|_| anyhow!("expected fixed client hello body"))?;
     let padding_len = u16::from_be_bytes(fixed_body[82..84].try_into()?) as usize;
-    if padding_len > max_padding.min(MAX_HANDSHAKE_PADDING) {
+    if padding_len > cfg.max_handshake_padding.min(MAX_HANDSHAKE_PADDING) {
         bail!("handshake padding exceeds configured user limit");
     }
-    let mut padding = vec![0_u8; padding_len];
-    if padding_len > 0 {
-        stream
-            .read_exact(&mut padding)
-            .await
-            .context("client handshake padding failed")?;
+    let total = CLIENT_HELLO_TAG_LEN + CLIENT_HELLO_FIXED_BODY_LEN + padding_len;
+    if total > plain.len() {
+        bail!("short client handshake padding");
     }
     let mut body = Vec::with_capacity(CLIENT_HELLO_FIXED_BODY_LEN + padding_len);
     body.extend_from_slice(&fixed_body);
-    body.extend_from_slice(&padding);
+    body.extend_from_slice(&plain[CLIENT_HELLO_TAG_LEN + CLIENT_HELLO_FIXED_BODY_LEN..total]);
     Ok(ParsedClientHello {
         tag,
         fixed_body,
@@ -542,12 +601,14 @@ where
     bail!("stealth client handshake did not match any configured user")
 }
 
-fn max_user_padding(users: &[HandshakeUser]) -> usize {
-    users
-        .iter()
-        .map(|user| user.config.max_handshake_padding)
-        .max()
-        .unwrap_or(0)
+fn plain_client_hello_min_len() -> usize {
+    CLIENT_HELLO_TAG_LEN + CLIENT_HELLO_FIXED_BODY_LEN
+}
+
+fn plain_client_hello_max_len(max_padding: usize) -> usize {
+    plain_client_hello_min_len()
+        + max_padding.min(MAX_HANDSHAKE_PADDING)
+        + VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX
 }
 
 fn parse_stealth_client_hello(
@@ -643,6 +704,107 @@ fn validate_stealth_handshake_frame(frame_size: usize) -> Result<()> {
     Ok(())
 }
 
+fn mask_variable_handshake_envelope(
+    key: &[u8; 32],
+    label: &[u8],
+    context: &[u8],
+    clear: &[u8],
+    max_extra_padding: usize,
+) -> Result<Vec<u8>> {
+    let mut nonce = [0_u8; VARIABLE_HANDSHAKE_NONCE_LEN];
+    OsRng.fill_bytes(&mut nonce);
+
+    let extra_len = random_padding_len(max_extra_padding);
+    let payload_len = clear
+        .len()
+        .checked_add(extra_len)
+        .context("handshake envelope payload length overflow")?;
+    let mut payload = vec![0_u8; payload_len];
+    payload[..clear.len()].copy_from_slice(clear);
+    if extra_len > 0 {
+        OsRng.fill_bytes(&mut payload[clear.len()..]);
+    }
+
+    let mut masked_len = (payload_len as u32).to_be_bytes();
+    xor_variable_handshake_len(key, label, context, &nonce, &mut masked_len)?;
+    xor_variable_handshake_payload(key, label, context, &nonce, &mut payload)?;
+
+    let mut envelope = Vec::with_capacity(
+        VARIABLE_HANDSHAKE_NONCE_LEN + VARIABLE_HANDSHAKE_LEN_LEN + payload.len(),
+    );
+    envelope.extend_from_slice(&nonce);
+    envelope.extend_from_slice(&masked_len);
+    envelope.extend_from_slice(&payload);
+    Ok(envelope)
+}
+
+async fn read_variable_handshake_envelope<S>(
+    stream: &mut S,
+    key: &[u8; 32],
+    label: &[u8],
+    context: &[u8],
+    min_payload_len: usize,
+    max_payload_len: usize,
+) -> Result<Vec<u8>>
+where
+    S: AsyncRead + Unpin,
+{
+    let mut nonce = [0_u8; VARIABLE_HANDSHAKE_NONCE_LEN];
+    let mut masked_len = [0_u8; VARIABLE_HANDSHAKE_LEN_LEN];
+    stream
+        .read_exact(&mut nonce)
+        .await
+        .context("handshake envelope nonce failed")?;
+    stream
+        .read_exact(&mut masked_len)
+        .await
+        .context("handshake envelope length failed")?;
+
+    let payload_len = unmask_variable_handshake_len(key, label, context, &nonce, masked_len)?;
+    if payload_len < min_payload_len || payload_len > max_payload_len {
+        bail!("handshake envelope length outside configured bounds");
+    }
+
+    let mut payload = vec![0_u8; payload_len];
+    stream
+        .read_exact(&mut payload)
+        .await
+        .context("handshake envelope payload failed")?;
+    xor_variable_handshake_payload(key, label, context, &nonce, &mut payload)?;
+    Ok(payload)
+}
+
+fn unmask_variable_handshake_len(
+    key: &[u8; 32],
+    label: &[u8],
+    context: &[u8],
+    nonce: &[u8; VARIABLE_HANDSHAKE_NONCE_LEN],
+    mut masked_len: [u8; VARIABLE_HANDSHAKE_LEN_LEN],
+) -> Result<usize> {
+    xor_variable_handshake_len(key, label, context, nonce, &mut masked_len)?;
+    Ok(u32::from_be_bytes(masked_len) as usize)
+}
+
+fn xor_variable_handshake_len(
+    key: &[u8; 32],
+    label: &[u8],
+    context: &[u8],
+    nonce: &[u8; VARIABLE_HANDSHAKE_NONCE_LEN],
+    data: &mut [u8; VARIABLE_HANDSHAKE_LEN_LEN],
+) -> Result<()> {
+    xor_hmac_stream_with_domain(key, b"handshake-len:", label, nonce, context, data)
+}
+
+fn xor_variable_handshake_payload(
+    key: &[u8; 32],
+    label: &[u8],
+    context: &[u8],
+    nonce: &[u8; VARIABLE_HANDSHAKE_NONCE_LEN],
+    data: &mut [u8],
+) -> Result<()> {
+    xor_hmac_stream_with_domain(key, b"handshake-payload:", label, nonce, context, data)
+}
+
 fn mask_stealth_handshake_block(
     key: &[u8; 32],
     label: &[u8],
@@ -692,12 +854,23 @@ fn xor_hmac_stream(
     context: &[u8],
     data: &mut [u8],
 ) -> Result<()> {
+    xor_hmac_stream_with_domain(key, b"stealth-handshake:", label, nonce, context, data)
+}
+
+fn xor_hmac_stream_with_domain(
+    key: &[u8; 32],
+    domain: &[u8],
+    label: &[u8],
+    nonce: &[u8; STEALTH_HANDSHAKE_NONCE_LEN],
+    context: &[u8],
+    data: &mut [u8],
+) -> Result<()> {
     let mut offset = 0;
     let mut counter = 0_u32;
     while offset < data.len() {
         let mut mac =
             <HmacSha256 as Mac>::new_from_slice(key).map_err(|_| anyhow!("invalid HMAC key"))?;
-        mac.update(b"stealth-handshake:");
+        mac.update(domain);
         mac.update(label);
         mac.update(nonce);
         mac.update(context);
@@ -856,8 +1029,14 @@ fn unix_now() -> Result<i64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{accept_handshake, connect_handshake, HandshakeConfig};
+    use super::{
+        accept_handshake, accept_handshake_with_users, connect_handshake, parse_plain_client_hello,
+        HandshakeConfig, HandshakeUser, VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+    };
+    use crate::protocol::replay::ReplayCache;
+    use std::sync::Arc;
     use tokio::io::duplex;
+    use tokio::sync::Mutex;
 
     #[tokio::test]
     async fn client_and_server_complete_variable_length_handshake() {
@@ -873,6 +1052,82 @@ mod tests {
 
         client_task.await.unwrap().unwrap();
         server_task.await.unwrap().unwrap();
+    }
+
+    #[test]
+    fn variable_plain_envelope_masks_inner_hello_and_varies_length() {
+        let cfg = HandshakeConfig::new(b"test-secret-that-is-long-enough".to_vec(), 30, 128, 0);
+        let secret = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let hello = super::build_client_hello(&cfg, &secret, cfg.max_handshake_padding).unwrap();
+
+        let envelope_a = super::mask_variable_handshake_envelope(
+            &cfg.auth_key,
+            b"plain-client",
+            &[],
+            &hello.wire,
+            VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+        )
+        .unwrap();
+        let envelope_b = super::mask_variable_handshake_envelope(
+            &cfg.auth_key,
+            b"plain-client",
+            &[],
+            &hello.wire,
+            VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+        )
+        .unwrap();
+
+        assert_ne!(&envelope_a[..32], &hello.wire[..32]);
+        assert_ne!(&envelope_a[..32], &envelope_b[..32]);
+
+        let nonce: [u8; 24] = envelope_a[..24].try_into().unwrap();
+        let masked_len: [u8; 4] = envelope_a[24..28].try_into().unwrap();
+        let len = super::unmask_variable_handshake_len(
+            &cfg.auth_key,
+            b"plain-client",
+            &[],
+            &nonce,
+            masked_len,
+        )
+        .unwrap();
+        let mut payload = envelope_a[28..28 + len].to_vec();
+        super::xor_variable_handshake_payload(
+            &cfg.auth_key,
+            b"plain-client",
+            &[],
+            &nonce,
+            &mut payload,
+        )
+        .unwrap();
+        parse_plain_client_hello(&cfg, &payload).unwrap();
+    }
+
+    #[tokio::test]
+    async fn variable_plain_handshake_supports_multiple_users() {
+        let good = HandshakeConfig::new(b"good-secret-that-is-long-enough".to_vec(), 30, 128, 2);
+        let other = HandshakeConfig::new(b"other-secret-that-is-long-enough".to_vec(), 30, 128, 2);
+        let users = vec![
+            HandshakeUser {
+                name: "other".to_string(),
+                config: other,
+            },
+            HandshakeUser {
+                name: "good".to_string(),
+                config: good.clone(),
+            },
+        ];
+        let replay = Arc::new(Mutex::new(ReplayCache::new(60)));
+        let (mut client, mut server) = duplex(4096);
+
+        let client_task = tokio::spawn(async move { connect_handshake(&mut client, &good).await });
+        let server_task =
+            tokio::spawn(
+                async move { accept_handshake_with_users(&mut server, &users, replay).await },
+            );
+
+        client_task.await.unwrap().unwrap();
+        let session = server_task.await.unwrap().unwrap();
+        assert_eq!(session.user, "good");
     }
 
     #[tokio::test]

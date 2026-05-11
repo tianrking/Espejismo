@@ -57,7 +57,7 @@ The important layering detail is that the selected mux owns logical streams,
 while `spawn_frame_transport` provides it with a normal `AsyncRead + AsyncWrite`
 object backed by encrypted frames. Local proxy requests become mux streams; the
 physical socket carries only the encrypted transport. `yamux` is the stable
-default, and the in-tree native mux can be enabled for alpha testing.
+default, and the in-tree native mux can be enabled for beta testing.
 
 ### Protocol Stack
 
@@ -76,23 +76,28 @@ Application traffic
 
 ### Handshake
 
-Standard mode starts with a variable-length authenticated client hello:
+Standard mode starts with a variable-length masked handshake envelope:
 
 ```text
-[ HMAC-SHA256 32 ][ UTC timestamp 8 ][ nonce 24 ][ X25519 public key 32 ]
-[ protocol version 2 ][ capabilities 8 ][ puzzle nonce 8 ]
-[ padding length 2 ][ padding 0..N ]
+[ random nonce 24 ][ masked payload length 4 ][ masked payload + random tail padding ]
+
+masked payload:
+[ HMAC-SHA256 ][ UTC timestamp ][ nonce ][ X25519 public key ]
+[ protocol version ][ capabilities ][ puzzle nonce ][ padding length ][ padding ]
 ```
 
-The client solves a bounded SHA-256 leading-zero puzzle over the body before
-computing the HMAC. The remote verifies the puzzle, checks timestamp skew,
-validates the HMAC in constant time, and records the ephemeral public key in a
-bounded replay cache. Session keys are derived with X25519 and HKDF-SHA256.
+The payload length and payload are XOR-masked with HMAC-derived streams keyed by
+the PSK auth key, so the wire does not expose a stable HMAC/timestamp/public-key
+offset or a fixed server-reply size. Inside the masked envelope, the client
+solves a bounded SHA-256 leading-zero puzzle over the body before computing the
+HMAC. The remote verifies the puzzle, checks timestamp skew, validates the HMAC
+in constant time, and records the ephemeral public key in a bounded replay
+cache. Session keys are derived with X25519 and HKDF-SHA256.
 
 When `profile = "stealth"`, the hello exchange is wrapped in two fixed-size
 blocks that match `shared.stealth.frame_size`. The block payload is masked with
 an HMAC-derived XOR stream and random padding, so the handshake does not expose
-the plain-mode hello length or the fixed-size server hello.
+the standard-mode envelope length.
 
 ### Frame Transport
 
@@ -553,7 +558,7 @@ internals and wire format specification live in
   `max_reconnect_attempts` bounds per-request reconnect attempts before the
   local proxy returns a clear error.
 - `[shared.mux]` selects the logical stream multiplexer. `yamux` is the stable
-  default; `native` enables the in-tree alpha mux for testing and benchmarking.
+  default; `native` enables the in-tree beta mux for testing and benchmarking.
   The native mux uses byte-window flow control, bounded per-stream receive
   queues, a max-stream limit, and an idle GOAWAY timeout.
 - `[[remote.users]]` enables multiple independent server users, each with its

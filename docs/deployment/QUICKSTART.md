@@ -196,7 +196,7 @@ The most important knobs are:
 - `shared.max_streams`: concurrent logical stream limit per physical tunnel.
 - `shared.idle_timeout_secs`: idle stream timeout.
 - `shared.mux.mode`: logical stream multiplexer. Keep `yamux` for production
-  stability; use `native` for the in-tree alpha mux test path.
+  stability; use `native` for the in-tree beta mux test path.
 - `shared.mux.native_initial_window_bytes`: native mux send window per stream.
 - `shared.mux.native_stream_buffer_frames`: native mux bounded receive queue per
   stream.

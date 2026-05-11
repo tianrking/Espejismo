@@ -59,7 +59,7 @@ gestiona los streams logicos, mientras `spawn_frame_transport` le proporciona
 un objeto `AsyncRead + AsyncWrite` normal respaldado por frames cifrados. Las
 solicitudes del proxy local se convierten en streams mux; el socket fisico
 transporta solo el transporte cifrado. `yamux` es el valor estable por defecto,
-y el mux nativo del arbol puede activarse para pruebas alpha.
+y el mux nativo del arbol puede activarse para pruebas beta.
 
 ### Pila de Protocolo
 
@@ -78,26 +78,30 @@ Trafico de aplicacion
 
 ### Handshake
 
-El modo estandar comienza con un hello de cliente autenticado de longitud
-variable:
+El modo estandar comienza con un envelope de handshake enmascarado y de
+longitud variable:
 
 ```text
-[ HMAC-SHA256 32 ][ timestamp UTC 8 ][ nonce 24 ][ clave publica X25519 32 ]
-[ version de protocolo 2 ][ capacidades 8 ][ nonce puzzle 8 ]
-[ longitud padding 2 ][ padding 0..N ]
+[ nonce aleatorio 24 ][ longitud de payload enmascarada 4 ][ payload enmascarado + padding aleatorio final ]
+
+payload enmascarado:
+[ HMAC-SHA256 ][ timestamp UTC ][ nonce ][ clave publica X25519 ]
+[ version de protocolo ][ capacidades ][ nonce puzzle ][ longitud padding ][ padding ]
 ```
 
-El cliente resuelve un puzzle acotado de SHA-256 con ceros iniciales sobre el
-cuerpo antes de calcular el HMAC. El remoto verifica el puzzle, comprueba la
-desviacion de timestamp, valida el HMAC en tiempo constante, y registra la
-clave publica efimera en una cache de replay acotada. Las claves de sesion se
-derivan con X25519 y HKDF-SHA256.
+La longitud del payload y el payload se enmascaran con flujos XOR derivados de
+HMAC y de la clave de autenticacion PSK, por lo que el cable no expone offsets
+estables de HMAC/timestamp/clave publica ni un tamano fijo de respuesta del
+servidor. Dentro del envelope enmascarado, el cliente resuelve un puzzle acotado
+de SHA-256 con ceros iniciales sobre el cuerpo antes de calcular el HMAC. El
+remoto verifica el puzzle, comprueba la desviacion de timestamp, valida el HMAC
+en tiempo constante, y registra la clave publica efimera en una cache de replay
+acotada. Las claves de sesion se derivan con X25519 y HKDF-SHA256.
 
 Cuando `profile = "stealth"`, el intercambio hello se envuelve en dos bloques
 de tamano fijo que coinciden con `shared.stealth.frame_size`. La carga util
 del bloque esta enmascarada con un flujo XOR derivado de HMAC y padding
-aleatorio, por lo que el handshake no expone la longitud del hello en modo
-plain ni el hello del servidor de tamano fijo.
+aleatorio, por lo que el handshake no expone la longitud del envelope estandar.
 
 ### Transporte de Frames
 
@@ -566,7 +570,7 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   `max_reconnect_attempts` limita los reintentos por solicitud antes de devolver
   un error claro en el proxy local.
 - `[shared.mux]` selecciona el multiplexor de streams logicos. `yamux` es el
-  valor estable por defecto; `native` activa el mux alpha del arbol para pruebas
+  valor estable por defecto; `native` activa el mux beta del arbol para pruebas
   y benchmarks. El mux nativo usa control de flujo por ventana de bytes, colas
   acotadas por stream, limite de streams, y timeout idle con GOAWAY.
 - `[[remote.users]]` habilita multiples usuarios remotos independientes, cada

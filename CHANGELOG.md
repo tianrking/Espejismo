@@ -15,6 +15,9 @@
 
 ### Fixed
 
+- Standard handshakes now use a variable-length masked envelope for both client
+  hello and server reply, removing fixed cleartext field offsets from the
+  default `balanced` profile while preserving robust length-based parsing.
 - macOS route manager now imports the split parser types required by darwin
   release builds.
 - Native mux batches WINDOW_UPDATE frames until buffered payload is consumed and
@@ -35,7 +38,7 @@
 ## v0.0.4
 
 `v0.0.4` focuses on production hardening for the TCP-first tunnel path, native
-TUN takeover, native mux alpha hardening, tunnel pool scheduling, and release
+TUN takeover, initial native mux hardening, tunnel pool scheduling, and release
 quality gates.
 
 ### Added
@@ -63,7 +66,7 @@ quality gates.
   open-stream latency, active streams, and bytes.
 - Unix stress smoke script covering single-stream traffic, many small requests,
   mixed-lane traffic, remote restart recovery, and optional soak loops.
-- Native mux alpha selectable with `[shared.mux].mode = "native"` while yamux
+- Native mux selectable with `[shared.mux].mode = "native"` while yamux
   remains the default fallback.
 - Mux benchmark helper comparing yamux and native stress runs.
 - Native mux resource controls: byte-window flow control, bounded per-stream

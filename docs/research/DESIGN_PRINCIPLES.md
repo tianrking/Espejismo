@@ -22,12 +22,14 @@ out of scope.
 
 ## Mask Metadata Without Sacrificing Stability
 
-The standard encrypted transport uses length-based super-frames for robust async
-I/O, but the 4-byte length field is masked with an HKDF-derived per-direction
-sequence mask. This removes the plaintext length signal while preserving stable
-framing. Stealth mode intentionally trades that variable-length framing for
-fixed-size encrypted blocks and paced padding when the operator chooses the
-stealth profile.
+The standard handshake uses a variable-length masked envelope instead of placing
+the HMAC, timestamp, ephemeral public key, and server reply at fixed cleartext
+offsets. The standard encrypted transport still uses length-based super-frames
+for robust async I/O, but the 4-byte length field is masked with an HKDF-derived
+per-direction sequence mask. This removes plaintext length and handshake-layout
+signals while preserving stable parsing. Stealth mode intentionally trades that
+variable-length framing for fixed-size encrypted blocks and paced padding when
+the operator chooses the stealth profile.
 
 ## Bounded Public-Side Resource Use
 
