@@ -15,7 +15,7 @@ use espejismo_core::{
 use futures::StreamExt;
 use rand::seq::SliceRandom;
 use rand::Rng;
-use tokio::io::{copy_bidirectional, AsyncWriteExt};
+use tokio::io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{lookup_host, TcpListener, TcpStream, UdpSocket};
 use tokio::sync::Semaphore;
 use tokio::time::{sleep, timeout, Duration};
@@ -415,6 +415,9 @@ async fn connect_egress_tcp(authority: &str, egress: &EgressPolicy) -> Result<Tc
     egress
         .validate_authority(authority)
         .context("egress policy rejected target")?;
+    if let Some(proxy) = &egress.socks5_proxy {
+        return connect_via_socks5_proxy(proxy, authority).await;
+    }
     let mut last_error = None;
     for addr in lookup_host(authority)
         .await
@@ -431,6 +434,52 @@ async fn connect_egress_tcp(authority: &str, egress: &EgressPolicy) -> Result<Tc
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no resolved egress address")))
         .with_context(|| format!("connect {authority}"))
+}
+
+async fn connect_via_socks5_proxy(proxy: &str, authority: &str) -> Result<TcpStream> {
+    let (host, port) = espejismo_core::split_authority(authority)?;
+    let mut stream = TcpStream::connect(proxy)
+        .await
+        .with_context(|| format!("connect SOCKS5 proxy {proxy}"))?;
+    stream.write_all(&[0x05, 0x01, 0x00]).await?;
+    let mut method = [0_u8; 2];
+    stream.read_exact(&mut method).await?;
+    anyhow::ensure!(
+        method == [0x05, 0x00],
+        "SOCKS5 proxy rejected no-auth method"
+    );
+    let host_bytes = host.as_bytes();
+    anyhow::ensure!(
+        host_bytes.len() <= u8::MAX as usize,
+        "SOCKS5 proxy target host too long"
+    );
+    let mut request = vec![0x05, 0x01, 0x00, 0x03, host_bytes.len() as u8];
+    request.extend_from_slice(host_bytes);
+    request.extend_from_slice(&port.to_be_bytes());
+    stream.write_all(&request).await?;
+    let mut head = [0_u8; 4];
+    stream.read_exact(&mut head).await?;
+    anyhow::ensure!(
+        head[0] == 0x05 && head[1] == 0x00,
+        "SOCKS5 proxy CONNECT failed"
+    );
+    match head[3] {
+        0x01 => {
+            let mut skip = [0_u8; 6];
+            stream.read_exact(&mut skip).await?;
+        }
+        0x03 => {
+            let len = stream.read_u8().await? as usize;
+            let mut skip = vec![0_u8; len + 2];
+            stream.read_exact(&mut skip).await?;
+        }
+        0x04 => {
+            let mut skip = [0_u8; 18];
+            stream.read_exact(&mut skip).await?;
+        }
+        atyp => anyhow::bail!("SOCKS5 proxy returned unsupported address type {atyp}"),
+    }
+    Ok(stream)
 }
 
 async fn relay_udp_datagram(

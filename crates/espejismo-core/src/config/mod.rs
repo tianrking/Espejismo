@@ -84,7 +84,7 @@ pub struct StealthConfig {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct LocalConfig {
-    pub server: Option<SocketAddr>,
+    pub server: Option<String>,
     #[serde(default = "default_socks5_listen")]
     pub socks5_listen: Option<SocketAddr>,
     #[serde(default = "default_http_listen")]
@@ -155,6 +155,8 @@ pub struct EgressConfig {
     pub allow_ports: Vec<u16>,
     #[serde(default)]
     pub block_ports: Vec<u16>,
+    #[serde(default)]
+    pub socks5_proxy: Option<String>,
 }
 
 impl From<EgressConfig> for EgressPolicy {
@@ -165,6 +167,7 @@ impl From<EgressConfig> for EgressPolicy {
             block_hosts: config.block_hosts,
             allow_ports: config.allow_ports,
             block_ports: config.block_ports,
+            socks5_proxy: config.socks5_proxy,
         }
     }
 }
@@ -360,7 +363,7 @@ pub fn example_config() -> String {
             ..SharedConfig::default()
         },
         local: LocalConfig {
-            server: Some("127.0.0.1:6690".parse().expect("valid address")),
+            server: Some("127.0.0.1:6690".to_string()),
             auth: Some(ProxyAuth {
                 username: "local-user".to_string(),
                 password: "local-pass".to_string(),

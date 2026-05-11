@@ -66,3 +66,4 @@ allow_hosts = []
 block_hosts = []
 allow_ports = []
 block_ports = []
+# socks5_proxy = "127.0.0.1:1080"

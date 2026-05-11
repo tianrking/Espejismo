@@ -15,6 +15,8 @@ pub struct EgressPolicy {
     pub allow_ports: Vec<u16>,
     #[serde(default)]
     pub block_ports: Vec<u16>,
+    #[serde(default)]
+    pub socks5_proxy: Option<String>,
 }
 
 impl EgressPolicy {

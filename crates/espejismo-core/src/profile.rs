@@ -1,8 +1,7 @@
-use std::net::SocketAddr;
-
 use anyhow::{Context, Result};
 use base64::Engine;
 use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
 
 use crate::config::EspejismoConfig;
 use crate::ingress::ProxyAuth;
@@ -12,7 +11,7 @@ const PROFILE_PREFIX: &str = "espejismo://import/";
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct ClientProfile {
     pub name: String,
-    pub server: SocketAddr,
+    pub server: String,
     pub psk: String,
     #[serde(default)]
     pub socks5_listen: Option<SocketAddr>,
@@ -29,6 +28,7 @@ impl ClientProfile {
             server: config
                 .local
                 .server
+                .clone()
                 .context("local.server is required for a client profile")?,
             psk: config
                 .shared
@@ -75,7 +75,7 @@ mod tests {
     fn profile_url_roundtrips() {
         let profile = ClientProfile {
             name: "default".to_string(),
-            server: "127.0.0.1:6690".parse().unwrap(),
+            server: "example.com:6690".to_string(),
             psk: "change-me-long-random-secret".to_string(),
             socks5_listen: Some("127.0.0.1:6680".parse().unwrap()),
             http_listen: None,

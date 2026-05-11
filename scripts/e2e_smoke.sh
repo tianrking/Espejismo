@@ -7,6 +7,7 @@ HTTP_ADDR="127.0.0.1"
 PORT_BASE=$((20000 + ($$ % 20000)))
 HTTP_PORT="${PORT_BASE}"
 REMOTE_ADDR="127.0.0.1:$((PORT_BASE + 1))"
+REMOTE_DOMAIN_ADDR="localhost:$((PORT_BASE + 1))"
 SOCKS5_ADDR="127.0.0.1:$((PORT_BASE + 2))"
 HTTP_PROXY_ADDR="127.0.0.1:$((PORT_BASE + 3))"
 LOCAL_ADMIN_ADDR="127.0.0.1:$((PORT_BASE + 4))"
@@ -58,7 +59,7 @@ puzzle_bits = 12
 max_streams = 2
 
 [local]
-server = "${REMOTE_ADDR}"
+server = "${REMOTE_DOMAIN_ADDR}"
 socks5_listen = "${SOCKS5_ADDR}"
 http_listen = "${HTTP_PROXY_ADDR}"
 handshake_padding = 256

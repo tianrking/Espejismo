@@ -42,7 +42,7 @@ struct Args {
     #[arg(long)]
     http_listen: Option<SocketAddr>,
     #[arg(long)]
-    server: Option<SocketAddr>,
+    server: Option<String>,
     #[arg(long, env = "ESPEJISMO_PSK")]
     psk: Option<String>,
     #[arg(long)]
@@ -79,7 +79,7 @@ struct Args {
 
 #[derive(Clone)]
 struct LocalRuntime {
-    server: SocketAddr,
+    server: String,
     socks5_listen: Option<SocketAddr>,
     http_listen: Option<SocketAddr>,
     handshake: HandshakeConfig,
@@ -132,7 +132,7 @@ async fn main() -> Result<()> {
     }
 
     let tunnel = Arc::new(TunnelManager::new(
-        runtime.server,
+        runtime.server.clone(),
         runtime.handshake,
         runtime.frames,
         runtime.tunnel_buffer,
@@ -236,6 +236,7 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
         .context("provide psk in config, --psk, or ESPEJISMO_PSK")?;
     let server = args
         .server
+        .clone()
         .or(config.local.server)
         .context("provide local.server in config or --server")?;
     let stealth_frame_size = config.shared.stealth.frame_size;
@@ -287,7 +288,7 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
 
 #[derive(Clone)]
 struct TunnelManager {
-    server: SocketAddr,
+    server: String,
     handshake: HandshakeConfig,
     frames: FrameOptions,
     tunnel_buffer: usize,
@@ -297,7 +298,7 @@ struct TunnelManager {
 
 impl TunnelManager {
     fn new(
-        server: SocketAddr,
+        server: String,
         handshake: HandshakeConfig,
         frames: FrameOptions,
         tunnel_buffer: usize,
@@ -318,7 +319,7 @@ impl TunnelManager {
         if guard.is_none() {
             *guard = Some(
                 connect_mux(
-                    self.server,
+                    self.server.clone(),
                     self.handshake.clone(),
                     self.frames.clone(),
                     self.tunnel_buffer,
@@ -338,7 +339,7 @@ impl TunnelManager {
         }
         *guard = Some(
             connect_mux(
-                self.server,
+                self.server.clone(),
                 self.handshake.clone(),
                 self.frames.clone(),
                 self.tunnel_buffer,
@@ -356,13 +357,13 @@ impl TunnelManager {
 }
 
 async fn connect_mux(
-    server: SocketAddr,
+    server: String,
     cfg: HandshakeConfig,
     options: FrameOptions,
     tunnel_buffer: usize,
     metrics: Metrics,
 ) -> Result<Control> {
-    let mut upstream = TcpStream::connect(server).await?;
+    let mut upstream = TcpStream::connect(server.as_str()).await?;
     metrics.inc_active_physical();
     let keys = match connect_handshake(&mut upstream, &cfg).await {
         Ok(keys) => {

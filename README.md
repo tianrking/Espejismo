@@ -214,7 +214,7 @@ ESPEJISMO_PSK='change-me-long-random-secret' \
 cargo run --bin espejismo-local -- \
   --socks5-listen 127.0.0.1:6680 \
   --http-listen 127.0.0.1:6681 \
-  --server 127.0.0.1:6690
+  --server remote.example.com:6690
 ```
 
 ### Windows PowerShell
@@ -390,6 +390,10 @@ internals and wire format specification live in
   and `/metrics`. Use `token` outside trusted loopback-only environments.
 - `[remote.egress]` controls server-side outbound policy with host and port
   allow/block lists.
+- `local.server` and `--server` accept either `ip:port` or `domain:port`; the
+  local client resolves the name before opening the physical tunnel.
+- `[remote.egress].socks5_proxy` optionally chains TCP egress through another
+  SOCKS5 proxy.
 - `espejismo-local --print-client-profile` emits an
   `espejismo://import/...` profile URL that can be imported with
   `--import-profile`.
