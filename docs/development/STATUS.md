@@ -7,6 +7,8 @@
 - SOCKS5 UDP ASSOCIATE relay for request/response datagrams.
 - UDP underlay packet codec and reliability core with sequence numbers, ACKs,
   cumulative delivery, and retransmission scheduling.
+- UDP underlay congestion-control core with slow-start, additive growth, and
+  loss backoff.
 - HTTP proxy ingress with optional Basic proxy authentication, CONNECT, and
   absolute-form HTTP forwarding.
 - Shared TOML configuration and base64 configuration import.
@@ -19,6 +21,7 @@
 - Remote runtime config reload/apply through the authenticated admin endpoint.
 - Client and remote release update checks with configurable metadata URL.
 - Server-side egress policy for host/port allow and block rules.
+- SOCKS5 chained TCP egress and SOCKS5 UDP ASSOCIATE chained UDP egress.
 - Variable-length authenticated first packet.
 - Protocol version and capability negotiation in the authenticated handshake.
 - X25519 ephemeral key exchange and HKDF session keys.
@@ -49,7 +52,7 @@
 - WASM transport crate. The current runtime uses Tokio TCP and is native-first.
 - Richer multi-profile control plane and log rotation policy.
 - OS-specific TCP_INFO congestion telemetry. Current backpressure is portable write-latency based.
-- UDP underlay socket integration and congestion controller wiring.
+- UDP underlay socket integration.
 
 ## Architecture Direction
 

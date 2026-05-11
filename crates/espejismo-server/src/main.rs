@@ -744,6 +744,9 @@ async fn relay_udp_datagram(
     egress
         .validate_authority(authority)
         .context("egress policy rejected UDP target")?;
+    if let Some(proxy) = &egress.socks5_proxy {
+        return relay_udp_via_socks5_proxy(proxy, authority, payload, idle).await;
+    }
     let mut selected = None;
     for addr in lookup_host(authority)
         .await
@@ -771,6 +774,109 @@ async fn relay_udp_datagram(
     .await??;
     response.truncate(n);
     Ok(response)
+}
+
+async fn relay_udp_via_socks5_proxy(
+    proxy: &str,
+    authority: &str,
+    payload: &[u8],
+    idle: Duration,
+) -> Result<Vec<u8>> {
+    let (host, port) = espejismo_core::split_authority(authority)?;
+    let mut control = TcpStream::connect(proxy)
+        .await
+        .with_context(|| format!("connect SOCKS5 proxy {proxy}"))?;
+    control.write_all(&[0x05, 0x01, 0x00]).await?;
+    let mut method = [0_u8; 2];
+    control.read_exact(&mut method).await?;
+    anyhow::ensure!(
+        method == [0x05, 0x00],
+        "SOCKS5 proxy rejected no-auth method"
+    );
+
+    control
+        .write_all(&[0x05, 0x03, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .await?;
+    let relay = read_socks5_reply_addr(&mut control).await?;
+    let bind = if relay.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    };
+    let socket = UdpSocket::bind(bind).await?;
+    socket.connect(relay).await?;
+
+    let request = encode_socks5_udp_datagram(&host, port, payload)?;
+    socket.send(&request).await?;
+    let mut response = vec![0_u8; 65_535];
+    let n = timeout(
+        idle.min(Duration::from_secs(10)),
+        socket.recv(&mut response),
+    )
+    .await??;
+    decode_socks5_udp_datagram(&response[..n])
+}
+
+async fn read_socks5_reply_addr(stream: &mut TcpStream) -> Result<SocketAddr> {
+    let mut head = [0_u8; 4];
+    stream.read_exact(&mut head).await?;
+    anyhow::ensure!(
+        head[0] == 0x05 && head[1] == 0x00,
+        "SOCKS5 UDP ASSOCIATE failed"
+    );
+    let mut host = match head[3] {
+        0x01 => {
+            let mut ip = [0_u8; 4];
+            stream.read_exact(&mut ip).await?;
+            std::net::IpAddr::from(ip)
+        }
+        0x04 => {
+            let mut ip = [0_u8; 16];
+            stream.read_exact(&mut ip).await?;
+            std::net::IpAddr::from(ip)
+        }
+        atyp => anyhow::bail!("SOCKS5 proxy returned unsupported UDP relay address type {atyp}"),
+    };
+    let port = stream.read_u16().await?;
+    if host.is_unspecified() {
+        host = stream.peer_addr()?.ip();
+    }
+    Ok(SocketAddr::new(host, port))
+}
+
+fn encode_socks5_udp_datagram(host: &str, port: u16, payload: &[u8]) -> Result<Vec<u8>> {
+    let host_bytes = host.as_bytes();
+    anyhow::ensure!(
+        host_bytes.len() <= u8::MAX as usize,
+        "SOCKS5 UDP target host too long"
+    );
+    let mut out = Vec::with_capacity(6 + host_bytes.len() + payload.len());
+    out.extend_from_slice(&[0x00, 0x00, 0x00, 0x03, host_bytes.len() as u8]);
+    out.extend_from_slice(host_bytes);
+    out.extend_from_slice(&port.to_be_bytes());
+    out.extend_from_slice(payload);
+    Ok(out)
+}
+
+fn decode_socks5_udp_datagram(input: &[u8]) -> Result<Vec<u8>> {
+    anyhow::ensure!(input.len() >= 6, "SOCKS5 UDP response too short");
+    anyhow::ensure!(
+        input[0] == 0 && input[1] == 0 && input[2] == 0,
+        "SOCKS5 UDP response has unsupported fragmentation"
+    );
+    let mut offset = 4;
+    match input[3] {
+        0x01 => offset += 4,
+        0x03 => {
+            anyhow::ensure!(input.len() > offset, "SOCKS5 UDP domain length missing");
+            offset += 1 + input[offset] as usize;
+        }
+        0x04 => offset += 16,
+        atyp => anyhow::bail!("SOCKS5 UDP response has unsupported address type {atyp}"),
+    }
+    offset += 2;
+    anyhow::ensure!(input.len() >= offset, "SOCKS5 UDP response truncated");
+    Ok(input[offset..].to_vec())
 }
 
 async fn reject_or_quarantine(
@@ -952,7 +1058,10 @@ fn unix_secs(time: SystemTime) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_builtin_fallback_response, looks_like_http_probe, FallbackHttpRuntime};
+    use super::{
+        build_builtin_fallback_response, decode_socks5_udp_datagram, encode_socks5_udp_datagram,
+        looks_like_http_probe, FallbackHttpRuntime,
+    };
     use tokio::time::Duration;
 
     #[test]
@@ -987,5 +1096,12 @@ mod tests {
         assert!(response.contains("\r\nLast-Modified: "));
         assert!(response.contains("\r\nETag: "));
         assert!(response.contains("\r\nContent-Length: 15\r\n"));
+    }
+
+    #[test]
+    fn socks5_udp_datagram_codec_roundtrips_payload() {
+        let encoded = encode_socks5_udp_datagram("example.com", 443, b"payload").unwrap();
+        assert_eq!(&encoded[..5], &[0, 0, 0, 3, 11]);
+        assert_eq!(decode_socks5_udp_datagram(&encoded).unwrap(), b"payload");
     }
 }

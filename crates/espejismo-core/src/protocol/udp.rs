@@ -121,6 +121,62 @@ pub struct UdpReliability {
     retransmit_after: Duration,
 }
 
+#[derive(Clone, Debug)]
+pub struct UdpCongestionController {
+    cwnd_bytes: usize,
+    ssthresh_bytes: usize,
+    inflight_bytes: usize,
+    min_cwnd_bytes: usize,
+    max_datagram_bytes: usize,
+}
+
+impl UdpCongestionController {
+    pub fn new(initial_cwnd_bytes: usize, max_datagram_bytes: usize) -> Self {
+        let max_datagram_bytes = max_datagram_bytes.max(1);
+        let min_cwnd_bytes = max_datagram_bytes * 2;
+        Self {
+            cwnd_bytes: initial_cwnd_bytes.max(min_cwnd_bytes),
+            ssthresh_bytes: usize::MAX / 2,
+            inflight_bytes: 0,
+            min_cwnd_bytes,
+            max_datagram_bytes,
+        }
+    }
+
+    pub fn can_send(&self, bytes: usize) -> bool {
+        self.inflight_bytes.saturating_add(bytes) <= self.cwnd_bytes
+    }
+
+    pub fn on_send(&mut self, bytes: usize) {
+        self.inflight_bytes = self.inflight_bytes.saturating_add(bytes);
+    }
+
+    pub fn on_ack(&mut self, bytes: usize) {
+        self.inflight_bytes = self.inflight_bytes.saturating_sub(bytes);
+        if self.cwnd_bytes < self.ssthresh_bytes {
+            self.cwnd_bytes = self.cwnd_bytes.saturating_add(bytes.max(1));
+        } else {
+            let increment =
+                (self.max_datagram_bytes * bytes.max(1) / self.cwnd_bytes.max(1)).max(1);
+            self.cwnd_bytes = self.cwnd_bytes.saturating_add(increment);
+        }
+    }
+
+    pub fn on_loss(&mut self) {
+        self.ssthresh_bytes = (self.cwnd_bytes / 2).max(self.min_cwnd_bytes);
+        self.cwnd_bytes = self.ssthresh_bytes;
+        self.inflight_bytes = 0;
+    }
+
+    pub fn cwnd_bytes(&self) -> usize {
+        self.cwnd_bytes
+    }
+
+    pub fn inflight_bytes(&self) -> usize {
+        self.inflight_bytes
+    }
+}
+
 impl UdpReliability {
     pub fn new(session_id: u64, retransmit_after: Duration) -> Self {
         Self {
@@ -259,5 +315,20 @@ mod tests {
             ]
         );
         assert_eq!(ack.ack, 2);
+    }
+
+    #[test]
+    fn congestion_grows_and_halves_on_loss() {
+        let mut cc = UdpCongestionController::new(2400, 1200);
+        assert!(cc.can_send(1200));
+        cc.on_send(1200);
+        assert_eq!(cc.inflight_bytes(), 1200);
+        cc.on_ack(1200);
+        assert_eq!(cc.inflight_bytes(), 0);
+        assert!(cc.cwnd_bytes() > 2400);
+        let grown = cc.cwnd_bytes();
+        cc.on_loss();
+        assert!(cc.cwnd_bytes() < grown);
+        assert!(cc.cwnd_bytes() >= 2400);
     }
 }

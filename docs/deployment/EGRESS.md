@@ -22,9 +22,10 @@ Rules:
 - `allow_ports`: optional port allowlist.
 - `block_ports`: port blocklist. Block rules are evaluated before allow rules.
 - `socks5_proxy`: optional no-auth SOCKS5 proxy used for TCP egress chaining
-  after policy validation.
+  and UDP egress chaining through SOCKS5 UDP ASSOCIATE after policy validation.
 
 The policy validates literal IPs immediately. Domain names are validated as
-names before dialing, and resolved TCP/UDP addresses are filtered again before
-the remote endpoint connects or sends a datagram. UDP egress is always direct in
-this version; chained egress currently applies to TCP streams.
+names before dialing, and resolved direct TCP/UDP addresses are filtered again
+before the remote endpoint connects or sends a datagram. When `socks5_proxy` is
+set, UDP datagrams are wrapped in RFC 1928 UDP ASSOCIATE packets and sent to the
+proxy relay.

@@ -418,8 +418,8 @@ internals and wire format specification live in
 - `[remote.users.bandwidth]` sets an optional per-user aggregate byte-per-second
   limit across TCP and UDP relay traffic. See
   [docs/deployment/USERS.md](docs/deployment/USERS.md).
-- `[remote.egress].socks5_proxy` optionally chains TCP egress through another
-  SOCKS5 proxy.
+- `[remote.egress].socks5_proxy` optionally chains TCP egress and UDP egress
+  through another SOCKS5 proxy. UDP uses SOCKS5 UDP ASSOCIATE.
 - `espejismo-local --print-client-profile` emits an
   `espejismo://import/...` profile URL that can be imported with
   `--import-profile`.

@@ -34,6 +34,8 @@ pub use protocol::request::{
     read_tunnel_request, write_tcp_connect, write_udp_datagram, TunnelRequest, CMD_TCP_CONNECT,
     CMD_UDP_DATAGRAM,
 };
-pub use protocol::udp::{DeliveredDatagram, UdpPacket, UdpPacketKind, UdpReliability};
+pub use protocol::udp::{
+    DeliveredDatagram, UdpCongestionController, UdpPacket, UdpPacketKind, UdpReliability,
+};
 pub use transport::{idle_copy_bidirectional, spawn_frame_transport};
 pub use updater::{check_for_update, default_release_url, UpdateInfo};
