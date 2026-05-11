@@ -11,6 +11,21 @@ tunnel_buffer = 1048576
 idle_timeout_secs = 300
 max_streams = 256
 
+[shared.tcp]
+nodelay = true
+keepalive_secs = 30
+heartbeat_secs = 30
+user_timeout_ms = 30000
+send_buffer_bytes = 1048576
+recv_buffer_bytes = 1048576
+# congestion_control = "bbr"
+
+[shared.pacing]
+enabled = true
+max_bytes_per_sec = 0
+burst_bytes = 65536
+min_write_bytes = 1024
+
 [shared.obfuscation]
 profile = "balanced"
 randomize_chunks = true
@@ -30,6 +45,20 @@ handshake_padding = 256
 [local.auth]
 username = "local-user"
 password = "local-pass"
+
+[local.tun]
+enabled = false
+name = "esptun0"
+address = "10.255.0.2"
+prefix = 24
+destination = "10.255.0.1"
+mtu = 1500
+
+[local.tun.route]
+enabled = false
+protect_server_route = true
+dns_enabled = false
+dns_servers = ["1.1.1.1", "8.8.8.8"]
 
 [logging]
 level = "info"

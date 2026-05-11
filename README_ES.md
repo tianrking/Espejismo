@@ -12,9 +12,9 @@
 </p>
 
 Un tunel de transporte cifrado multiplataforma nativo en Rust para redes publicas
-y no confiables. Ingreso local via SOCKS5 y HTTP, secreto directo con X25519,
-frames cifrados con XChaCha20-Poly1305, multiplexacion yamux, padding adaptativo
-y puzzles de cliente — todo en Rust seguro sin TUN/TAP ni dependencias del sistema.
+y no confiables. Ingreso local via SOCKS5, HTTP, y TUN nativo opcional, secreto
+directo con X25519, frames cifrados con XChaCha20-Poly1305, multiplexacion yamux,
+padding adaptativo, pacing amigable con TCP, y puzzles de cliente.
 
 Version actual: `v0.0.2`.
 
@@ -445,6 +445,10 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
 - `espejismo-local --socks5-listen` habilita el proxy SOCKS5 local.
 - `espejismo-local --http-listen` habilita el proxy HTTP local.
+- `[local.tun]` habilita un ingreso TUN nativo opcional para capturar trafico
+  del sistema. Convierte flujos TCP y datagramas UDP de la interfaz virtual al
+  tunel cifrado TCP/yamux existente. La toma de rutas y DNS en Linux es
+  explicita con `[local.tun.route]`; ver [docs/deployment/TUN.md](docs/deployment/TUN.md).
 - `[local.auth]` habilita autenticacion SOCKS5 por usuario/contrasena y
   autenticacion HTTP Basic del proxy. Omitir para un listener sin autenticacion
   solo en loopback confiable.
@@ -453,12 +457,18 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - `--log-level`, `--log-format`, `--log-file`, y `--no-log-ansi` sobreescriben
   la configuracion de logging para ambos binarios.
 - `[admin]` habilita un endpoint HTTP admin con `/healthz`, `/status`,
-  `/metrics`, y `/reload`/`/apply` en el remoto. Usar `token` fuera de
-  entornos loopback confiables.
+  `/connections`, `/metrics`, y `/reload`/`/apply` en el remoto. Usar `token`
+  fuera de entornos loopback confiables.
 - `[remote.egress]` controla la politica de salida del servidor con listas de
   hosts y puertos permitidos/bloqueados.
 - `local.server` y `--server` aceptan `ip:puerto` o `dominio:puerto`; el
   cliente local resuelve el nombre antes de abrir el tunel fisico.
+- `[shared.tcp]` controla TCP_NODELAY, keepalive, frames heartbeat, buffers de
+  envio/recepcion, y TCP_USER_TIMEOUT / control de congestion opcionales en
+  Linux, por ejemplo `bbr` o `cubic`.
+- `[shared.pacing]` habilita pacing de escritura amigable con TCP.
+  `max_bytes_per_sec = 0` mantiene throughput ilimitado y conserva los ajustes
+  de burst y coalescing.
 - `[[remote.users]]` habilita multiples usuarios remotos independientes, cada
   uno con su propia PSK. Si no hay usuarios configurados, el servidor usa
   `shared.psk`.
@@ -479,9 +489,15 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   mas nueva. `--update-url` puede apuntar a un endpoint JSON compatible con
   `tag_name` o `latest_version`. Ver
   [docs/deployment/UPDATES.md](docs/deployment/UPDATES.md).
+- `--check-config --config espejismo.toml` valida errores comunes de despliegue:
+  DNS, bind de listeners, PSK debil, admin sin token, egress amplio, usuarios
+  duplicados, cuotas, ancho de banda, y pacing.
 - SOCKS5 soporta `CONNECT` TCP y `ASSOCIATE` UDP. Los datagramas UDP se
   transportan por streams yamux autenticados y son verificados por la politica
   de salida remota.
+- La ruta estable de produccion es TCP/yamux. SOCKS5 UDP ASSOCIATE es un rele
+  UDP de aplicacion sobre ese tunel TCP; el underlay UDP fisico queda reservado
+  para experimentos y no es el modo recomendado de despliegue.
 - `--max-padding` controla el tamano maximo del payload de los frames de padding
   cifrados.
 - `--padding-chance-percent` controla la frecuencia con la que se intenta el padding.

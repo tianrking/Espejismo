@@ -22,7 +22,17 @@ Current release target: `v0.0.2`.
 - Per-user rolling byte quotas and aggregate relay bandwidth limits.
 - Configurable compact, pretty, or JSON logging with optional file output.
 - Admin HTTP endpoint with health, status, Prometheus-style metrics, and reload.
+- Admin `/connections` and enriched `/status` runtime health with tunnel state,
+  reconnect count, recent errors, egress policy version, and config apply time.
 - Remote runtime config reload/apply through the authenticated admin endpoint.
+- Config diagnostics through `--check-config` for both local and remote.
+- Shared TCP socket options: TCP_NODELAY, keepalive, heartbeat frames, socket
+  buffers, Linux TCP_USER_TIMEOUT, and optional congestion-control selection.
+- TCP-friendly pacing knobs for burst budget, rate cap, and minimum write size.
+- Optional local native TUN ingress that maps virtual-interface TCP/UDP traffic
+  into the existing encrypted TCP/yamux tunnel.
+- Linux TUN route/DNS manager with remote-server route protection, default-route
+  takeover, `resolvectl` DNS takeover, and best-effort shutdown restore.
 - Client and remote release update checks with configurable metadata URL.
 - Server-side egress policy for host/port allow and block rules.
 - SOCKS5 chained TCP egress and SOCKS5 UDP ASSOCIATE chained UDP egress.
@@ -52,10 +62,12 @@ Current release target: `v0.0.2`.
 ## Not Yet Implemented
 
 - Transparent migration of already-active yamux streams across a new physical tunnel.
+- Automatic macOS/Windows route and DNS takeover for TUN mode.
 - Browser extension packaging.
 - WASM transport crate. The current runtime uses Tokio TCP and is native-first.
 - Richer multi-profile control plane and log rotation policy.
-- OS-specific TCP_INFO congestion telemetry. Current backpressure is portable write-latency based.
+- OS-specific TCP_INFO congestion telemetry. Current backpressure is portable
+  write-latency based and pacing is application-level.
 - UDP underlay socket integration.
 
 ## Architecture Direction

@@ -68,6 +68,20 @@ psk = "${PSK}"
 puzzle_bits = 12
 max_streams = 2
 
+[shared.tcp]
+nodelay = true
+keepalive_secs = 30
+heartbeat_secs = 5
+user_timeout_ms = 30000
+send_buffer_bytes = 1048576
+recv_buffer_bytes = 1048576
+
+[shared.pacing]
+enabled = true
+max_bytes_per_sec = 0
+burst_bytes = 65536
+min_write_bytes = 1024
+
 [local]
 server = "${REMOTE_DOMAIN_ADDR}"
 socks5_listen = "${SOCKS5_ADDR}"
@@ -122,6 +136,15 @@ case "${PROFILE_URL}" in
 esac
 cargo run --quiet --bin espejismo-local -- --import-profile "${PROFILE_URL}" --print-client-profile --profile-name smoke-imported \
   | grep -q "espejismo://import/"
+
+cargo run --quiet --bin espejismo-local -- --config "${CONFIG_FILE}" --check-config \
+  | grep -q "config check passed"
+cargo run --quiet --bin espejismo-local -- --config "${CONFIG_FILE}" --tun-enabled --check-config \
+  | grep -q "TUN ingress requested"
+cargo run --quiet --bin espejismo-local -- --config "${CONFIG_FILE}" --tun-enabled --tun-auto-route --tun-auto-dns --check-config \
+  | grep -q "Linux TUN auto-route requested"
+cargo run --quiet --bin espejismo-remote -- --config "${CONFIG_FILE}" --check-config \
+  | grep -q "config check passed"
 
 cargo run --quiet --bin espejismo-remote -- \
   --config-base64 "${CONFIG_B64}" \
@@ -198,7 +221,12 @@ curl --silent --show-error --max-time 5 \
 curl --silent --show-error --max-time 5 \
   -H "Authorization: Bearer ${ADMIN_TOKEN}" \
   "http://${LOCAL_ADMIN_ADDR}/status" \
-  | grep -q "\"role\": \"local\""
+  | grep -q "\"tunnel_state\""
+
+curl --silent --show-error --max-time 5 \
+  -H "Authorization: Bearer ${ADMIN_TOKEN}" \
+  "http://${LOCAL_ADMIN_ADDR}/connections" \
+  | grep -q "\"active_physical_connections\""
 
 curl --silent --show-error --max-time 5 \
   -H "Authorization: Bearer ${ADMIN_TOKEN}" \

@@ -76,6 +76,11 @@ pub struct FrameOptions {
     pub max_chunk: usize,
     pub stealth_frame_size: usize,
     pub stealth_tick_ms: u64,
+    pub pacing_enabled: bool,
+    pub pacing_max_bytes_per_sec: u64,
+    pub pacing_burst_bytes: usize,
+    pub pacing_min_write_bytes: usize,
+    pub heartbeat_secs: u64,
 }
 
 impl Default for FrameOptions {
@@ -92,6 +97,11 @@ impl Default for FrameOptions {
             max_chunk: DATA_CHUNK,
             stealth_frame_size: DEFAULT_STEALTH_FRAME_SIZE,
             stealth_tick_ms: DEFAULT_STEALTH_TICK_MS,
+            pacing_enabled: true,
+            pacing_max_bytes_per_sec: 0,
+            pacing_burst_bytes: 64 * 1024,
+            pacing_min_write_bytes: 1024,
+            heartbeat_secs: 30,
         }
     }
 }
@@ -109,7 +119,12 @@ impl FrameOptions {
         if !self.randomize_chunks {
             return (DATA_CHUNK, DATA_CHUNK);
         }
-        let min = self.min_chunk.clamp(1, DATA_CHUNK);
+        let requested_min = if self.pacing_enabled {
+            self.min_chunk.max(self.pacing_min_write_bytes)
+        } else {
+            self.min_chunk
+        };
+        let min = requested_min.clamp(1, DATA_CHUNK);
         let max = self.max_chunk.clamp(min, DATA_CHUNK);
         (min, max)
     }
@@ -152,6 +167,7 @@ pub struct FrameCodec<S> {
     keys: SessionKeys,
     options: FrameOptions,
     padding_disabled_until: Option<Instant>,
+    next_pace_at: Option<Instant>,
 }
 
 pub struct FrameWriter<W> {
@@ -160,6 +176,7 @@ pub struct FrameWriter<W> {
     keys: SessionKeys,
     options: FrameOptions,
     padding_disabled_until: Option<Instant>,
+    next_pace_at: Option<Instant>,
 }
 
 pub struct FrameReader<R> {
@@ -181,6 +198,7 @@ where
             keys,
             options,
             padding_disabled_until: None,
+            next_pace_at: None,
         }
     }
 
@@ -193,6 +211,7 @@ where
             &self.keys,
             &mut self.tx_seq,
             &self.options,
+            &mut self.next_pace_at,
             frame,
         )
         .await?;
@@ -234,6 +253,7 @@ where
             &self.keys,
             &mut self.tx_seq,
             &self.options,
+            &mut self.next_pace_at,
             Frame {
                 ty: FrameType::Padding,
                 payload,
@@ -262,6 +282,7 @@ where
             keys,
             options,
             padding_disabled_until: None,
+            next_pace_at: None,
         }
     }
 
@@ -274,6 +295,7 @@ where
             &self.keys,
             &mut self.tx_seq,
             &self.options,
+            &mut self.next_pace_at,
             frame,
         )
         .await?;
@@ -295,6 +317,7 @@ where
             &self.keys,
             &mut self.tx_seq,
             &self.options,
+            &mut self.next_pace_at,
             Frame {
                 ty: FrameType::Padding,
                 payload: random_padding(len),
@@ -389,6 +412,7 @@ async fn write_one<S>(
     keys: &SessionKeys,
     tx_seq: &mut u64,
     options: &FrameOptions,
+    next_pace_at: &mut Option<Instant>,
     frame: Frame,
 ) -> Result<Duration>
 where
@@ -396,9 +420,8 @@ where
 {
     maybe_jitter(options).await;
     if options.is_stealth() {
-        return write_stealth_one(stream, keys, tx_seq, options, frame).await;
+        return write_stealth_one(stream, keys, tx_seq, options, next_pace_at, frame).await;
     }
-    let started = Instant::now();
     let seq = *tx_seq;
     let mut plain = Vec::with_capacity(frame.payload.len() + 1);
     plain.push(frame.ty as u8);
@@ -408,6 +431,8 @@ where
     if encrypted.len() > MAX_FRAME {
         bail!("encrypted frame too large");
     }
+    pace_before_write(options, encrypted.len() + 4, next_pace_at).await;
+    let started = Instant::now();
     let masked_len = (encrypted.len() as u32) ^ length_mask(&keys.tx_len_mask, seq)?;
     stream.write_all(&masked_len.to_be_bytes()).await?;
     stream.write_all(&encrypted).await?;
@@ -450,12 +475,12 @@ async fn write_stealth_one<S>(
     keys: &SessionKeys,
     tx_seq: &mut u64,
     options: &FrameOptions,
+    next_pace_at: &mut Option<Instant>,
     frame: Frame,
 ) -> Result<Duration>
 where
     S: AsyncWrite + Unpin,
 {
-    let started = Instant::now();
     let capacity = options.stealth_payload_capacity()?;
     if frame.payload.len() > capacity {
         bail!("stealth frame payload too large");
@@ -475,9 +500,40 @@ where
         encrypted.len() == options.stealth_frame_size,
         "stealth encrypted frame size mismatch"
     );
+    pace_before_write(options, encrypted.len(), next_pace_at).await;
+    let started = Instant::now();
     *tx_seq += 1;
     stream.write_all(&encrypted).await?;
     Ok(started.elapsed())
+}
+
+async fn pace_before_write(
+    options: &FrameOptions,
+    bytes: usize,
+    next_pace_at: &mut Option<Instant>,
+) {
+    if !options.pacing_enabled || options.pacing_max_bytes_per_sec == 0 {
+        return;
+    }
+    let burst = options
+        .pacing_burst_bytes
+        .max(options.pacing_min_write_bytes)
+        .max(1);
+    let charge = bytes.saturating_sub(burst);
+    if charge == 0 {
+        return;
+    }
+    let delay = Duration::from_secs_f64(charge as f64 / options.pacing_max_bytes_per_sec as f64);
+    if delay.is_zero() {
+        return;
+    }
+    let now = Instant::now();
+    let base = next_pace_at.filter(|when| *when > now).unwrap_or(now);
+    let target = base + delay;
+    if target > now {
+        sleep(target - now).await;
+    }
+    *next_pace_at = Some(target);
 }
 
 async fn read_stealth_one<S>(

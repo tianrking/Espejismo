@@ -12,9 +12,9 @@
 </p>
 
 A native cross-platform Rust encrypted transport tunnel for public and untrusted
-networks. SOCKS5 & HTTP local ingress, X25519 forward secrecy, XChaCha20-Poly1305
-encrypted frames, yamux multiplexing, adaptive padding, and client puzzles — all in
-safe Rust with no TUN/TAP or system-level dependencies.
+networks. SOCKS5, HTTP, and optional native TUN local ingress, X25519 forward
+secrecy, XChaCha20-Poly1305 encrypted frames, yamux multiplexing, adaptive
+padding, TCP-friendly pacing, and client puzzles.
 
 Current release: `v0.0.2`.
 
@@ -434,6 +434,11 @@ internals and wire format specification live in
 
 - `espejismo-local --socks5-listen` enables the local SOCKS5 proxy.
 - `espejismo-local --http-listen` enables the local HTTP proxy.
+- `[local.tun]` enables optional native TUN ingress for system-level traffic
+  capture. It turns TCP flows and UDP datagrams from the virtual interface into
+  the existing encrypted TCP/yamux tunnel. Route and DNS takeover are explicit
+  Linux opt-in settings under `[local.tun.route]`; see
+  [docs/deployment/TUN.md](docs/deployment/TUN.md).
 - `[local.auth]` enables local SOCKS5 username/password auth and HTTP Basic
   proxy auth. Omit it for a trusted loopback-only no-auth listener.
 - `[logging]` controls structured logs. `format` can be `compact`, `pretty`, or
@@ -441,12 +446,17 @@ internals and wire format specification live in
 - `--log-level`, `--log-format`, `--log-file`, and `--no-log-ansi` override the
   logging config for either binary.
 - `[admin]` enables an HTTP admin endpoint with `/healthz`, `/status`,
-  `/metrics`, and remote-side runtime `/reload`/`/apply`. Use `token` outside
-  trusted loopback-only environments.
+  `/connections`, `/metrics`, and remote-side runtime `/reload`/`/apply`. Use
+  `token` outside trusted loopback-only environments.
 - `[remote.egress]` controls server-side outbound policy with host and port
   allow/block lists.
 - `local.server` and `--server` accept either `ip:port` or `domain:port`; the
   local client resolves the name before opening the physical tunnel.
+- `[shared.tcp]` controls TCP_NODELAY, keepalive, heartbeat padding frames,
+  send/receive buffers, and optional Linux TCP_USER_TIMEOUT / congestion
+  control such as `bbr` or `cubic`.
+- `[shared.pacing]` enables TCP-friendly write pacing. `max_bytes_per_sec = 0`
+  keeps throughput unlimited while still allowing burst and coalescing knobs.
 - `[[remote.users]]` enables multiple independent server users, each with its
   own PSK. If no users are configured, the server falls back to `shared.psk`.
 - `[remote.users.quota]` sets an optional per-user rolling byte quota. `bytes`
@@ -465,8 +475,14 @@ internals and wire format specification live in
   version is available. `--update-url` can point at a compatible JSON endpoint
   with `tag_name` or `latest_version`. See
   [docs/deployment/UPDATES.md](docs/deployment/UPDATES.md).
+- `--check-config --config espejismo.toml` validates common deployment mistakes:
+  DNS resolution, listener bindability, weak PSKs, admin token exposure, egress
+  breadth, user duplication, quotas, bandwidth, and pacing bounds.
 - SOCKS5 supports TCP `CONNECT` and UDP `ASSOCIATE`. UDP datagrams are relayed
   over authenticated yamux streams and checked by remote egress policy.
+- The stable production path is TCP/yamux. SOCKS5 UDP ASSOCIATE is currently an
+  application-level UDP relay over that TCP tunnel; physical UDP underlay code is
+  reserved for experiments and is not the recommended deployment mode.
 - `--max-padding` controls the maximum payload size of encrypted padding frames.
 - `--padding-chance-percent` controls how often padding is attempted.
 - `--backpressure-threshold-ms` detects slow writes and disables padding.

@@ -38,6 +38,20 @@ espejismo-local --print-example-config
 espejismo-local --print-example-config-base64
 ```
 
+## Config Diagnostics
+
+Validate a config before running a long-lived service:
+
+```bash
+espejismo-local --config espejismo.toml --check-config
+espejismo-remote --config espejismo.toml --check-config
+```
+
+The local check verifies `local.server` DNS resolution, listener bindability,
+PSK length, admin token exposure, and pacing bounds. The remote check verifies
+`remote.listen`, admin bindability, users or fallback PSK, broad egress policy
+warnings, SOCKS5 chain DNS, quotas, bandwidth, and shared TCP/pacing options.
+
 ## Client Profiles
 
 Export a local-client import URL:
@@ -64,6 +78,13 @@ Local:
 
 ```bash
 espejismo-local --config espejismo.toml
+```
+
+Optional native TUN ingress:
+
+```bash
+sudo espejismo-local --config espejismo.toml --tun-enabled --tun-name esptun0
+sudo espejismo-local --config espejismo.toml --tun-enabled --tun-auto-route --tun-auto-dns
 ```
 
 Common direct overrides:

@@ -7,18 +7,19 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use espejismo_core::config::example_config;
 use espejismo_core::{
-    accept_handshake_with_users, check_for_update, config_to_toml, encode_config_base64,
-    init_logging, load_config, load_config_base64, parse_config, parse_psk, read_tunnel_request,
-    spawn_admin_server, spawn_frame_transport, AdminAction, AdminState, ConfigInput, EgressPolicy,
-    EspejismoConfig, FrameOptions, HandshakeConfig, HandshakeUser, LogConfig, LogFormat, Metrics,
-    ProbeDefenseMode, ReplayCache, TunnelRequest,
+    accept_handshake_with_users, apply_tcp_options, bind_tcp_listener, check_for_update,
+    config_to_toml, encode_config_base64, init_logging, load_config, load_config_base64,
+    parse_config, parse_psk, read_tunnel_request, spawn_admin_server, spawn_frame_transport,
+    AdminAction, AdminState, ConfigInput, EgressPolicy, EspejismoConfig, FrameOptions,
+    HandshakeConfig, HandshakeUser, LogConfig, LogFormat, Metrics, ProbeDefenseMode, ReplayCache,
+    RuntimeState, TcpConfig, TunnelRequest,
 };
 use futures::StreamExt;
 use rand::seq::SliceRandom;
 use rand::Rng;
 use serde_json::json;
 use tokio::io::{copy_bidirectional, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::net::{lookup_host, TcpListener, TcpStream, UdpSocket};
+use tokio::net::{lookup_host, TcpStream, UdpSocket};
 use tokio::sync::{RwLock, Semaphore};
 use tokio::time::{sleep, timeout, Duration};
 use tokio_yamux::{Config as YamuxConfig, Session, StreamHandle};
@@ -44,6 +45,8 @@ struct Args {
     print_config_base64: bool,
     #[arg(long)]
     decode_config_base64: Option<String>,
+    #[arg(long)]
+    check_config: bool,
     #[arg(long)]
     check_update: bool,
     #[arg(long)]
@@ -102,12 +105,14 @@ struct RemoteRuntime {
     settings: Arc<RwLock<RemoteSettings>>,
     replay_window_secs: i64,
     tunnel_buffer: usize,
+    tcp: TcpConfig,
     tarpit_max: usize,
     tarpit_hold: Duration,
     admin_listen: Option<SocketAddr>,
     admin_token: Option<String>,
     reload_source: Option<ConfigInput>,
     reload_args: Args,
+    runtime_state: RuntimeState,
 }
 
 #[derive(Clone)]
@@ -160,6 +165,10 @@ async fn main() -> Result<()> {
         base64: args.config_base64.clone(),
     };
     let mut config = load_config(config_input.clone())?;
+    if args.check_config {
+        check_remote_config(&config, &args).await?;
+        return Ok(());
+    }
     if args.print_config_base64 {
         println!("{}", encode_config_base64(&config_to_toml(&config)?));
         return Ok(());
@@ -175,13 +184,14 @@ async fn main() -> Result<()> {
             AdminState {
                 role: "remote".to_string(),
                 metrics: metrics.clone(),
+                runtime: runtime.runtime_state.clone(),
                 token: runtime.admin_token.clone(),
                 reload,
             },
         );
     }
 
-    let listener = TcpListener::bind(runtime.listen).await?;
+    let listener = bind_tcp_listener(runtime.listen, &runtime.tcp)?;
     let tarpit = tarpit::TarpitManager::spawn(runtime.tarpit_max, runtime.tarpit_hold);
     let replay = Arc::new(tokio::sync::Mutex::new(ReplayCache::new(
         runtime.replay_window_secs,
@@ -190,6 +200,7 @@ async fn main() -> Result<()> {
 
     loop {
         let (socket, peer) = listener.accept().await?;
+        let _ = apply_tcp_options(&socket, &runtime.tcp);
         let replay = replay.clone();
         let runtime = runtime.clone();
         let tarpit = tarpit.clone();
@@ -241,6 +252,94 @@ fn parse_log_format(format: &str) -> Result<LogFormat> {
         "pretty" => Ok(LogFormat::Pretty),
         "json" => Ok(LogFormat::Json),
         _ => anyhow::bail!("log format must be compact, pretty, or json"),
+    }
+}
+
+async fn check_remote_config(config: &EspejismoConfig, args: &Args) -> Result<()> {
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+    let listen = args.listen.unwrap_or(config.remote.listen);
+    let admin_addr = args.admin_listen.or(config.admin.listen);
+    if admin_addr == Some(listen) {
+        errors.push("admin.listen must not reuse remote.listen".to_string());
+    }
+    match bind_tcp_listener(listen, &config.shared.tcp) {
+        Ok(listener) => {
+            drop(listener);
+            println!("OK remote.listen can bind: {listen}");
+        }
+        Err(err) => errors.push(format!("remote.listen cannot bind {listen}: {err}")),
+    }
+    if let Some(addr) = admin_addr {
+        match bind_tcp_listener(addr, &config.shared.tcp) {
+            Ok(listener) => {
+                drop(listener);
+                println!("OK admin.listen can bind: {addr}");
+            }
+            Err(err) => errors.push(format!("admin.listen cannot bind {addr}: {err}")),
+        }
+    }
+    if config.admin.listen.is_some()
+        && args
+            .admin_token
+            .as_ref()
+            .or(config.admin.token.as_ref())
+            .is_none()
+    {
+        warnings.push("admin.listen is enabled without an admin token".to_string());
+    }
+    if config.remote.users.is_empty() {
+        if let Some(psk) = args.psk.as_ref().or(config.shared.psk.as_ref()) {
+            if psk.len() < 16 {
+                warnings.push(
+                    "PSK is shorter than 16 characters; use a longer random secret".to_string(),
+                );
+            } else {
+                println!("OK single-key PSK length looks usable");
+            }
+        } else {
+            errors.push("remote.users or shared.psk/--psk/ESPEJISMO_PSK is required".to_string());
+        }
+    } else {
+        println!("OK {} remote user(s) configured", config.remote.users.len());
+    }
+    if !config.remote.egress.deny_private_ips
+        && config.remote.egress.allow_hosts.is_empty()
+        && config.remote.egress.allow_ports.is_empty()
+    {
+        warnings.push(
+            "egress policy is broad; consider deny_private_ips or explicit allow lists".to_string(),
+        );
+    }
+    if let Some(proxy) = &config.remote.egress.socks5_proxy {
+        match lookup_host(proxy.as_str()).await {
+            Ok(addrs) => {
+                if addrs.count() > 0 {
+                    println!("OK egress SOCKS5 proxy resolves: {proxy}");
+                } else {
+                    warnings.push(format!(
+                        "egress SOCKS5 proxy resolved no addresses: {proxy}"
+                    ));
+                }
+            }
+            Err(err) => warnings.push(format!("egress SOCKS5 proxy cannot resolve {proxy}: {err}")),
+        }
+    }
+    report_config_check(warnings, errors)
+}
+
+fn report_config_check(warnings: Vec<String>, errors: Vec<String>) -> Result<()> {
+    for warning in &warnings {
+        println!("WARN {warning}");
+    }
+    for error in &errors {
+        println!("ERROR {error}");
+    }
+    if errors.is_empty() {
+        println!("config check passed");
+        Ok(())
+    } else {
+        anyhow::bail!("config check failed with {} error(s)", errors.len())
     }
 }
 
@@ -301,6 +400,7 @@ fn build_runtime(
             .replay_window_secs
             .unwrap_or(config.remote.replay_window_secs),
         tunnel_buffer: args.tunnel_buffer.unwrap_or(config.shared.tunnel_buffer),
+        tcp: config.shared.tcp.clone(),
         tarpit_max: args.tarpit_max.unwrap_or(config.remote.tarpit_max),
         tarpit_hold: Duration::from_secs(
             args.tarpit_hold_secs
@@ -311,6 +411,7 @@ fn build_runtime(
         reload_source: (reload_source.path.is_some() || reload_source.base64.is_some())
             .then_some(reload_source),
         reload_args: args.clone(),
+        runtime_state: RuntimeState::default(),
     })
 }
 
@@ -343,6 +444,11 @@ fn build_remote_settings(config: &EspejismoConfig, args: &Args) -> Result<Remote
             max_chunk: config.shared.obfuscation.max_chunk,
             stealth_frame_size,
             stealth_tick_ms,
+            pacing_enabled: config.shared.pacing.enabled,
+            pacing_max_bytes_per_sec: config.shared.pacing.max_bytes_per_sec,
+            pacing_burst_bytes: config.shared.pacing.burst_bytes,
+            pacing_min_write_bytes: config.shared.pacing.min_write_bytes,
+            heartbeat_secs: config.shared.tcp.heartbeat_secs,
         },
         handshake_timeout: Duration::from_millis(
             args.handshake_timeout_ms
@@ -392,10 +498,12 @@ impl RemoteRuntime {
         let source = self.reload_source.clone();
         let settings = self.settings.clone();
         let args = self.reload_args.clone();
+        let runtime_state = self.runtime_state.clone();
         let action: AdminAction = Arc::new(move |body: Option<String>| {
             let source = source.clone();
             let settings = settings.clone();
             let args = args.clone();
+            let runtime_state = runtime_state.clone();
             Box::pin(async move {
                 let mut config = if let Some(body) = body {
                     parse_config(&body)?
@@ -409,6 +517,7 @@ impl RemoteRuntime {
                 let next = build_remote_settings(&config, &args)?;
                 let user_count = next.users.len();
                 *settings.write().await = next;
+                runtime_state.mark_config_applied();
                 Ok(json!({
                     "ok": true,
                     "applied": true,
@@ -436,6 +545,7 @@ async fn handle_peer(
     }
 
     metrics.inc_active_physical();
+    runtime.runtime_state.set_tunnel_state("authenticating");
     let keys = match timeout(
         settings.handshake_timeout,
         accept_handshake_with_users(&mut inbound, &settings.users, replay),
@@ -450,6 +560,9 @@ async fn handle_peer(
         Ok(Err(err)) => {
             metrics.inc_handshake_failure();
             metrics.dec_active_physical();
+            runtime
+                .runtime_state
+                .record_error(format!("handshake rejected: {err}"));
             fallback_or_reject(
                 inbound,
                 &settings.fallback_http,
@@ -462,6 +575,9 @@ async fn handle_peer(
         Err(err) => {
             metrics.inc_handshake_failure();
             metrics.dec_active_physical();
+            runtime
+                .runtime_state
+                .record_error(format!("handshake timeout: {err}"));
             fallback_or_reject(
                 inbound,
                 &settings.fallback_http,
@@ -478,6 +594,7 @@ async fn handle_peer(
     }
 
     let user = keys.user;
+    runtime.runtime_state.record_connect_success();
     info!(user = %user, "authenticated tunnel accepted");
     let transport = spawn_frame_transport(
         inbound,
@@ -492,6 +609,9 @@ async fn handle_peer(
             Ok(stream) => stream,
             Err(err) => {
                 metrics.dec_active_physical();
+                runtime
+                    .runtime_state
+                    .record_error(format!("yamux server session stopped: {err}"));
                 return Err(err.into());
             }
         };
@@ -523,6 +643,7 @@ async fn handle_peer(
         });
     }
     metrics.dec_active_physical();
+    runtime.runtime_state.set_tunnel_state("idle");
     Ok(())
 }
 

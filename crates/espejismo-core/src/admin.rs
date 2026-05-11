@@ -11,6 +11,7 @@ use tokio::net::{TcpListener, TcpStream};
 use tracing::{debug, info};
 
 use crate::metrics::Metrics;
+use crate::runtime_state::RuntimeState;
 
 pub type AdminAction = Arc<
     dyn Fn(Option<String>) -> Pin<Box<dyn Future<Output = Result<serde_json::Value>> + Send>>
@@ -22,6 +23,7 @@ pub type AdminAction = Arc<
 pub struct AdminState {
     pub role: String,
     pub metrics: Metrics,
+    pub runtime: RuntimeState,
     pub token: Option<String>,
     pub reload: Option<AdminAction>,
 }
@@ -31,6 +33,7 @@ struct StatusResponse {
     role: String,
     version: &'static str,
     metrics: crate::metrics::MetricsSnapshot,
+    runtime: crate::runtime_state::RuntimeStateSnapshot,
 }
 
 pub fn spawn_admin_server(addr: SocketAddr, state: AdminState) {
@@ -99,8 +102,17 @@ async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<(
                 role: state.role.clone(),
                 version: env!("CARGO_PKG_VERSION"),
                 metrics: state.metrics.snapshot(&state.role),
+                runtime: state.runtime.snapshot(),
             };
             let body = serde_json::to_vec_pretty(&response)?;
+            write_response(&mut stream, 200, "application/json", &body).await?;
+        }
+        ("GET", "/connections") => {
+            let body = serde_json::to_vec_pretty(&json!({
+                "role": state.role,
+                "metrics": state.metrics.snapshot(&state.role),
+                "runtime": state.runtime.snapshot(),
+            }))?;
             write_response(&mut stream, 200, "application/json", &body).await?;
         }
         ("GET", "/metrics") => {

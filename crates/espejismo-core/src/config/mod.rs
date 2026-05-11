@@ -1,5 +1,5 @@
 use std::fs;
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::Path;
 use std::path::PathBuf;
 
@@ -57,9 +57,43 @@ pub struct SharedConfig {
     #[serde(default = "default_max_streams")]
     pub max_streams: u32,
     #[serde(default)]
+    pub tcp: TcpConfig,
+    #[serde(default)]
+    pub pacing: PacingConfig,
+    #[serde(default)]
     pub obfuscation: ObfuscationConfig,
     #[serde(default)]
     pub stealth: StealthConfig,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct TcpConfig {
+    #[serde(default = "default_tcp_nodelay")]
+    pub nodelay: bool,
+    #[serde(default = "default_tcp_keepalive_secs")]
+    pub keepalive_secs: u64,
+    #[serde(default)]
+    pub user_timeout_ms: u64,
+    #[serde(default)]
+    pub send_buffer_bytes: usize,
+    #[serde(default)]
+    pub recv_buffer_bytes: usize,
+    #[serde(default)]
+    pub congestion_control: Option<String>,
+    #[serde(default = "default_tcp_heartbeat_secs")]
+    pub heartbeat_secs: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PacingConfig {
+    #[serde(default = "default_pacing_enabled")]
+    pub enabled: bool,
+    #[serde(default)]
+    pub max_bytes_per_sec: u64,
+    #[serde(default = "default_pacing_burst_bytes")]
+    pub burst_bytes: usize,
+    #[serde(default = "default_pacing_min_write_bytes")]
+    pub min_write_bytes: usize,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -93,6 +127,38 @@ pub struct LocalConfig {
     pub handshake_padding: usize,
     #[serde(default)]
     pub auth: Option<ProxyAuth>,
+    #[serde(default)]
+    pub tun: LocalTunConfig,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LocalTunConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_tun_name")]
+    pub name: String,
+    #[serde(default = "default_tun_address")]
+    pub address: Ipv4Addr,
+    #[serde(default = "default_tun_prefix")]
+    pub prefix: u8,
+    #[serde(default = "default_tun_destination")]
+    pub destination: Ipv4Addr,
+    #[serde(default = "default_tun_mtu")]
+    pub mtu: u16,
+    #[serde(default)]
+    pub route: LocalTunRouteConfig,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct LocalTunRouteConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_tun_protect_server_route")]
+    pub protect_server_route: bool,
+    #[serde(default)]
+    pub dns_enabled: bool,
+    #[serde(default = "default_tun_dns_servers")]
+    pub dns_servers: Vec<IpAddr>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -241,8 +307,35 @@ impl Default for SharedConfig {
             tunnel_buffer: default_tunnel_buffer(),
             idle_timeout_secs: default_idle_timeout_secs(),
             max_streams: default_max_streams(),
+            tcp: TcpConfig::default(),
+            pacing: PacingConfig::default(),
             obfuscation: ObfuscationConfig::default(),
             stealth: StealthConfig::default(),
+        }
+    }
+}
+
+impl Default for TcpConfig {
+    fn default() -> Self {
+        Self {
+            nodelay: default_tcp_nodelay(),
+            keepalive_secs: default_tcp_keepalive_secs(),
+            user_timeout_ms: 0,
+            send_buffer_bytes: 0,
+            recv_buffer_bytes: 0,
+            congestion_control: None,
+            heartbeat_secs: default_tcp_heartbeat_secs(),
+        }
+    }
+}
+
+impl Default for PacingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_pacing_enabled(),
+            max_bytes_per_sec: 0,
+            burst_bytes: default_pacing_burst_bytes(),
+            min_write_bytes: default_pacing_min_write_bytes(),
         }
     }
 }
@@ -275,6 +368,32 @@ impl Default for LocalConfig {
             http_listen: default_http_listen(),
             handshake_padding: default_handshake_padding(),
             auth: None,
+            tun: LocalTunConfig::default(),
+        }
+    }
+}
+
+impl Default for LocalTunConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            name: default_tun_name(),
+            address: default_tun_address(),
+            prefix: default_tun_prefix(),
+            destination: default_tun_destination(),
+            mtu: default_tun_mtu(),
+            route: LocalTunRouteConfig::default(),
+        }
+    }
+}
+
+impl Default for LocalTunRouteConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            protect_server_route: default_tun_protect_server_route(),
+            dns_enabled: false,
+            dns_servers: default_tun_dns_servers(),
         }
     }
 }
@@ -358,6 +477,17 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     if let Some(auth) = &config.local.auth {
         auth.validate()?;
     }
+    anyhow::ensure!(
+        config.local.tun.prefix <= 32,
+        "local.tun.prefix must be <= 32"
+    );
+    anyhow::ensure!(config.local.tun.mtu >= 576, "local.tun.mtu must be >= 576");
+    if config.local.tun.route.dns_enabled {
+        anyhow::ensure!(
+            !config.local.tun.route.dns_servers.is_empty(),
+            "local.tun.route.dns_servers must not be empty when dns_enabled is true"
+        );
+    }
     if let Some(token) = &config.admin.token {
         anyhow::ensure!(!token.is_empty(), "admin.token must not be empty");
     }
@@ -399,6 +529,28 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
         config.shared.obfuscation.min_chunk <= config.shared.obfuscation.max_chunk,
         "shared.obfuscation.min_chunk must be <= max_chunk"
     );
+    if let Some(algorithm) = &config.shared.tcp.congestion_control {
+        anyhow::ensure!(
+            !algorithm.trim().is_empty(),
+            "shared.tcp.congestion_control must not be empty when provided"
+        );
+        anyhow::ensure!(
+            algorithm
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-'),
+            "shared.tcp.congestion_control may contain only letters, numbers, '_' or '-'"
+        );
+    }
+    if config.shared.pacing.enabled {
+        anyhow::ensure!(
+            config.shared.pacing.burst_bytes > 0,
+            "shared.pacing.burst_bytes must be greater than 0 when pacing is enabled"
+        );
+        anyhow::ensure!(
+            config.shared.pacing.min_write_bytes > 0,
+            "shared.pacing.min_write_bytes must be greater than 0 when pacing is enabled"
+        );
+    }
     if config.shared.obfuscation.profile == ObfuscationProfile::Stealth {
         anyhow::ensure!(
             config.shared.stealth.frame_size <= 64 * 1024,
@@ -483,6 +635,30 @@ fn default_user_quota_window_secs() -> u64 {
     24 * 60 * 60
 }
 
+fn default_tcp_nodelay() -> bool {
+    true
+}
+
+fn default_tcp_keepalive_secs() -> u64 {
+    30
+}
+
+fn default_tcp_heartbeat_secs() -> u64 {
+    30
+}
+
+fn default_pacing_enabled() -> bool {
+    true
+}
+
+fn default_pacing_burst_bytes() -> usize {
+    64 * 1024
+}
+
+fn default_pacing_min_write_bytes() -> usize {
+    1024
+}
+
 fn default_socks5_listen() -> Option<SocketAddr> {
     Some("127.0.0.1:6680".parse().expect("valid address"))
 }
@@ -493,6 +669,37 @@ fn default_http_listen() -> Option<SocketAddr> {
 
 fn default_handshake_padding() -> usize {
     256
+}
+
+fn default_tun_name() -> String {
+    "esptun0".to_string()
+}
+
+fn default_tun_address() -> Ipv4Addr {
+    Ipv4Addr::new(10, 255, 0, 2)
+}
+
+fn default_tun_destination() -> Ipv4Addr {
+    Ipv4Addr::new(10, 255, 0, 1)
+}
+
+fn default_tun_prefix() -> u8 {
+    24
+}
+
+fn default_tun_mtu() -> u16 {
+    1500
+}
+
+fn default_tun_protect_server_route() -> bool {
+    true
+}
+
+fn default_tun_dns_servers() -> Vec<IpAddr> {
+    vec![
+        IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1)),
+        IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8)),
+    ]
 }
 
 fn default_remote_listen() -> SocketAddr {

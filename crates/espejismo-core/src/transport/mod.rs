@@ -140,9 +140,25 @@ where
     }
     let mut buf = vec![0_u8; options.normalized_chunk_bounds().1];
     let mut frame_writer = FrameWriter::new(net_writer, keys, options);
+    let heartbeat = frame_writer.options().heartbeat_secs;
     loop {
         let chunk_size = frame_writer.options().next_chunk_size();
-        let n = app_reader.read(&mut buf[..chunk_size]).await?;
+        let n = if heartbeat == 0 {
+            app_reader.read(&mut buf[..chunk_size]).await?
+        } else {
+            tokio::select! {
+                read = app_reader.read(&mut buf[..chunk_size]) => read?,
+                _ = sleep(Duration::from_secs(heartbeat)) => {
+                    frame_writer
+                        .send(Frame {
+                            ty: FrameType::Padding,
+                            payload: Vec::new(),
+                        })
+                        .await?;
+                    continue;
+                }
+            }
+        };
         if n == 0 {
             frame_writer
                 .send(Frame {

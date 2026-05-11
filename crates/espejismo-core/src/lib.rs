@@ -7,6 +7,8 @@ pub mod logging;
 pub mod metrics;
 pub mod profile;
 pub mod protocol;
+pub mod runtime_state;
+pub mod tcp;
 pub mod transport;
 pub mod updater;
 
@@ -14,7 +16,7 @@ pub use admin::{spawn_admin_server, AdminAction, AdminState};
 pub use config::{
     config_to_toml, encode_config_base64, load_config, load_config_base64, parse_config,
     AdminConfig, ConfigInput, EgressConfig, EspejismoConfig, LogConfig, LogFormat,
-    ObfuscationConfig, ProbeDefenseMode,
+    ObfuscationConfig, PacingConfig, ProbeDefenseMode, TcpConfig,
 };
 pub use crypto::{
     accept_handshake, accept_handshake_with_replay, accept_handshake_with_users, connect_handshake,
@@ -38,5 +40,7 @@ pub use protocol::request::{
 pub use protocol::udp::{
     DeliveredDatagram, UdpCongestionController, UdpPacket, UdpPacketKind, UdpReliability,
 };
+pub use runtime_state::{RuntimeState, RuntimeStateSnapshot};
+pub use tcp::{apply_tcp_options, bind_tcp_listener, connect_tcp_stream};
 pub use transport::{idle_copy_bidirectional, spawn_frame_transport};
 pub use updater::{check_for_update, default_release_url, UpdateInfo};

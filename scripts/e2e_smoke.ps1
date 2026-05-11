@@ -110,6 +110,20 @@ psk = "$Psk"
 puzzle_bits = 12
 max_streams = 2
 
+[shared.tcp]
+nodelay = true
+keepalive_secs = 30
+heartbeat_secs = 5
+user_timeout_ms = 30000
+send_buffer_bytes = 1048576
+recv_buffer_bytes = 1048576
+
+[shared.pacing]
+enabled = true
+max_bytes_per_sec = 0
+burst_bytes = 65536
+min_write_bytes = 1024
+
 [local]
 server = "$RemoteAddr"
 socks5_listen = "$Socks5Addr"
@@ -146,6 +160,21 @@ allow_ports = [$HttpPort, $UdpPort]
     }
     & $Cargo run --quiet --bin espejismo-local -- --import-profile $ProfileUrl --print-client-profile --profile-name smoke-imported | Out-String | ForEach-Object {
         Assert-Contains $_ "espejismo://import/"
+    }
+
+    & $Cargo run --quiet --bin espejismo-local -- --config $ConfigFile --check-config | Out-String | ForEach-Object {
+        Assert-Contains $_ "config check passed"
+    }
+    & $Cargo run --quiet --bin espejismo-local -- --config $ConfigFile --tun-enabled --check-config | Out-String | ForEach-Object {
+        Assert-Contains $_ "TUN ingress requested"
+    }
+    if ($IsLinux) {
+        & $Cargo run --quiet --bin espejismo-local -- --config $ConfigFile --tun-enabled --tun-auto-route --tun-auto-dns --check-config | Out-String | ForEach-Object {
+            Assert-Contains $_ "Linux TUN auto-route requested"
+        }
+    }
+    & $Cargo run --quiet --bin espejismo-remote -- --config $ConfigFile --check-config | Out-String | ForEach-Object {
+        Assert-Contains $_ "config check passed"
     }
 
     Start-ProbeProcess $Cargo @("run", "--quiet", "--bin", "espejismo-remote", "--", "--config-base64", $ConfigB64, "--admin-listen", $RemoteAdminAddr) "remote" | Out-Null
@@ -190,7 +219,10 @@ allow_ports = [$HttpPort, $UdpPort]
     Assert-Contains $text "ok"
 
     $text = Invoke-CurlText @("--silent", "--show-error", "--max-time", "5", "-H", "Authorization: Bearer $AdminToken", "http://$LocalAdminAddr/status")
-    Assert-Contains $text "`"role`": `"local`""
+    Assert-Contains $text "`"tunnel_state`""
+
+    $text = Invoke-CurlText @("--silent", "--show-error", "--max-time", "5", "-H", "Authorization: Bearer $AdminToken", "http://$LocalAdminAddr/connections")
+    Assert-Contains $text "`"active_physical_connections`""
 
     $text = Invoke-CurlText @("--silent", "--show-error", "--max-time", "5", "-H", "Authorization: Bearer $AdminToken", "http://$RemoteAdminAddr/metrics")
     Assert-Contains $text "espejismo_stream_opened_total"

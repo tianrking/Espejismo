@@ -84,6 +84,10 @@ over it. Each accepted SOCKS5 or HTTP proxy connection opens a yamux logical
 stream and sends an internal command preface. HTTP CONNECT is accepted directly;
 absolute-form `http://` requests are rewritten to origin-form before entering
 the tunnel. SOCKS5 UDP ASSOCIATE datagrams are relayed as UDP command streams.
+Optional native TUN ingress creates a local virtual network interface and uses a
+userspace netstack to convert captured TCP flows and UDP datagrams into the same
+internal tunnel commands. The remote side does not need a separate TUN-specific
+listener.
 
 `espejismo-remote` accepts yamux streams over the same physical tunnel. Each
 logical stream is handled independently: read the command preface, validate
@@ -97,6 +101,12 @@ controller with slow-start, additive growth, and loss backoff. Those primitives
 are intentionally separated from the running TCP tunnel so future UDP socket
 integration can reuse them without disturbing the stable proxy path.
 
+The recommended production path is TCP/yamux because it is portable, simple to
+deploy, and predictable under ordinary NAT, cloud firewall, and QoS devices.
+SOCKS5 UDP ASSOCIATE is an application-level UDP relay carried over the same
+authenticated TCP tunnel. A physical UDP underlay remains experimental reserve,
+not the default reliability path.
+
 ## Configuration Pipeline
 
 Both binaries read the same TOML document and use their relevant sections:
@@ -106,6 +116,7 @@ with `--config-base64`. `--print-example-config` and
 `--print-example-config-base64` generate deployable starter configs.
 `--print-config-base64` converts a selected config into a one-line import
 string, and `--decode-config-base64` prints that string back as TOML.
+`--check-config` performs deployment diagnostics before startup.
 
 `espejismo-local --print-client-profile` creates an `espejismo://import/...`
 profile URL for client onboarding. `--import-profile` applies that profile to a
