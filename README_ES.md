@@ -16,6 +16,8 @@ y no confiables. Ingreso local via SOCKS5 y HTTP, secreto directo con X25519,
 frames cifrados con XChaCha20-Poly1305, multiplexacion yamux, padding adaptativo
 y puzzles de cliente — todo en Rust seguro sin TUN/TAP ni dependencias del sistema.
 
+Version actual: `v0.0.2`.
+
 ## Arquitectura
 
 ### Vista del Sistema
@@ -41,7 +43,7 @@ flowchart LR
         ENC_R["Adaptador de transporte cifrado"]
         YMUX_R["Sesion servidor yamux"]
         REQ["Parser de solicitudes de tunel"]
-        POLICY["Politica de salida<br/>ACL de host + puerto"]
+        POLICY["Politica de salida<br/>ACL de host + puerto + cadena SOCKS5"]
         DEST["Destino TCP / UDP"]
     end
 
@@ -183,7 +185,8 @@ Cada archivo contiene:
 - `bin/espejismo-local`
 - `bin/espejismo-remote`
 - `configs/espejismo.toml`
-- README y notas de arquitectura/testing
+- README, changelog, notas de arquitectura, despliegue, CLI, usuarios,
+  actualizaciones, estado y testing
 
 Crear paquete para el host Unix-like actual:
 
@@ -318,12 +321,33 @@ cold_start_delay_ms = 35
 tarpit_max = 1024
 tarpit_hold_secs = 300
 
+[remote.fallback_http]
+mode = "silent"
+# mode = "http_fallback"
+# enabled = true # interruptor legacy, mantenido por compatibilidad
+upstream = "127.0.0.1:8080"
+probe_timeout_ms = 250
+server = "nginx"
+body = "<html><head><title>It works</title></head><body><h1>It works</h1></body></html>"
+
+[[remote.users]]
+name = "default"
+psk = "change-me-long-random-secret"
+
+[remote.users.quota]
+# bytes = 536870912
+window_secs = 86400
+
+[remote.users.bandwidth]
+# bytes_per_sec = 1048576
+
 [remote.egress]
 deny_private_ips = false
 allow_hosts = []
 block_hosts = []
 allow_ports = []
 block_ports = []
+# socks5_proxy = "127.0.0.1:1080"
 ```
 
 Ejecutar desde un archivo:
@@ -362,10 +386,25 @@ cargo run --bin espejismo-remote -- --config-base64 "$CONFIG_B64"
 cargo run --bin espejismo-local -- --config-base64 "$CONFIG_B64"
 ```
 
+Espejismo tambien puede convertir configuraciones sin depender de flags
+base64 especificos del shell:
+
+```bash
+CONFIG_B64="$(cargo run --bin espejismo-local -- --config espejismo.toml --print-config-base64)"
+cargo run --bin espejismo-local -- --decode-config-base64 "$CONFIG_B64" > espejismo.toml
+```
+
 Imprimir un ejemplo directamente en base64:
 
 ```bash
 cargo run --bin espejismo-local -- --print-example-config-base64
+```
+
+Comprobar si hay un release mas nuevo:
+
+```bash
+cargo run --bin espejismo-local -- --check-update
+cargo run --bin espejismo-remote -- --check-update
 ```
 
 ## Handshake
@@ -386,14 +425,36 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   `pretty`, o `json`; `file` escribe logs a un archivo en lugar de stderr.
 - `--log-level`, `--log-format`, `--log-file`, y `--no-log-ansi` sobreescriben
   la configuracion de logging para ambos binarios.
-- `[admin]` habilita un endpoint HTTP admin de solo lectura con `/healthz`,
-  `/status`, y `/metrics`. Usar `token` fuera de entornos loopback confiables.
+- `[admin]` habilita un endpoint HTTP admin con `/healthz`, `/status`,
+  `/metrics`, y `/reload`/`/apply` en el remoto. Usar `token` fuera de
+  entornos loopback confiables.
 - `[remote.egress]` controla la politica de salida del servidor con listas de
   hosts y puertos permitidos/bloqueados.
+- `local.server` y `--server` aceptan `ip:puerto` o `dominio:puerto`; el
+  cliente local resuelve el nombre antes de abrir el tunel fisico.
+- `[[remote.users]]` habilita multiples usuarios remotos independientes, cada
+  uno con su propia PSK. Si no hay usuarios configurados, el servidor usa
+  `shared.psk`.
+- `[remote.users.quota]` define una cuota de bytes por usuario con ventana
+  movil. `bytes` queda deshabilitado si se omite; `window_secs` usa 86400 por
+  defecto.
+- `[remote.users.bandwidth]` define un limite agregado opcional de bytes por
+  segundo por usuario para trafico TCP y UDP. Ver
+  [docs/deployment/USERS.md](docs/deployment/USERS.md).
+- `[remote.egress].socks5_proxy` encadena salida TCP y UDP a traves de otro
+  proxy SOCKS5. UDP usa SOCKS5 UDP ASSOCIATE.
 - `espejismo-local --print-client-profile` emite un URL de perfil
   `espejismo://import/...` que puede importarse con `--import-profile`.
-- SOCKS5 soporta `CONNECT` TCP y `ASSOCIATE` UDP. Los datagramas UDP se retransmiten
-  por streams yamux autenticados y son verificados por la politica de salida remota.
+- `--print-config-base64` imprime la configuracion TOML seleccionada como una
+  cadena base64 de una sola linea. `--decode-config-base64` vuelve a imprimir
+  esa cadena como TOML.
+- `--check-update` consulta metadatos de release e imprime si hay una version
+  mas nueva. `--update-url` puede apuntar a un endpoint JSON compatible con
+  `tag_name` o `latest_version`. Ver
+  [docs/deployment/UPDATES.md](docs/deployment/UPDATES.md).
+- SOCKS5 soporta `CONNECT` TCP y `ASSOCIATE` UDP. Los datagramas UDP se
+  transportan por streams yamux autenticados y son verificados por la politica
+  de salida remota.
 - `--max-padding` controla el tamano maximo del payload de los frames de padding
   cifrados.
 - `--padding-chance-percent` controla la frecuencia con la que se intenta el padding.
@@ -484,12 +545,16 @@ operadores puedan elevar un modulo manteniendo el resto en silencio.
 
 Ver [docs/development/STATUS.md](docs/development/STATUS.md) para la matriz de
 funcionalidades implementadas y la hoja de ruta restante, incluyendo migracion
-transparente, empaquetado WASM/navegador, recarga en tiempo de ejecucion, y
+transparente, empaquetado WASM/navegador, integracion de socket UDP underlay, y
 control de multiples perfiles mas rico.
 
-Ver [docs/testing/TEST_PLAN.md](docs/testing/TEST_PLAN.md) para la estrategia
-de pruebas ejecutable y [docs/research/DESIGN_PRINCIPLES.md](docs/research/DESIGN_PRINCIPLES.md)
-para los principios de diseno del protocolo.
+Ver [CHANGELOG.md](CHANGELOG.md) para las notas de release.
+
+Ver [docs/deployment/CLI.md](docs/deployment/CLI.md) para uso de linea de
+comandos, [docs/testing/TEST_PLAN.md](docs/testing/TEST_PLAN.md) para la
+estrategia de pruebas ejecutable y
+[docs/research/DESIGN_PRINCIPLES.md](docs/research/DESIGN_PRINCIPLES.md) para
+los principios de diseno del protocolo.
 
 ## Uso Responsable
 
