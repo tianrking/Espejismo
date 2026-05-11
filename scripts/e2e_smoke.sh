@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PSK="change-me-long-random-secret"
+MUX_MODE="${MUX_MODE:-yamux}"
 HTTP_ADDR="127.0.0.1"
 PORT_BASE=$((20000 + ($$ % 20000)))
 HTTP_PORT="${PORT_BASE}"
@@ -75,6 +76,9 @@ heartbeat_secs = 5
 user_timeout_ms = 30000
 send_buffer_bytes = 1048576
 recv_buffer_bytes = 1048576
+
+[shared.mux]
+mode = "${MUX_MODE}"
 
 [shared.pacing]
 enabled = true

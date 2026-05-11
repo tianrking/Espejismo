@@ -8,7 +8,7 @@ set of compiling protocol primitives.
 The core end-to-end invariant is:
 
 1. A client application sends a request to `espejismo-local`.
-2. `espejismo-local` opens a yamux stream over the encrypted physical tunnel.
+2. `espejismo-local` opens a mux stream over the encrypted physical tunnel.
 3. `espejismo-remote` receives the logical stream and opens the requested
    outbound TCP connection.
 4. The outbound service receives the exact request identity.
@@ -27,6 +27,8 @@ cargo test --workspace --all-targets
 cargo check --manifest-path fuzz/Cargo.toml --bins
 ./scripts/e2e_smoke.sh
 REQUESTS=200 CONCURRENCY=32 ./scripts/stress_smoke.sh
+MUX_MODE=native ./scripts/e2e_smoke.sh
+REQUESTS=128 CONCURRENCY=32 ./scripts/benchmark_mux.sh
 ./scripts/package-release.sh
 ```
 
@@ -79,6 +81,8 @@ performance path after the basic e2e probe passes:
 - Remote endpoint restart followed by new request recovery.
 - Optional soak loop. On Unix-like hosts, set `SOAK_SECS=1800` for a 30-minute
   run.
+- Native mux alpha coverage. Set `MUX_MODE=native` on the e2e or stress scripts
+  to run the same proxy checks through the in-tree mux instead of yamux.
 
 The fixture returns JSON containing method, path, probe header, and request
 body. The script checks that the returned JSON contains the expected token,
@@ -119,7 +123,7 @@ parser/validator.
 
 ## Regression Areas
 
-When changing frame encoding, handshake layout, yamux integration, HTTP/SOCKS5
+When changing frame encoding, handshake layout, mux integration, HTTP/SOCKS5
 ingress, or configuration loading, always run the full automated check list.
 
 ## Not Covered Yet

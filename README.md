@@ -13,8 +13,8 @@
 
 A native cross-platform Rust encrypted transport tunnel for public and untrusted
 networks. SOCKS5, HTTP, and optional native TUN local ingress, X25519 forward
-secrecy, XChaCha20-Poly1305 encrypted frames, yamux multiplexing, adaptive
-padding, TCP-friendly pacing, and client puzzles.
+secrecy, XChaCha20-Poly1305 encrypted frames, selectable logical stream
+multiplexing, adaptive padding, TCP-friendly pacing, and client puzzles.
 
 Current release: `v0.0.3`.
 
@@ -29,7 +29,7 @@ flowchart LR
         SOCKS["SOCKS5 ingress<br/>TCP CONNECT + UDP ASSOCIATE"]
         HTTP["HTTP proxy ingress<br/>CONNECT + absolute-form HTTP"]
         AUTH["Optional local auth"]
-        YMUX_C["yamux client session<br/>logical streams"]
+        YMUX_C["mux client session<br/>logical streams"]
         ENC_C["Encrypted transport adapter"]
     end
 
@@ -41,7 +41,7 @@ flowchart LR
         PROBE["Probe guard<br/>HTTP fallback or silent tarpit"]
         HS["Handshake verifier<br/>HMAC + X25519 + puzzle + replay cache"]
         ENC_R["Encrypted transport adapter"]
-        YMUX_R["yamux server session"]
+        YMUX_R["mux server session"]
         REQ["Tunnel request parser"]
         POLICY["Egress policy<br/>host + port ACL + SOCKS5 chain"]
         DEST["TCP / UDP destination"]
@@ -53,10 +53,11 @@ flowchart LR
     YMUX_R --> REQ --> POLICY --> DEST
 ```
 
-The important layering detail is that yamux owns logical streams, while
-`spawn_frame_transport` provides yamux with a normal `AsyncRead + AsyncWrite`
-object backed by encrypted frames. Local proxy requests become yamux streams;
-the physical socket carries only the encrypted transport.
+The important layering detail is that the selected mux owns logical streams,
+while `spawn_frame_transport` provides it with a normal `AsyncRead + AsyncWrite`
+object backed by encrypted frames. Local proxy requests become mux streams; the
+physical socket carries only the encrypted transport. `yamux` is the stable
+default, and the in-tree native mux can be enabled for alpha testing.
 
 ### Protocol Stack
 
@@ -64,11 +65,11 @@ the physical socket carries only the encrypted transport.
 Application traffic
   -> SOCKS5 / HTTP proxy parser
   -> optional local proxy auth
-  -> yamux logical stream
+  -> mux logical stream
   -> encrypted frame transport
   -> TCP socket
   -> remote handshake / replay / probe defenses
-  -> yamux stream handler
+  -> mux stream handler
   -> egress policy
   -> TCP connect or one-shot UDP relay
 ```
@@ -380,6 +381,9 @@ randomize_chunks = true
 min_chunk = 4096
 max_chunk = 16384
 
+[shared.mux]
+mode = "yamux"
+
 [shared.stealth]
 frame_size = 4096
 tick_ms = 50
@@ -516,7 +520,7 @@ internals and wire format specification live in
 - `espejismo-local --http-listen` enables the local HTTP proxy.
 - `[local.tun]` enables optional native TUN ingress for system-level traffic
   capture. It turns TCP flows and UDP datagrams from the virtual interface into
-  the existing encrypted TCP/yamux tunnel. Route and DNS takeover are explicit
+  the existing encrypted TCP mux tunnel. Route and DNS takeover are explicit
   Linux, macOS, and Windows opt-in settings under `[local.tun.route]`; see
   [docs/deployment/TUN.md](docs/deployment/TUN.md).
 - `[local.auth]` enables local SOCKS5 username/password auth and HTTP Basic
@@ -540,6 +544,8 @@ internals and wire format specification live in
 - `[local.tunnel_pool]` keeps multiple physical TCP tunnels available. New
   streams are assigned to interactive or bulk lanes by health score so small
   proxy requests do not queue behind large TUN or download flows.
+- `[shared.mux]` selects the logical stream multiplexer. `yamux` is the stable
+  default; `native` enables the in-tree alpha mux for testing and benchmarking.
 - `[[remote.users]]` enables multiple independent server users, each with its
   own PSK. If no users are configured, the server falls back to `shared.psk`.
 - `[remote.users.quota]` sets an optional per-user rolling byte quota. `bytes`
@@ -562,8 +568,8 @@ internals and wire format specification live in
   DNS resolution, listener bindability, weak PSKs, admin token exposure, egress
   breadth, user duplication, quotas, bandwidth, and pacing bounds.
 - SOCKS5 supports TCP `CONNECT` and UDP `ASSOCIATE`. UDP datagrams are relayed
-  over authenticated yamux streams and checked by remote egress policy.
-- The stable production path is TCP/yamux. SOCKS5 UDP ASSOCIATE is currently an
+  over authenticated mux streams and checked by remote egress policy.
+- The stable production path is TCP with `shared.mux.mode = "yamux"`. SOCKS5 UDP ASSOCIATE is currently an
   application-level UDP relay over that TCP tunnel; physical UDP underlay code is
   reserved for experiments and is not the recommended deployment mode.
 - `--max-padding` controls the maximum payload size of encrypted padding frames.
@@ -601,9 +607,9 @@ internals and wire format specification live in
   to route HTTP probe prefixes to either a configured
   `upstream` TCP endpoint (for example local nginx) or an internal 200 OK page.
 - `--tunnel-buffer` controls the in-process encrypted transport buffer used
-  below yamux.
+  below the logical stream mux.
 - `espejismo-remote --cold-start-delay-ms` applies a small startup delay after
-  a valid handshake and before yamux begins.
+  a valid handshake and before the mux begins.
 - The PSK accepts `hex:...`, `base64:...`, or a raw UTF-8 string.
 - Invalid handshakes are closed quietly by default. With
   `[remote.fallback_http].enabled = true`, probes receive HTTP-looking fallback
@@ -616,6 +622,7 @@ internals and wire format specification live in
 ```bash
 ./scripts/e2e_smoke.sh
 REQUESTS=200 CONCURRENCY=32 ./scripts/stress_smoke.sh
+MUX_MODE=native ./scripts/e2e_smoke.sh
 ```
 
 On Windows PowerShell:
@@ -627,7 +634,7 @@ On Windows PowerShell:
 
 The script starts a local HTTP server, `espejismo-remote`, and `espejismo-local`,
 then performs SOCKS5 TCP, SOCKS5 UDP, HTTP proxy, HTTP CONNECT, admin, metrics,
-and profile import checks through the encrypted yamux tunnel.
+and profile import checks through the encrypted mux tunnel.
 The stress script adds single-stream, high-concurrency small-request,
 mixed-lane, remote-restart, and optional soak coverage.
 

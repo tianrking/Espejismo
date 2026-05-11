@@ -14,6 +14,9 @@
   open-stream latency, active streams, and bytes.
 - Unix stress smoke script covering single-stream traffic, many small requests,
   mixed-lane traffic, remote restart recovery, and optional soak loops.
+- Native mux alpha selectable with `[shared.mux].mode = "native"` while yamux
+  remains the default fallback.
+- Mux benchmark helper comparing yamux and native stress runs.
 
 ## v0.0.3
 

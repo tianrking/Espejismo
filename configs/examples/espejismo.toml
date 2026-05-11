@@ -20,6 +20,9 @@ send_buffer_bytes = 1048576
 recv_buffer_bytes = 1048576
 # congestion_control = "bbr"
 
+[shared.mux]
+mode = "yamux"
+
 [shared.pacing]
 enabled = true
 max_bytes_per_sec = 0

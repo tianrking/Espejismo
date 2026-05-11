@@ -54,6 +54,8 @@ pub struct SharedConfig {
     #[serde(default)]
     pub tcp: TcpConfig,
     #[serde(default)]
+    pub mux: MuxConfig,
+    #[serde(default)]
     pub pacing: PacingConfig,
     #[serde(default)]
     pub obfuscation: ObfuscationConfig,
@@ -77,6 +79,20 @@ pub struct TcpConfig {
     pub congestion_control: Option<String>,
     #[serde(default = "default_tcp_heartbeat_secs")]
     pub heartbeat_secs: u64,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MuxMode {
+    #[default]
+    Yamux,
+    Native,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct MuxConfig {
+    #[serde(default)]
+    pub mode: MuxMode,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -319,6 +335,7 @@ impl Default for SharedConfig {
             idle_timeout_secs: default_idle_timeout_secs(),
             max_streams: default_max_streams(),
             tcp: TcpConfig::default(),
+            mux: MuxConfig::default(),
             pacing: PacingConfig::default(),
             obfuscation: ObfuscationConfig::default(),
             stealth: StealthConfig::default(),

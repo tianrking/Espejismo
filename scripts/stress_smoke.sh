@@ -13,6 +13,7 @@ SOCKS5_ADDR="127.0.0.1:$((PORT_BASE + 2))"
 HTTP_PROXY_ADDR="127.0.0.1:$((PORT_BASE + 3))"
 CONFIG_FILE="$(mktemp -t espejismo-stress.XXXXXX.toml)"
 PROBE_TOKEN="stress-$(date +%s)-$$"
+MUX_MODE="${MUX_MODE:-yamux}"
 PIDS=()
 
 cleanup() {
@@ -113,6 +114,9 @@ keepalive_secs = 30
 heartbeat_secs = 5
 send_buffer_bytes = 1048576
 recv_buffer_bytes = 1048576
+
+[shared.mux]
+mode = "${MUX_MODE}"
 
 [shared.pacing]
 enabled = true

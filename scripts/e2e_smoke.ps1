@@ -35,6 +35,7 @@ $ProxyUser = "probe-user"
 $ProxyPass = "probe-pass"
 $AdminToken = "admin-$ProbeToken"
 $Psk = "change-me-long-random-secret"
+$MuxMode = if ($env:MUX_MODE) { $env:MUX_MODE } else { "yamux" }
 $Processes = @()
 
 function Start-ProbeProcess {
@@ -117,6 +118,9 @@ heartbeat_secs = 5
 user_timeout_ms = 30000
 send_buffer_bytes = 1048576
 recv_buffer_bytes = 1048576
+
+[shared.mux]
+mode = "$MuxMode"
 
 [shared.pacing]
 enabled = true

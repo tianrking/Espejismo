@@ -516,6 +516,7 @@ dependencies = [
  "base64",
  "bytes",
  "chacha20poly1305",
+ "futures",
  "hex",
  "hkdf",
  "hmac",

@@ -176,8 +176,10 @@ Both binaries read the same TOML shape. The remote uses `[shared]`,
 The most important knobs are:
 
 - `shared.psk`: shared secret. Keep it private.
-- `shared.max_streams`: concurrent yamux stream limit per physical tunnel.
+- `shared.max_streams`: concurrent logical stream limit per physical tunnel.
 - `shared.idle_timeout_secs`: idle stream timeout.
+- `shared.mux.mode`: logical stream multiplexer. Keep `yamux` for production
+  stability; use `native` for the in-tree alpha mux test path.
 - `shared.obfuscation.profile`: sender-side traffic shape. Use `low_latency`,
   `balanced`, `high_entropy`, `bulk`, or `stealth`.
 - `shared.obfuscation.chunk_policy`: adaptive data chunk sizing. Use

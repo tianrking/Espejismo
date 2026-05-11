@@ -31,12 +31,15 @@ Current release target: `v0.0.3`.
 - TCP-friendly pacing knobs for burst budget, rate cap, and minimum write size.
 - Local tunnel pool with configurable interactive and bulk physical TCP lanes,
   health-scored stream placement, per-lane reconnect/error/latency/byte status,
-  and yamux wrapped behind a replaceable mux module.
+  and logical stream muxing wrapped behind a replaceable module.
+- Native mux alpha with OPEN, DATA, WINDOW_UPDATE, FIN, RST, PING, and GOAWAY
+  frame types. It is selectable through `[shared.mux].mode = "native"` while
+  `yamux` remains the production default.
 - Stream priority field in TCP CONNECT and UDP DATAGRAM tunnel requests.
 - Adaptive chunk policies for low-latency, balanced, bulk, stealth, and custom
   frame sizing.
 - Optional local native TUN ingress that maps virtual-interface TCP/UDP traffic
-  into the existing encrypted TCP/yamux tunnel.
+  into the existing encrypted TCP mux tunnel.
 - Linux, macOS, and Windows TUN route/DNS managers with remote-server route
   protection, route takeover, DNS takeover, and best-effort shutdown restore.
 - Client and remote release update checks with configurable metadata URL.
@@ -70,7 +73,7 @@ Current release target: `v0.0.3`.
 
 ## Not Yet Implemented
 
-- Transparent migration of already-active yamux streams across a new physical tunnel.
+- Transparent migration of already-active logical streams across a new physical tunnel.
 - Browser extension packaging.
 - WASM transport crate. The current runtime uses Tokio TCP and is native-first.
 - Richer multi-profile control plane and log rotation policy.

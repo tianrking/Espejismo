@@ -6,7 +6,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use espejismo_core::{
     connect_handshake, connect_tcp_stream, spawn_frame_transport, FrameOptions, HandshakeConfig,
-    Metrics, RuntimeState, StreamPriority, TcpConfig, TunnelLaneSnapshot, TunnelPoolConfig,
+    Metrics, MuxMode, RuntimeState, StreamPriority, TcpConfig, TunnelLaneSnapshot,
+    TunnelPoolConfig,
 };
 use futures::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -52,6 +53,7 @@ pub(crate) struct TunnelManager {
     handshake: HandshakeConfig,
     frames: FrameOptions,
     tcp: TcpConfig,
+    mux_mode: MuxMode,
     tunnel_buffer: usize,
     metrics: Metrics,
     runtime_state: RuntimeState,
@@ -63,6 +65,7 @@ pub(crate) struct TunnelManagerConfig {
     pub(crate) handshake: HandshakeConfig,
     pub(crate) frames: FrameOptions,
     pub(crate) tcp: TcpConfig,
+    pub(crate) mux_mode: MuxMode,
     pub(crate) tunnel_buffer: usize,
     pub(crate) pool: TunnelPoolConfig,
 }
@@ -149,6 +152,7 @@ impl TunnelManager {
             handshake: config.handshake,
             frames: config.frames,
             tcp: config.tcp,
+            mux_mode: config.mux_mode,
             tunnel_buffer: config.tunnel_buffer,
             metrics,
             runtime_state,
@@ -197,7 +201,7 @@ impl TunnelManager {
                     return Ok(stream);
                 }
                 Err(err) => {
-                    self.record_lane_error(&lane, format!("yamux stream open failed: {err}"))
+                    self.record_lane_error(&lane, format!("mux stream open failed: {err}"))
                         .await;
                     *guard = None;
                 }
@@ -209,7 +213,7 @@ impl TunnelManager {
             .context("tunnel reconnect did not install control")?
             .open_stream()
             .await
-            .context("open yamux stream after reconnect")?;
+            .context("open mux stream after reconnect")?;
         self.record_open_success(&lane, started.elapsed()).await;
         Ok(stream)
     }
@@ -248,16 +252,15 @@ impl TunnelManager {
         }
         let transport =
             spawn_frame_transport(upstream, keys, self.frames.clone(), self.tunnel_buffer);
-        let mut session = client_session(transport);
-        let control = MuxControl::new(session.control());
+        let (control, mut session) = client_session(transport, self.mux_mode);
         let metrics = self.metrics.clone();
         let runtime_state = self.runtime_state.clone();
         let lane_for_task = lane.clone();
         tokio::spawn(async move {
             while let Some(event) = session.next().await {
                 if let Err(err) = event {
-                    debug!(lane = lane_for_task.id, error = %err, "yamux client session stopped");
-                    runtime_state.record_error(format!("yamux client session stopped: {err}"));
+                    debug!(lane = lane_for_task.id, error = %err, "mux client session stopped");
+                    runtime_state.record_error(format!("mux client session stopped: {err}"));
                     break;
                 }
             }

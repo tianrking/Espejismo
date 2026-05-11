@@ -79,17 +79,17 @@ without changing the underlying X25519/HMAC/puzzle handshake semantics.
 ## Multiplexing Pipeline
 
 `espejismo-local` maintains a reconnecting authenticated physical TCP tunnel to
-`espejismo-remote`, wraps it in the encrypted frame transport, and runs yamux
-over it. Each accepted SOCKS5 or HTTP proxy connection opens a yamux logical
-stream and sends an internal command preface. HTTP CONNECT is accepted directly;
-absolute-form `http://` requests are rewritten to origin-form before entering
-the tunnel. SOCKS5 UDP ASSOCIATE datagrams are relayed as UDP command streams.
-Optional native TUN ingress creates a local virtual network interface and uses a
-userspace netstack to convert captured TCP flows and UDP datagrams into the same
-internal tunnel commands. The remote side does not need a separate TUN-specific
-listener.
+`espejismo-remote`, wraps it in the encrypted frame transport, and runs the
+configured logical stream mux over it. Each accepted SOCKS5 or HTTP proxy
+connection opens a logical stream and sends an internal command preface. HTTP
+CONNECT is accepted directly; absolute-form `http://` requests are rewritten to
+origin-form before entering the tunnel. SOCKS5 UDP ASSOCIATE datagrams are
+relayed as UDP command streams. Optional native TUN ingress creates a local
+virtual network interface and uses a userspace netstack to convert captured TCP
+flows and UDP datagrams into the same internal tunnel commands. The remote side
+does not need a separate TUN-specific listener.
 
-`espejismo-remote` accepts yamux streams over the same physical tunnel. Each
+`espejismo-remote` accepts mux streams over the same physical tunnel. Each
 logical stream is handled independently: read the command preface, validate
 egress policy, connect the outbound TCP destination or relay one UDP datagram,
 then return traffic through the tunnel.
@@ -101,11 +101,13 @@ controller with slow-start, additive growth, and loss backoff. Those primitives
 are intentionally separated from the running TCP tunnel so future UDP socket
 integration can reuse them without disturbing the stable proxy path.
 
-The recommended production path is TCP/yamux because it is portable, simple to
-deploy, and predictable under ordinary NAT, cloud firewall, and QoS devices.
-SOCKS5 UDP ASSOCIATE is an application-level UDP relay carried over the same
-authenticated TCP tunnel. A physical UDP underlay remains experimental reserve,
-not the default reliability path.
+The recommended production path is TCP with `shared.mux.mode = "yamux"` because
+it is portable, simple to deploy, and predictable under ordinary NAT, cloud
+firewall, and QoS devices. `shared.mux.mode = "native"` enables the in-tree
+native mux alpha for tests and benchmarks. SOCKS5 UDP ASSOCIATE is an
+application-level UDP relay carried over the same authenticated TCP tunnel. A
+physical UDP underlay remains experimental reserve, not the default reliability
+path.
 
 ## Configuration Pipeline
 
@@ -145,6 +147,8 @@ CONNECT. UDP uses SOCKS5 UDP ASSOCIATE when `remote.egress.socks5_proxy` is set.
 - `config/`: TOML and base64 configuration loading.
 - `crypto/`: authenticated first packet, X25519, HKDF, and AEAD helpers.
 - `ingress/`: local protocol parsers such as SOCKS5 and HTTP proxy.
+- `mux/`: in-tree native mux alpha with OPEN, DATA, WINDOW_UPDATE, FIN, RST,
+  PING, and GOAWAY frames.
 - `protocol/`: encrypted frames, puzzles, UDP underlay primitives, and replay
   protection.
 - `transport/`: bridge between encrypted frames and `AsyncRead + AsyncWrite`.
@@ -174,8 +178,10 @@ fallback because it naturally supplies a fuller fingerprint.
 
 ## Next Layer: Migration
 
-Multiplexing is implemented with yamux. Transparent migration across a failed
-physical tunnel remains a higher-level connection-manager task: it should own
-reconnection, unsent-buffer tracking, stream retry policy, and user-visible
-failure semantics. The current implementation fail-fasts corrupted physical
-connections and lets the local process surface stream errors cleanly.
+Multiplexing is behind a replaceable wrapper. `yamux` remains the production
+default, while the native mux alpha exercises the same proxy path through
+Espejismo-owned frames. Transparent migration across a failed physical tunnel
+remains a higher-level connection-manager task: it should own reconnection,
+unsent-buffer tracking, stream retry policy, and user-visible failure semantics.
+The current implementation fail-fasts corrupted physical connections and lets
+the local process surface stream errors cleanly.

@@ -6,6 +6,7 @@ pub mod egress;
 pub mod ingress;
 pub mod logging;
 pub mod metrics;
+pub mod mux;
 pub mod profile;
 pub mod protocol;
 pub mod runtime_state;
@@ -17,8 +18,8 @@ pub use admin::{spawn_admin_server, AdminAction, AdminState};
 pub use cli_support::{apply_log_overrides, print_update_check, report_config_check, LogOverrides};
 pub use config::{
     config_to_toml, encode_config_base64, load_config, load_config_base64, parse_config,
-    AdminConfig, ConfigInput, EgressConfig, EspejismoConfig, LogConfig, LogFormat,
-    ObfuscationConfig, PacingConfig, ProbeDefenseMode, TcpConfig, TunnelPoolConfig,
+    AdminConfig, ConfigInput, EgressConfig, EspejismoConfig, LogConfig, LogFormat, MuxConfig,
+    MuxMode, ObfuscationConfig, PacingConfig, ProbeDefenseMode, TcpConfig, TunnelPoolConfig,
 };
 pub use crypto::{
     accept_handshake, accept_handshake_with_replay, accept_handshake_with_users, connect_handshake,

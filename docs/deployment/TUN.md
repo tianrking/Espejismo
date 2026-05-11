@@ -92,7 +92,7 @@ Important deployment notes:
   the TUN DNS settings, and removes the protected remote routes on a best-effort
   basis.
 - The current TUN implementation is intended for TCP-first deployments. UDP is
-  supported as application-level datagram relay over the TCP/yamux tunnel.
+  supported as application-level datagram relay over the encrypted TCP mux tunnel.
 
 Linux manual route equivalent:
 

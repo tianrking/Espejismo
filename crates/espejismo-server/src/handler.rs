@@ -91,7 +91,7 @@ pub(crate) async fn handle_peer(
         settings.frames.clone(),
         runtime.tunnel_buffer,
     );
-    let mut session = server_session(transport);
+    let mut session = server_session(transport, settings.mux_mode);
     let stream_limit = Arc::new(Semaphore::new(settings.max_streams as usize));
     while let Some(stream) = session.next().await {
         let stream = match stream {
@@ -100,8 +100,8 @@ pub(crate) async fn handle_peer(
                 metrics.dec_active_physical();
                 runtime
                     .runtime_state
-                    .record_error(format!("yamux server session stopped: {err}"));
-                return Err(err.into());
+                    .record_error(format!("mux server session stopped: {err}"));
+                return Err(err);
             }
         };
 

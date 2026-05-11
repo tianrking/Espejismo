@@ -13,8 +13,9 @@
 
 Un tunel de transporte cifrado multiplataforma nativo en Rust para redes publicas
 y no confiables. Ingreso local via SOCKS5, HTTP, y TUN nativo opcional, secreto
-directo con X25519, frames cifrados con XChaCha20-Poly1305, multiplexacion yamux,
-padding adaptativo, pacing amigable con TCP, y puzzles de cliente.
+directo con X25519, frames cifrados con XChaCha20-Poly1305, multiplexacion
+logica seleccionable, padding adaptativo, pacing amigable con TCP, y puzzles de
+cliente.
 
 Version actual: `v0.0.3`.
 
@@ -29,7 +30,7 @@ flowchart LR
         SOCKS["Ingreso SOCKS5<br/>TCP CONNECT + UDP ASSOCIATE"]
         HTTP["Ingreso proxy HTTP<br/>CONNECT + HTTP absolute-form"]
         AUTH["Auth local opcional"]
-        YMUX_C["Sesion cliente yamux<br/>streams logicos"]
+        YMUX_C["Sesion cliente mux<br/>streams logicos"]
         ENC_C["Adaptador de transporte cifrado"]
     end
 
@@ -41,7 +42,7 @@ flowchart LR
         PROBE["Guardia de probes<br/>fallback HTTP o tarpit silencioso"]
         HS["Verificador de handshake<br/>HMAC + X25519 + puzzle + cache replay"]
         ENC_R["Adaptador de transporte cifrado"]
-        YMUX_R["Sesion servidor yamux"]
+        YMUX_R["Sesion servidor mux"]
         REQ["Parser de solicitudes de tunel"]
         POLICY["Politica de salida<br/>ACL de host + puerto + cadena SOCKS5"]
         DEST["Destino TCP / UDP"]
@@ -53,11 +54,12 @@ flowchart LR
     YMUX_R --> REQ --> POLICY --> DEST
 ```
 
-El detalle importante de la estructura en capas es que yamux gestiona los
-streams logicos, mientras `spawn_frame_transport` proporciona a yamux un
-objeto `AsyncRead + AsyncWrite` normal respaldado por frames cifrados. Las
-solicitudes del proxy local se convierten en streams yamux; el socket fisico
-transporta solo el transporte cifrado.
+El detalle importante de la estructura en capas es que el mux seleccionado
+gestiona los streams logicos, mientras `spawn_frame_transport` le proporciona
+un objeto `AsyncRead + AsyncWrite` normal respaldado por frames cifrados. Las
+solicitudes del proxy local se convierten en streams mux; el socket fisico
+transporta solo el transporte cifrado. `yamux` es el valor estable por defecto,
+y el mux nativo del arbol puede activarse para pruebas alpha.
 
 ### Pila de Protocolo
 
@@ -65,11 +67,11 @@ transporta solo el transporte cifrado.
 Trafico de aplicacion
   -> parser de proxy SOCKS5 / HTTP
   -> auth de proxy local opcional
-  -> stream logico yamux
+  -> stream logico mux
   -> transporte de frames cifrados
   -> socket TCP
   -> handshake remoto / defensas replay / probe
-  -> manejador de streams yamux
+  -> manejador de streams mux
   -> politica de salida
   -> conexion TCP o rele UDP de un solo disparo
 ```
@@ -388,6 +390,9 @@ randomize_chunks = true
 min_chunk = 4096
 max_chunk = 16384
 
+[shared.mux]
+mode = "yamux"
+
 [shared.stealth]
 frame_size = 4096
 tick_ms = 50
@@ -527,7 +532,7 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - `espejismo-local --http-listen` habilita el proxy HTTP local.
 - `[local.tun]` habilita un ingreso TUN nativo opcional para capturar trafico
   del sistema. Convierte flujos TCP y datagramas UDP de la interfaz virtual al
-  tunel cifrado TCP/yamux existente. La toma de rutas y DNS en Linux, macOS, y Windows es
+  tunel cifrado TCP con mux existente. La toma de rutas y DNS en Linux, macOS, y Windows es
   explicita con `[local.tun.route]`; ver [docs/deployment/TUN.md](docs/deployment/TUN.md).
 - `[local.auth]` habilita autenticacion SOCKS5 por usuario/contrasena y
   autenticacion HTTP Basic del proxy. Omitir para un listener sin autenticacion
@@ -552,6 +557,9 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 - `[local.tunnel_pool]` mantiene varios tuneles TCP fisicos disponibles. Los
   nuevos streams se asignan a lanes interactive o bulk segun su salud, para que
   solicitudes pequenas no queden detras de descargas o flujos TUN grandes.
+- `[shared.mux]` selecciona el multiplexor de streams logicos. `yamux` es el
+  valor estable por defecto; `native` activa el mux alpha del arbol para pruebas
+  y benchmarks.
 - `[[remote.users]]` habilita multiples usuarios remotos independientes, cada
   uno con su propia PSK. Si no hay usuarios configurados, el servidor usa
   `shared.psk`.
@@ -576,9 +584,9 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   DNS, bind de listeners, PSK debil, admin sin token, egress amplio, usuarios
   duplicados, cuotas, ancho de banda, y pacing.
 - SOCKS5 soporta `CONNECT` TCP y `ASSOCIATE` UDP. Los datagramas UDP se
-  transportan por streams yamux autenticados y son verificados por la politica
+  transportan por streams mux autenticados y son verificados por la politica
   de salida remota.
-- La ruta estable de produccion es TCP/yamux. SOCKS5 UDP ASSOCIATE es un rele
+- La ruta estable de produccion es TCP con `shared.mux.mode = "yamux"`. SOCKS5 UDP ASSOCIATE es un rele
   UDP de aplicacion sobre ese tunel TCP; el underlay UDP fisico queda reservado
   para experimentos y no es el modo recomendado de despliegue.
 - `--max-padding` controla el tamano maximo del payload de los frames de padding
@@ -618,9 +626,9 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
   para enrutar prefijos de probe HTTP a un endpoint TCP `upstream` configurado
   (por ejemplo nginx local) o a una pagina 200 OK interna.
 - `--tunnel-buffer` controla el buffer de transporte cifrado en proceso usado
-  por debajo de yamux.
+  por debajo del mux de streams logicos.
 - `espejismo-remote --cold-start-delay-ms` aplica un pequeno retraso de inicio
-  tras un handshake valido y antes de que comience yamux.
+  tras un handshake valido y antes de que comience el mux.
 - La PSK acepta `hex:...`, `base64:...`, o una cadena UTF-8 cruda.
 - Los handshakes invalidos se cierran silenciosamente por defecto. Con
   `[remote.fallback_http].enabled = true`, los probes reciben respuestas de
@@ -633,6 +641,7 @@ en vivo se encuentran en [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 ```bash
 ./scripts/e2e_smoke.sh
 REQUESTS=200 CONCURRENCY=32 ./scripts/stress_smoke.sh
+MUX_MODE=native ./scripts/e2e_smoke.sh
 ```
 
 En Windows PowerShell:
@@ -644,7 +653,7 @@ En Windows PowerShell:
 
 El script inicia un servidor HTTP local, `espejismo-remote`, y `espejismo-local`,
 luego realiza verificaciones de SOCKS5 TCP, SOCKS5 UDP, proxy HTTP, HTTP CONNECT,
-admin, metricas e importacion de perfil a traves del tunel yamux cifrado.
+admin, metricas e importacion de perfil a traves del tunel mux cifrado.
 El script stress agrega cobertura de un stream grande, muchas solicitudes
 pequenas concurrentes, mezcla de lanes, reinicio remoto, y soak opcional.
 
