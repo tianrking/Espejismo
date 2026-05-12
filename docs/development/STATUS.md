@@ -61,7 +61,10 @@ Current release target: `v0.0.6`.
   into the existing encrypted TCP mux tunnel.
 - Linux, macOS, and Windows TUN route/DNS managers with remote-server route
   protection, route takeover, DNS takeover, saved recovery state, best-effort
-  shutdown restore, and explicit `--tun-route-cleanup` recovery.
+  shutdown restore, and explicit `--tun-route-cleanup` recovery. Linux uses a
+  dedicated policy-routing table and high-priority rules so it can take
+  precedence over common existing local TUN policy rules without rewriting the
+  `main` default route.
 - Client and remote release update checks with configurable metadata URL.
 - Server-side egress policy for host/port allow and block rules.
 - SOCKS5 chained TCP egress and SOCKS5 UDP ASSOCIATE chained UDP egress.

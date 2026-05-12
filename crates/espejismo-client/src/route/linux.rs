@@ -8,11 +8,19 @@ use serde::{Deserialize, Serialize};
 use tokio::net::lookup_host;
 use tracing::{debug, info, warn};
 
+const ESPEJISMO_ROUTE_TABLE: u32 = 20260;
+const ESPEJISMO_DIRECT_RULE_PRIORITY: u32 = 80;
+const ESPEJISMO_TUN_RULE_PRIORITY: u32 = 81;
+
 #[derive(Debug)]
 pub struct LinuxRouteGuard {
     tun_name: String,
     original_default: Option<DefaultRoute>,
     protected_routes: Vec<ProtectedRoute>,
+    route_table: u32,
+    direct_rule_priority: u32,
+    tun_rule_priority: u32,
+    restore_main_default: bool,
     dns_revert: bool,
     active: bool,
 }
@@ -28,6 +36,10 @@ struct DefaultRoute {
 struct ProtectedRoute {
     ip: Ipv4Addr,
     original: Option<String>,
+    #[serde(default = "default_true")]
+    installed_host_route: bool,
+    #[serde(default)]
+    installed_direct_rule: bool,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -35,6 +47,14 @@ struct LinuxRouteState {
     tun_name: String,
     original_default: Option<DefaultRoute>,
     protected_routes: Vec<ProtectedRoute>,
+    #[serde(default = "default_route_table")]
+    route_table: u32,
+    #[serde(default = "default_direct_rule_priority")]
+    direct_rule_priority: u32,
+    #[serde(default = "default_tun_rule_priority")]
+    tun_rule_priority: u32,
+    #[serde(default = "default_true")]
+    restore_main_default: bool,
     dns_revert: bool,
 }
 
@@ -45,6 +65,10 @@ pub async fn install(config: &LocalTunConfig, server: &str) -> Result<LinuxRoute
         tun_name: config.name.clone(),
         original_default,
         protected_routes: Vec::new(),
+        route_table: ESPEJISMO_ROUTE_TABLE,
+        direct_rule_priority: ESPEJISMO_DIRECT_RULE_PRIORITY,
+        tun_rule_priority: ESPEJISMO_TUN_RULE_PRIORITY,
+        restore_main_default: false,
         dns_revert: false,
         active: true,
     };
@@ -55,14 +79,24 @@ pub async fn install(config: &LocalTunConfig, server: &str) -> Result<LinuxRoute
             .as_ref()
             .context("cannot protect remote server without an existing default route")?;
         for ip in server_ips {
-            let original = read_host_route(ip)?;
-            replace_host_route(ip, default_route)
+            add_direct_rule(ip, guard.direct_rule_priority)
                 .with_context(|| format!("protect route to remote server {ip}"))?;
-            guard.protected_routes.push(ProtectedRoute { ip, original });
+            guard.protected_routes.push(ProtectedRoute {
+                ip,
+                original: None,
+                installed_host_route: false,
+                installed_direct_rule: true,
+            });
         }
+        debug!(
+            dev = %default_route.dev,
+            gateway = ?default_route.gateway,
+            "Linux TUN remote endpoint protection will use the main routing table"
+        );
     }
 
-    replace_default_route_to_tun(&config.name).context("replace default route to TUN")?;
+    install_policy_route_to_tun(&config.name, guard.route_table, guard.tun_rule_priority)
+        .context("install Linux policy route to TUN")?;
     if config.route.dns_enabled {
         apply_resolved_dns(&config.name, &config.route.dns_servers)
             .context("apply systemd-resolved DNS to TUN")?;
@@ -72,6 +106,9 @@ pub async fn install(config: &LocalTunConfig, server: &str) -> Result<LinuxRoute
 
     info!(
         tun = %config.name,
+        table = guard.route_table,
+        tun_rule_priority = guard.tun_rule_priority,
+        direct_rule_priority = guard.direct_rule_priority,
         protected_routes = guard.protected_routes.len(),
         dns = guard.dns_revert,
         "Linux TUN route manager installed"
@@ -93,21 +130,34 @@ impl LinuxRouteGuard {
             }
         }
 
-        if let Some(default_route) = &self.original_default {
-            if let Err(err) = restore_default_route(default_route) {
-                errors.push(format!("restore default route: {err}"));
+        if self.restore_main_default {
+            if let Some(default_route) = &self.original_default {
+                if let Err(err) = restore_default_route(default_route) {
+                    errors.push(format!("restore default route: {err}"));
+                }
             }
         }
 
+        if let Err(err) = remove_policy_route_to_tun(self.route_table, self.tun_rule_priority) {
+            debug!(error = %err, "Linux policy route cleanup skipped");
+        }
+
         for route in &self.protected_routes {
-            let result = if let Some(original) = &route.original {
-                restore_route_line(original)
-            } else {
-                let cidr = format!("{}/32", route.ip);
-                run("ip", &["route", "del", &cidr])
-            };
-            if let Err(err) = result {
-                debug!(ip = %route.ip, error = %err, "protected route restore skipped");
+            if route.installed_direct_rule {
+                if let Err(err) = del_direct_rule(route.ip, self.direct_rule_priority) {
+                    debug!(ip = %route.ip, error = %err, "protected direct rule cleanup skipped");
+                }
+            }
+            if route.installed_host_route {
+                let result = if let Some(original) = &route.original {
+                    restore_route_line(original)
+                } else {
+                    let cidr = format!("{}/32", route.ip);
+                    run("ip", &["route", "del", &cidr])
+                };
+                if let Err(err) = result {
+                    debug!(ip = %route.ip, error = %err, "protected route restore skipped");
+                }
             }
         }
 
@@ -132,6 +182,10 @@ pub async fn cleanup(config: &LocalTunConfig) -> Result<()> {
             tun_name: state.tun_name,
             original_default: state.original_default,
             protected_routes: state.protected_routes,
+            route_table: state.route_table,
+            direct_rule_priority: state.direct_rule_priority,
+            tun_rule_priority: state.tun_rule_priority,
+            restore_main_default: state.restore_main_default,
             dns_revert: state.dns_revert,
             active: true,
         };
@@ -147,6 +201,10 @@ pub async fn cleanup(config: &LocalTunConfig) -> Result<()> {
     }
     if let Err(err) = run_quiet("ip", &["route", "del", "128.0.0.0/1"]) {
         debug!(error = %err, "Linux split route cleanup skipped");
+    }
+    if let Err(err) = remove_policy_route_to_tun(ESPEJISMO_ROUTE_TABLE, ESPEJISMO_TUN_RULE_PRIORITY)
+    {
+        debug!(error = %err, "Linux policy route cleanup skipped");
     }
     if read_default_route()
         .ok()
@@ -171,6 +229,10 @@ fn write_state(guard: &LinuxRouteGuard) -> Result<()> {
         tun_name: guard.tun_name.clone(),
         original_default: guard.original_default.clone(),
         protected_routes: guard.protected_routes.clone(),
+        route_table: guard.route_table,
+        direct_rule_priority: guard.direct_rule_priority,
+        tun_rule_priority: guard.tun_rule_priority,
+        restore_main_default: guard.restore_main_default,
         dns_revert: guard.dns_revert,
     };
     std::fs::write(
@@ -211,21 +273,28 @@ async fn resolve_server_ipv4(server: &str) -> Result<Vec<Ipv4Addr>> {
     Ok(ips)
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn default_route_table() -> u32 {
+    ESPEJISMO_ROUTE_TABLE
+}
+
+fn default_direct_rule_priority() -> u32 {
+    ESPEJISMO_DIRECT_RULE_PRIORITY
+}
+
+fn default_tun_rule_priority() -> u32 {
+    ESPEJISMO_TUN_RULE_PRIORITY
+}
+
 fn read_default_route() -> Result<Option<DefaultRoute>> {
     let output = output("ip", &["-4", "route", "show", "default"])?;
     let Some(line) = output.lines().find(|line| !line.trim().is_empty()) else {
         return Ok(None);
     };
     Ok(Some(parse_default_route(line)?))
-}
-
-fn read_host_route(ip: Ipv4Addr) -> Result<Option<String>> {
-    let cidr = format!("{ip}/32");
-    let output = output("ip", &["-4", "route", "show", "exact", &cidr])?;
-    Ok(output
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .map(str::to_string))
 }
 
 fn parse_default_route(line: &str) -> Result<DefaultRoute> {
@@ -258,24 +327,73 @@ fn find_after<'a>(parts: &'a [&str], key: &str) -> Option<&'a str> {
         .find_map(|pair| (pair[0] == key).then_some(pair[1]))
 }
 
-fn replace_host_route(ip: Ipv4Addr, default_route: &DefaultRoute) -> Result<()> {
-    let mut owned = vec![
-        "route".to_string(),
-        "replace".to_string(),
-        format!("{ip}/32"),
-    ];
-    if let Some(gateway) = default_route.gateway {
-        owned.push("via".to_string());
-        owned.push(gateway.to_string());
+fn install_policy_route_to_tun(tun_name: &str, table: u32, priority: u32) -> Result<()> {
+    let table = table.to_string();
+    let priority = priority.to_string();
+    let _ = run_quiet("ip", &["rule", "del", "pref", &priority, "lookup", &table]);
+    run(
+        "ip",
+        &[
+            "route", "replace", "default", "dev", tun_name, "table", &table,
+        ],
+    )?;
+    run("ip", &["rule", "add", "pref", &priority, "lookup", &table])?;
+    if let Err(err) = flush_route_cache() {
+        debug!(error = %err, "Linux route cache flush skipped");
     }
-    owned.push("dev".to_string());
-    owned.push(default_route.dev.clone());
-    let args: Vec<&str> = owned.iter().map(String::as_str).collect();
-    run("ip", &args)
+    Ok(())
 }
 
-fn replace_default_route_to_tun(tun_name: &str) -> Result<()> {
-    run("ip", &["route", "replace", "default", "dev", tun_name])
+fn remove_policy_route_to_tun(table: u32, priority: u32) -> Result<()> {
+    let table = table.to_string();
+    let priority = priority.to_string();
+    let mut errors = Vec::new();
+    if let Err(err) = run_quiet("ip", &["rule", "del", "pref", &priority, "lookup", &table]) {
+        debug!(error = %err, "Linux TUN policy rule delete skipped");
+    }
+    if let Err(err) = run_quiet("ip", &["route", "flush", "table", &table]) {
+        errors.push(format!("flush table {table}: {err}"));
+    }
+    if let Err(err) = flush_route_cache() {
+        debug!(error = %err, "Linux route cache flush skipped");
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(errors.join("; "))
+    }
+}
+
+fn add_direct_rule(ip: Ipv4Addr, priority: u32) -> Result<()> {
+    let priority = priority.to_string();
+    let cidr = format!("{ip}/32");
+    let _ = run_quiet(
+        "ip",
+        &[
+            "rule", "del", "pref", &priority, "to", &cidr, "lookup", "main",
+        ],
+    );
+    run(
+        "ip",
+        &[
+            "rule", "add", "pref", &priority, "to", &cidr, "lookup", "main",
+        ],
+    )
+}
+
+fn del_direct_rule(ip: Ipv4Addr, priority: u32) -> Result<()> {
+    let priority = priority.to_string();
+    let cidr = format!("{ip}/32");
+    run_quiet(
+        "ip",
+        &[
+            "rule", "del", "pref", &priority, "to", &cidr, "lookup", "main",
+        ],
+    )
+}
+
+fn flush_route_cache() -> Result<()> {
+    run_quiet("ip", &["route", "flush", "cache"])
 }
 
 fn restore_default_route(default_route: &DefaultRoute) -> Result<()> {
