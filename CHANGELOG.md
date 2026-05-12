@@ -2,6 +2,53 @@
 
 ## Unreleased
 
+## v0.0.6
+
+`v0.0.6` completes the protocol-operations upgrade and makes the installer path
+usable for normal server/client deployment without hand-editing config.
+
+### Added
+
+- Protocol operations upgrade: mux mode negotiation, frame-level key updates,
+  key material zeroization, config profiles, route cleanup helpers, richer
+  tunnel/session metrics, and JSON benchmark output.
+- Reversible client onboarding conversion:
+  - TOML config to `espejismo://import/...` profile with
+    `--print-client-profile`.
+  - Profile URL back to TOML with `--print-config` or `--write-config`.
+- Guided Linux/macOS and Windows installers that download the latest GitHub
+  Release artifact for the current platform.
+- Remote installer public endpoint detection. Remote installs can use
+  `ESPEJISMO_PUBLIC_ENDPOINT=host:port`, `ESPEJISMO_PUBLIC_HOST=host`, or
+  automatic public IP detection.
+- Installer manager `connect` command that prints browser/app proxy settings,
+  curl test commands, and remote client import profiles.
+
+### Changed
+
+- Root Linux non-interactive `install.sh | sudo bash` now defaults to the
+  `remote` server role; non-root installs default to `local`.
+- Local SOCKS5/HTTP proxy authentication is disabled by default because the
+  generated listeners bind to `127.0.0.1`. Set
+  `ESPEJISMO_LOCAL_AUTH_PASSWORD` or `ESPEJISMO_CLIENT_AUTH_PASSWORD` to enable
+  optional local proxy auth.
+- Installer-written configs are role-specific. Remote installs keep client-only
+  `[local]` settings out of the server config and generate them only in the
+  printed client import profile.
+- Re-running the installer restarts the selected role so printed credentials
+  and config match the running process immediately.
+
+### Fixed
+
+- `curl | bash` non-interactive installs no longer exit silently on prompt
+  reads.
+- Installer random secret generation now has explicit OpenSSL, Python, and
+  `/dev/urandom` fallbacks with clear errors.
+- Remote installers reject invalid public endpoints such as
+  `0.0.0.0:6690` and endpoint strings without a port.
+- Browser onboarding no longer fails by default due to SOCKS5/HTTP proxy auth
+  prompts that many browsers do not handle well.
+
 ## v0.0.5
 
 `v0.0.5` hardens the native mux beta and cleans up shared runtime plumbing after

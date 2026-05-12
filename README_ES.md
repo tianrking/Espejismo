@@ -256,17 +256,38 @@ iwr -useb https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/ins
 
 El instalador descarga el ultimo release, genera secretos aleatorios si no los
 proporcionas, escribe la configuracion, arranca el rol elegido, e instala un
-comando de gestion para `status`, `logs`, `edit`, `reload`, y `restart`.
+comando de gestion para `status`, `logs`, `edit`, `reload`, `restart`, y
+`connect`.
+
+En modo no interactivo, Linux con root usa `remote` por defecto porque ese es el
+camino normal de servidor. Linux/macOS sin root usa `local`. Define
+`ESPEJISMO_ROLE=local` o `ESPEJISMO_ROLE=remote` para hacerlo explicito.
 
 Ejemplos no interactivos:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh \
-  | ESPEJISMO_ROLE=local ESPEJISMO_SERVER=203.0.113.10:6690 bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh | sudo bash
 
 curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh \
-  | sudo ESPEJISMO_ROLE=remote ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690 bash
+  | sudo ESPEJISMO_ROLE=remote ESPEJISMO_PUBLIC_HOST=proxy.example.com bash
+
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh \
+  | ESPEJISMO_ROLE=local ESPEJISMO_SERVER=203.0.113.10:6690 bash
 ```
+
+En instalaciones remotas, el instalador detecta la IP publica si no pasas una
+direccion. Usa `ESPEJISMO_PUBLIC_HOST=tu.dominio` o
+`ESPEJISMO_PUBLIC_ENDPOINT=tu.dominio:6690` cuando ya sabes la direccion que
+deben marcar los clientes. `0.0.0.0` solo es una direccion de escucha para
+`ESPEJISMO_LISTEN`, no una direccion de cliente.
+
+La autenticacion del proxy local SOCKS5/HTTP esta desactivada por defecto
+porque los listeners generados usan `127.0.0.1`. Define
+`ESPEJISMO_LOCAL_AUTH_PASSWORD` si quieres exigir autenticacion local.
+
+Las configuraciones escritas por el instalador son especificas del rol. Una
+instalacion remota mantiene los ajustes `[local]` fuera del archivo de servidor
+y los genera solo dentro del perfil de importacion del cliente.
 
 ### Servidor Linux
 
