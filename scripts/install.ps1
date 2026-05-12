@@ -89,6 +89,42 @@ username = "$(Escape-Toml $LocalUser)"
 password = "$(Escape-Toml $LocalPassword)"
 "@
 }
+$LocalConfigToml = @"
+
+[local]
+server = "$(Escape-Toml $Server)"
+socks5_listen = "$Socks5Listen"
+http_listen = "$HttpListen"
+handshake_padding = 256
+$LocalAuthToml
+
+[local.tunnel_pool]
+min_connections = 1
+max_connections = 4
+interactive_lanes = 1
+bulk_lanes = 2
+max_reconnect_attempts = 3
+max_connection_age_secs = 3600
+"@
+$RemoteConfigToml = @"
+
+[remote]
+listen = "$Listen"
+handshake_timeout_ms = 3000
+reject_delay_ms = 0
+max_handshake_padding = 1024
+replay_window_secs = 60
+cold_start_delay_ms = 35
+tarpit_max = 1024
+tarpit_hold_secs = 300
+
+[remote.egress]
+deny_private_ips = true
+allow_ports = [80, 443]
+block_ports = [25]
+block_hosts = ["169.254.169.254", "metadata.google.internal"]
+"@
+$RoleConfigToml = if ($Role -eq "remote") { $RemoteConfigToml } else { $LocalConfigToml }
 
 New-Item -ItemType Directory -Force $BinDir, $ConfigDir | Out-Null
 
@@ -158,21 +194,6 @@ randomize_chunks = true
 min_chunk = 4096
 max_chunk = 16384
 
-[local]
-server = "$(Escape-Toml $Server)"
-socks5_listen = "$Socks5Listen"
-http_listen = "$HttpListen"
-handshake_padding = 256
-$LocalAuthToml
-
-[local.tunnel_pool]
-min_connections = 1
-max_connections = 4
-interactive_lanes = 1
-bulk_lanes = 2
-max_reconnect_attempts = 3
-max_connection_age_secs = 3600
-
 [logging]
 level = "info"
 format = "compact"
@@ -182,22 +203,7 @@ file = "$(Escape-Toml $LogPath)"
 [admin]
 listen = "$AdminListen"
 token = "$(Escape-Toml $AdminToken)"
-
-[remote]
-listen = "$Listen"
-handshake_timeout_ms = 3000
-reject_delay_ms = 0
-max_handshake_padding = 1024
-replay_window_secs = 60
-cold_start_delay_ms = 35
-tarpit_max = 1024
-tarpit_hold_secs = 300
-
-[remote.egress]
-deny_private_ips = true
-allow_ports = [80, 443]
-block_ports = [25]
-block_hosts = ["169.254.169.254", "metadata.google.internal"]
+$RoleConfigToml
 "@
 Set-Content -Path $ConfigPath -Value $config -Encoding UTF8
 
@@ -280,7 +286,37 @@ function Connect-Info {
             Write-Host "  Proxy auth:       disabled"
         }
     } else {
-        `$profileUrl = & (Join-Path (Split-Path `$Bin) "espejismo-local.exe") --config `$Config --print-client-profile --profile-name default
+        `$tmpConfig = [System.IO.Path]::GetTempFileName()
+        Copy-Item `$Config `$tmpConfig -Force
+        Add-Content -Path `$tmpConfig -Value @"
+
+[local]
+server = "`$ServerEndpoint"
+socks5_listen = "`$Socks5Addr"
+http_listen = "`$HttpAddr"
+handshake_padding = 256
+
+[local.tunnel_pool]
+min_connections = 1
+max_connections = 4
+interactive_lanes = 1
+bulk_lanes = 2
+max_reconnect_attempts = 3
+max_connection_age_secs = 3600
+"@
+        if (`$LocalAuthPassword) {
+            Add-Content -Path `$tmpConfig -Value @"
+
+[local.auth]
+username = "`$LocalAuthUser"
+password = "`$LocalAuthPassword"
+"@
+        }
+        try {
+            `$profileUrl = & (Join-Path (Split-Path `$Bin) "espejismo-local.exe") --config `$tmpConfig --print-client-profile --profile-name default
+        } finally {
+            Remove-Item `$tmpConfig -Force -ErrorAction SilentlyContinue
+        }
         Write-Host "Remote endpoint is ready."
         Write-Host "  Public endpoint: `$ServerEndpoint"
         Write-Host ""

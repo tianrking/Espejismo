@@ -68,6 +68,10 @@ Local SOCKS5/HTTP proxy authentication is disabled by default because listeners
 bind to `127.0.0.1`. Set `ESPEJISMO_LOCAL_AUTH_PASSWORD` when you explicitly
 want browser/app proxy authentication.
 
+Installer-written configs are role-specific: remote installs keep client-only
+`local` settings out of the server config and generate them only in the printed
+client import profile.
+
 Configs and client profiles are reversible for the local onboarding path:
 
 ```bash

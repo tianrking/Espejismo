@@ -147,6 +147,55 @@ password = "$(toml_escape "${LOCAL_PASSWORD}")"
 EOF
 }
 
+local_config_toml() {
+  cat <<EOF
+
+[local]
+server = "$(toml_escape "${SERVER}")"
+socks5_listen = "${SOCKS5_LISTEN}"
+http_listen = "${HTTP_LISTEN}"
+handshake_padding = 256
+$(local_auth_toml)
+
+[local.tunnel_pool]
+min_connections = 1
+max_connections = 4
+interactive_lanes = 1
+bulk_lanes = 2
+max_reconnect_attempts = 3
+max_connection_age_secs = 3600
+EOF
+}
+
+remote_config_toml() {
+  cat <<EOF
+
+[remote]
+listen = "${LISTEN}"
+handshake_timeout_ms = 3000
+reject_delay_ms = 0
+max_handshake_padding = 1024
+replay_window_secs = 60
+cold_start_delay_ms = 35
+tarpit_max = 1024
+tarpit_hold_secs = 300
+
+[remote.egress]
+deny_private_ips = true
+allow_ports = [80, 443]
+block_ports = [25]
+block_hosts = ["169.254.169.254", "metadata.google.internal"]
+EOF
+}
+
+role_config_toml() {
+  if [[ "${ROLE}" == "remote" ]]; then
+    remote_config_toml
+  else
+    local_config_toml
+  fi
+}
+
 public_endpoint() {
   if [[ -n "${PUBLIC_ENDPOINT}" ]]; then
     validate_public_endpoint "${PUBLIC_ENDPOINT}"
@@ -291,21 +340,6 @@ max_chunk = 16384
 frame_size = 4096
 tick_ms = 50
 
-[local]
-server = "$(toml_escape "${SERVER}")"
-socks5_listen = "${SOCKS5_LISTEN}"
-http_listen = "${HTTP_LISTEN}"
-handshake_padding = 256
-$(local_auth_toml)
-
-[local.tunnel_pool]
-min_connections = 1
-max_connections = 4
-interactive_lanes = 1
-bulk_lanes = 2
-max_reconnect_attempts = 3
-max_connection_age_secs = 3600
-
 [logging]
 level = "info"
 format = "compact"
@@ -315,22 +349,7 @@ file = "${CONFIG_DIR}/espejismo-${ROLE}.log"
 [admin]
 listen = "${ADMIN_LISTEN}"
 token = "$(toml_escape "${ADMIN_TOKEN}")"
-
-[remote]
-listen = "${LISTEN}"
-handshake_timeout_ms = 3000
-reject_delay_ms = 0
-max_handshake_padding = 1024
-replay_window_secs = 60
-cold_start_delay_ms = 35
-tarpit_max = 1024
-tarpit_hold_secs = 300
-
-[remote.egress]
-deny_private_ips = true
-allow_ports = [80, 443]
-block_ports = [25]
-block_hosts = ["169.254.169.254", "metadata.google.internal"]
+$(role_config_toml)
 EOF
 }
 
@@ -428,8 +447,37 @@ cmd_edit() {
 }
 
 cmd_profile() {
-  if [[ "\${ROLE}" != "remote" ]]; then
-    echo "profile export is most useful on a remote install" >&2
+  if [[ "\${ROLE}" == "remote" ]]; then
+    local tmp_config
+    tmp_config="\$(mktemp)"
+    cp "\${CONFIG}" "\${tmp_config}"
+    cat >>"\${tmp_config}" <<PROFILE_EOF
+
+[local]
+server = "\${SERVER_ENDPOINT}"
+socks5_listen = "\${SOCKS5_ADDR}"
+http_listen = "\${HTTP_ADDR}"
+handshake_padding = 256
+
+[local.tunnel_pool]
+min_connections = 1
+max_connections = 4
+interactive_lanes = 1
+bulk_lanes = 2
+max_reconnect_attempts = 3
+max_connection_age_secs = 3600
+PROFILE_EOF
+    if [[ -n "\${LOCAL_AUTH_PASSWORD}" ]]; then
+      cat >>"\${tmp_config}" <<PROFILE_EOF
+
+[local.auth]
+username = "\${LOCAL_AUTH_USER}"
+password = "\${LOCAL_AUTH_PASSWORD}"
+PROFILE_EOF
+    fi
+    "${bin_dir}/espejismo-local" --config "\${tmp_config}" --print-client-profile --profile-name default
+    rm -f "\${tmp_config}"
+    return
   fi
   "${bin_dir}/espejismo-local" --config "\${CONFIG}" --print-client-profile --profile-name default
 }

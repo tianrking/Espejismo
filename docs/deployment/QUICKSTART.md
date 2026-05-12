@@ -107,6 +107,11 @@ Root Linux remote installs additionally create a systemd service and link
 Re-running the installer rewrites config and restarts the selected role so the
 printed credentials match the running service immediately.
 
+Guided installers write role-specific configs. A remote install writes only
+server-owned sections (`shared`, `logging`, `admin`, `remote`) to the server
+config file; client-only `local` settings are generated only inside the printed
+client import profile. A local install writes only the local client sections.
+
 ## Installed Files
 
 Guided Linux/macOS local installs default to `~/.espejismo`:
