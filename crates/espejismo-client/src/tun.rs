@@ -46,6 +46,10 @@ pub async fn run_tun_ingress(
         "TUN ingress enabled"
     );
 
+    if config.route.enabled {
+        warm_up_tunnel(tunnel.clone()).await?;
+    }
+
     let _route_guard = if config.route.enabled {
         Some(route::install_tun_routes(&config, &server).await?)
     } else {
@@ -261,6 +265,21 @@ async fn open_tun_stream(tunnel: Arc<TunnelService>) -> Result<(TunnelStream, St
             Ok((stream, StreamPriority::Interactive))
         }
     }
+}
+
+async fn warm_up_tunnel(tunnel: Arc<TunnelService>) -> Result<()> {
+    info!("warming up tunnel before TUN route takeover");
+    let stream = timeout(
+        TUN_STREAM_OPEN_TIMEOUT,
+        tunnel.open_stream(StreamPriority::Interactive),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("TUN warm-up stream open timed out"))??;
+    let lane_id = stream.lane_id();
+    drop(stream);
+    tunnel.record_stream_bytes(lane_id, 0, 0).await;
+    info!(lane_id, "TUN warm-up stream opened");
+    Ok(())
 }
 
 fn authority_from_socket(addr: SocketAddr) -> String {
