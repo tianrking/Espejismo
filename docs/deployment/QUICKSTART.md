@@ -78,6 +78,63 @@ Management after install:
 Root Linux remote installs additionally create a systemd service and link
 `/usr/local/bin/espejismoctl-remote`.
 
+## Installed Files
+
+Guided Linux/macOS local installs default to `~/.espejismo`:
+
+```text
+~/.espejismo/bin/espejismo-local       Local client binary
+~/.espejismo/bin/espejismo-remote      Remote server binary
+~/.espejismo/config/espejismo.toml     Active config
+~/.espejismo/config/espejismo-*.log    Local log file when not using systemd
+~/.espejismo/espejismoctl              Manager command
+```
+
+Root remote Linux installs default to `/opt/espejismo` and also create:
+
+```text
+/etc/systemd/system/espejismo-remote.service
+/usr/local/bin/espejismoctl-remote
+```
+
+Windows guided installs default to:
+
+```text
+%LOCALAPPDATA%\Espejismo\bin\espejismo-local.exe
+%LOCALAPPDATA%\Espejismo\bin\espejismo-remote.exe
+%LOCALAPPDATA%\Espejismo\config\espejismo.toml
+%LOCALAPPDATA%\Espejismo\espejismoctl.ps1
+```
+
+## Manager Commands
+
+The generated manager command wraps daily operations:
+
+```bash
+espejismoctl status    # process state plus admin /status when available
+espejismoctl start     # start the selected local or remote role
+espejismoctl stop      # stop the selected role
+espejismoctl restart   # stop then start
+espejismoctl logs      # follow log output
+espejismoctl edit      # open active TOML config in $EDITOR or vi
+espejismoctl reload    # POST /reload to apply runtime-safe config changes
+espejismoctl profile   # print an espejismo://import/... client profile
+espejismoctl config    # print the active config path
+```
+
+On Windows:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Espejismo\espejismoctl.ps1" status
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Espejismo\espejismoctl.ps1" edit
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Espejismo\espejismoctl.ps1" restart
+```
+
+After editing config, use `reload` for runtime-safe changes such as server,
+auth, pacing, mux mode, users, quotas, and egress policy. Use `restart` for
+listener changes, log file changes, TUN ownership, or anything that changes
+process-owned resources.
+
 ## Ubuntu Remote One-Liner
 
 Install the remote endpoint with one command:
