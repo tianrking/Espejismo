@@ -251,8 +251,18 @@ Descarga y extrae el release de Linux en el servidor, luego ejecuta:
 O instala el endpoint remoto en Ubuntu con un comando:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=latest bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install-ubuntu-remote.sh \
+  | sudo bash
+```
+
+El instalador descarga el ultimo release de GitHub, genera una PSK aleatoria,
+instala `espejismo-remote` como servicio systemd, e imprime un perfil
+`espejismo://import/...` listo para importar. Si la direccion publica detectada
+no es la que debe usar el cliente:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install-ubuntu-remote.sh \
+  | sudo ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690 bash
 ```
 
 ### Cliente macOS

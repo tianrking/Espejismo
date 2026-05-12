@@ -9,34 +9,32 @@ This guide covers the normal production shape:
 
 ## Ubuntu Remote One-Liner
 
-After publishing a GitHub release, install the remote endpoint with one command.
-Replace `OWNER/REPO` with the repository that hosts the release artifacts:
+Install the remote endpoint with one command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=latest bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install-ubuntu-remote.sh \
+  | sudo bash
 ```
 
 The installer prints a single `espejismo://import/...` client profile. Keep it
 private. It contains the remote address, PSK, local proxy listeners, and local
-proxy credentials.
+proxy credentials. By default the installer downloads the latest release from
+`tianrking/Espejismo`, generates a random PSK, writes a production config, and
+starts the systemd service.
 
 For a ready-to-use client profile, pass the public endpoint that clients should
 connect to:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_REPO=OWNER/REPO \
-    ESPEJISMO_VERSION=latest \
-    ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690 \
-    bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install-ubuntu-remote.sh \
+  | sudo ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690 bash
 ```
 
 Pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=v0.0.6 bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install-ubuntu-remote.sh \
+  | sudo ESPEJISMO_VERSION=v0.0.6 bash
 ```
 
 Custom archive URL, useful for private releases or self-hosted packages:
@@ -68,6 +66,8 @@ ESPEJISMO_DENY_PRIVATE_IPS=true
 ESPEJISMO_ALLOW_PORTS=80,443
 ESPEJISMO_BLOCK_PORTS=25
 ESPEJISMO_MAX_STREAMS=256
+ESPEJISMO_MAX_PHYSICAL_CONNECTIONS=1024
+ESPEJISMO_KEY_UPDATE_FRAMES=16384
 ESPEJISMO_IDLE_TIMEOUT_SECS=300
 ESPEJISMO_TCP_NODELAY=true
 ESPEJISMO_TCP_KEEPALIVE_SECS=30

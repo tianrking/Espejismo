@@ -244,8 +244,18 @@ Download and extract the Linux release archive on the server, then run:
 Or install the remote endpoint on Ubuntu with one command:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=latest bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install-ubuntu-remote.sh \
+  | sudo bash
+```
+
+The installer downloads the latest GitHub release, generates a random PSK,
+installs `espejismo-remote` as a systemd service, and prints a ready-to-import
+`espejismo://import/...` client profile. If the auto-detected public endpoint is
+not the address your client should dial, provide it explicitly:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install-ubuntu-remote.sh \
+  | sudo ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690 bash
 ```
 
 Generate a tuned starter config instead of hand-editing every transport knob:

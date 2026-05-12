@@ -6,7 +6,7 @@ if [[ "${EUID}" -ne 0 ]]; then
   exit 1
 fi
 
-ESPEJISMO_REPO="${ESPEJISMO_REPO:-}"
+ESPEJISMO_REPO="${ESPEJISMO_REPO:-tianrking/Espejismo}"
 ESPEJISMO_VERSION="${ESPEJISMO_VERSION:-latest}"
 ESPEJISMO_ARCHIVE_URL="${ESPEJISMO_ARCHIVE_URL:-}"
 ESPEJISMO_LISTEN="${ESPEJISMO_LISTEN:-0.0.0.0:6690}"
@@ -29,6 +29,8 @@ ESPEJISMO_BACKPRESSURE_COOLDOWN_MS="${ESPEJISMO_BACKPRESSURE_COOLDOWN_MS:-1000}"
 ESPEJISMO_TUNNEL_BUFFER="${ESPEJISMO_TUNNEL_BUFFER:-1048576}"
 ESPEJISMO_IDLE_TIMEOUT_SECS="${ESPEJISMO_IDLE_TIMEOUT_SECS:-300}"
 ESPEJISMO_MAX_STREAMS="${ESPEJISMO_MAX_STREAMS:-256}"
+ESPEJISMO_MAX_PHYSICAL_CONNECTIONS="${ESPEJISMO_MAX_PHYSICAL_CONNECTIONS:-1024}"
+ESPEJISMO_KEY_UPDATE_FRAMES="${ESPEJISMO_KEY_UPDATE_FRAMES:-16384}"
 ESPEJISMO_TCP_NODELAY="${ESPEJISMO_TCP_NODELAY:-true}"
 ESPEJISMO_TCP_KEEPALIVE_SECS="${ESPEJISMO_TCP_KEEPALIVE_SECS:-30}"
 ESPEJISMO_TCP_HEARTBEAT_SECS="${ESPEJISMO_TCP_HEARTBEAT_SECS:-30}"
@@ -174,16 +176,6 @@ download_archive() {
     curl -fsSL "${ESPEJISMO_ARCHIVE_URL}" -o "${dest}"
     return
   fi
-  if [[ -z "${ESPEJISMO_REPO}" ]]; then
-    cat >&2 <<'EOF'
-Set ESPEJISMO_REPO=owner/repo or ESPEJISMO_ARCHIVE_URL before running this installer.
-
-Example:
-  curl -fsSL https://raw.githubusercontent.com/OWNER/REPO/main/scripts/install-ubuntu-remote.sh \
-    | sudo ESPEJISMO_REPO=OWNER/REPO ESPEJISMO_VERSION=latest bash
-EOF
-    exit 1
-  fi
   local base="https://github.com/${ESPEJISMO_REPO}/releases"
   if [[ "${ESPEJISMO_VERSION}" == "latest" ]]; then
     curl -fsSL "${base}/latest/download/espejismo-${package_arch}.tar.gz" -o "${dest}"
@@ -248,6 +240,8 @@ backpressure_cooldown_ms = ${ESPEJISMO_BACKPRESSURE_COOLDOWN_MS}
 tunnel_buffer = ${ESPEJISMO_TUNNEL_BUFFER}
 idle_timeout_secs = ${ESPEJISMO_IDLE_TIMEOUT_SECS}
 max_streams = ${ESPEJISMO_MAX_STREAMS}
+max_physical_connections = ${ESPEJISMO_MAX_PHYSICAL_CONNECTIONS}
+key_update_frames = ${ESPEJISMO_KEY_UPDATE_FRAMES}
 
 [shared.tcp]
 nodelay = ${ESPEJISMO_TCP_NODELAY}
@@ -350,6 +344,8 @@ cat >"${client_config}" <<EOF
 [shared]
 psk = "${ESPEJISMO_PSK//\"/\\\"}"
 max_streams = ${ESPEJISMO_MAX_STREAMS}
+max_physical_connections = ${ESPEJISMO_MAX_PHYSICAL_CONNECTIONS}
+key_update_frames = ${ESPEJISMO_KEY_UPDATE_FRAMES}
 
 [shared.tcp]
 nodelay = ${ESPEJISMO_TCP_NODELAY}
