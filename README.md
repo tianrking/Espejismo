@@ -178,6 +178,7 @@ Windows:
 - [Users, Quotas, Bandwidth](docs/deployment/USERS.md)
 - [Native TUN Mode](docs/deployment/TUN.md)
 - [Packaging](docs/deployment/PACKAGING.md)
+- [Protocol Specification](docs/PROTOCOL.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Implementation Status](docs/development/STATUS.md)
 - [Test Plan](docs/testing/TEST_PLAN.md)

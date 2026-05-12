@@ -7,7 +7,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result};
 use espejismo_core::{
     connect_handshake, connect_tcp_stream, spawn_frame_transport, FrameOptions, HandshakeConfig,
-    Metrics, RuntimeState, StreamPriority, TcpConfig, TunnelLaneSnapshot, TunnelPoolConfig,
+    Metrics, RuntimeState, StreamPriority, TcpConfig, TransportConnector, TransportTarget,
+    TunnelLaneSnapshot, TunnelPoolConfig,
 };
 use futures::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -59,13 +60,13 @@ pub(crate) struct TunnelManager {
     server: String,
     handshake: HandshakeConfig,
     frames: FrameOptions,
-    tcp: TcpConfig,
     mux: MuxRuntimeConfig,
     tunnel_buffer: usize,
     max_reconnect_attempts: u32,
     max_connection_age: Duration,
     metrics: Metrics,
     runtime_state: RuntimeState,
+    connector: Arc<dyn TransportConnector>,
     lanes: Vec<Arc<TunnelLane>>,
 }
 
@@ -196,13 +197,15 @@ impl TunnelManager {
             server: config.server,
             handshake: config.handshake,
             frames,
-            tcp: config.tcp,
             mux: config.mux,
             tunnel_buffer: config.tunnel_buffer,
             max_reconnect_attempts: config.pool.max_reconnect_attempts.max(1),
             max_connection_age: Duration::from_secs(config.pool.max_connection_age_secs.max(1)),
             metrics,
             runtime_state,
+            connector: Arc::new(TcpTransportConnector {
+                options: config.tcp,
+            }),
             lanes,
         }
     }
@@ -307,7 +310,9 @@ impl TunnelManager {
         apply_reconnect_backoff(&self.runtime_state).await;
         let mut upstream = match timeout(
             LANE_CONNECT_TIMEOUT,
-            connect_tcp_stream(self.server.as_str(), &self.tcp),
+            self.connector.connect(TransportTarget {
+                endpoint: self.server.clone(),
+            }),
         )
         .await
         {
@@ -431,6 +436,24 @@ impl TunnelManager {
                 .map(|connected_at| connected_at.elapsed().as_secs()),
             last_error: health.last_error.clone(),
         });
+    }
+}
+
+#[derive(Clone)]
+struct TcpTransportConnector {
+    options: TcpConfig,
+}
+
+impl TransportConnector for TcpTransportConnector {
+    fn connect<'a>(
+        &'a self,
+        target: TransportTarget,
+    ) -> espejismo_core::extension::BoxFutureResult<'a, Box<dyn espejismo_core::TransportStream>>
+    {
+        Box::pin(async move {
+            let stream = connect_tcp_stream(&target.endpoint, &self.options).await?;
+            Ok(Box::new(stream) as Box<dyn espejismo_core::TransportStream>)
+        })
     }
 }
 

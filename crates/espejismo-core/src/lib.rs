@@ -3,6 +3,7 @@ pub mod cli_support;
 pub mod config;
 pub mod crypto;
 pub mod egress;
+pub mod extension;
 pub mod ingress;
 pub mod logging;
 pub mod metrics;
@@ -27,6 +28,11 @@ pub use crypto::{
     parse_psk, AuthenticatedSession, HandshakeConfig, HandshakeUser, SessionKeys,
 };
 pub use egress::{split_authority, EgressPolicy};
+pub use extension::{
+    AuthDecision, AuthRequest, Authenticator, CommandAuthenticator, EgressRequest,
+    HttpJsonAuthenticator, NoopTrafficObserver, OutboundConnector, RequestContext, RequestPolicy,
+    TrafficEvent, TrafficObserver, TransportConnector, TransportStream, TransportTarget,
+};
 pub use ingress::{http_proxy, socks5, ProxyAuth};
 pub use logging::{init_logging, LogGuard};
 pub use metrics::{Metrics, MetricsSnapshot};

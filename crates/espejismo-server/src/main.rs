@@ -11,8 +11,8 @@ use espejismo_core::{
     encode_config_base64, init_logging, load_config, load_config_base64, parse_config, parse_psk,
     print_update_check, report_config_check, spawn_admin_server, AdminAction, AdminState,
     ConfigInput, EgressPolicy, EspejismoConfig, FrameOptionOverrides, FrameOptions,
-    HandshakeConfig, HandshakeUser, LogOverrides, Metrics, ProbeDefenseMode, ReplayCache,
-    RuntimeState, TcpConfig,
+    HandshakeConfig, HandshakeUser, LogOverrides, Metrics, NoopTrafficObserver, ProbeDefenseMode,
+    ReplayCache, RuntimeState, TcpConfig, TrafficObserver,
 };
 use serde_json::json;
 use tokio::net::lookup_host;
@@ -54,6 +54,8 @@ pub(crate) struct Args {
     decode_config_base64: Option<String>,
     #[arg(long)]
     check_config: bool,
+    #[arg(long)]
+    doctor: bool,
     #[arg(long)]
     check_update: bool,
     #[arg(long)]
@@ -137,6 +139,7 @@ pub(crate) struct RemoteSettings {
     pub(crate) idle_timeout: Duration,
     pub(crate) max_streams: u32,
     pub(crate) limits: UserLimitRegistry,
+    pub(crate) traffic: Arc<dyn TrafficObserver>,
 }
 
 #[tokio::main]
@@ -174,8 +177,8 @@ async fn main() -> Result<()> {
         apply_named_profile(&mut config, profile)?;
     }
     apply_cli_overrides_to_config(&mut config, &args)?;
-    if args.check_config {
-        check_remote_config(&config, &args).await?;
+    if args.check_config || args.doctor {
+        check_remote_config(&config, &args, args.doctor).await?;
         return Ok(());
     }
     if args.print_config {
@@ -313,7 +316,7 @@ fn apply_cli_overrides_to_config(config: &mut EspejismoConfig, args: &Args) -> R
     Ok(())
 }
 
-async fn check_remote_config(config: &EspejismoConfig, args: &Args) -> Result<()> {
+async fn check_remote_config(config: &EspejismoConfig, args: &Args, doctor: bool) -> Result<()> {
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
     let listen = args.listen.unwrap_or(config.remote.listen);
@@ -383,7 +386,82 @@ async fn check_remote_config(config: &EspejismoConfig, args: &Args) -> Result<()
             Err(err) => warnings.push(format!("egress SOCKS5 proxy cannot resolve {proxy}: {err}")),
         }
     }
+    if doctor {
+        diagnose_low_feature_profile(config, &mut warnings);
+        if let Some(upstream) = &config.remote.fallback_http.upstream {
+            let host = upstream
+                .strip_prefix("http://")
+                .or_else(|| upstream.strip_prefix("https://"))
+                .unwrap_or(upstream)
+                .split('/')
+                .next()
+                .unwrap_or(upstream);
+            match lookup_host(host).await {
+                Ok(addrs) => {
+                    if addrs.count() > 0 {
+                        println!("OK fallback upstream resolves: {upstream}");
+                    } else {
+                        warnings.push(format!(
+                            "fallback upstream resolved no addresses: {upstream}"
+                        ));
+                    }
+                }
+                Err(err) => warnings.push(format!(
+                    "fallback upstream cannot resolve {upstream}: {err}"
+                )),
+            }
+        }
+        if config.shared.obfuscation.profile == espejismo_core::ObfuscationProfile::Stealth {
+            println!(
+                "OK stealth frame size configured: {} bytes",
+                config.shared.stealth.frame_size
+            );
+        }
+        if matches!(
+            config.remote.fallback_http.mode,
+            ProbeDefenseMode::HttpFallback
+        ) || config.remote.fallback_http.enabled
+        {
+            warnings.push(
+                "low-feature mode: HTTP fallback is useful operationally but borrows HTTP-looking behavior"
+                    .to_string(),
+            );
+        }
+    }
     report_config_check(warnings, errors)
+}
+
+fn diagnose_low_feature_profile(config: &EspejismoConfig, warnings: &mut Vec<String>) {
+    if !config.shared.obfuscation.profile.is_stealth() {
+        warnings.push(
+            "low-feature mode: use profile stealth to avoid variable frame-size patterns"
+                .to_string(),
+        );
+    }
+    if config.shared.max_padding == 0 || config.shared.padding_chance_percent == 0 {
+        warnings.push(
+            "low-feature mode: enable bounded padding to reduce stable payload-size signals"
+                .to_string(),
+        );
+    }
+    if config.shared.jitter_ms == 0 && !config.shared.obfuscation.profile.is_stealth() {
+        warnings.push(
+            "low-feature mode: non-stealth profile without jitter keeps timing more regular"
+                .to_string(),
+        );
+    }
+    if config.shared.key_update_frames > 100_000 {
+        warnings.push(
+            "low-feature mode: very infrequent key updates keep long tunnels on one traffic secret"
+                .to_string(),
+        );
+    }
+    if config.shared.tcp.heartbeat_secs > 0 && !config.shared.obfuscation.profile.is_stealth() {
+        warnings.push(
+            "low-feature mode: regular non-stealth heartbeats can become a timing signal"
+                .to_string(),
+        );
+    }
 }
 
 fn build_handshake_users(
@@ -519,6 +597,7 @@ fn build_remote_settings(config: &EspejismoConfig, args: &Args) -> Result<Remote
         idle_timeout: Duration::from_secs(config.shared.idle_timeout_secs),
         max_streams: config.shared.max_streams,
         limits,
+        traffic: Arc::new(NoopTrafficObserver),
     })
 }
 

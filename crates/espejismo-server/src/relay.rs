@@ -2,13 +2,44 @@ use std::time::Duration;
 use std::{future::Future, pin::Pin};
 
 use anyhow::{Context, Result};
-use espejismo_core::{metered_idle_copy_bidirectional, CopyMeter, EgressPolicy};
+use espejismo_core::{
+    metered_idle_copy_bidirectional, CopyMeter, EgressPolicy, EgressRequest, OutboundConnector,
+    StreamPriority,
+};
 use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{lookup_host, TcpStream, UdpSocket};
 use tokio::time::timeout;
 
 use crate::limits::UserLimitRegistry;
 use crate::socks5_chain::{connect_via_socks5_proxy, relay_udp_via_socks5_proxy};
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct DefaultOutboundConnector;
+
+impl OutboundConnector for DefaultOutboundConnector {
+    fn connect_tcp<'a>(
+        &'a self,
+        request: EgressRequest,
+    ) -> espejismo_core::extension::BoxFutureResult<'a, TcpStream> {
+        Box::pin(async move { connect_egress_tcp_inner(&request.authority, &request.policy).await })
+    }
+
+    fn relay_udp<'a>(
+        &'a self,
+        request: EgressRequest,
+        payload: &'a [u8],
+    ) -> espejismo_core::extension::BoxFutureResult<'a, Vec<u8>> {
+        Box::pin(async move {
+            relay_udp_datagram_inner(
+                &request.authority,
+                payload,
+                &request.policy,
+                Duration::from_secs(10),
+            )
+            .await
+        })
+    }
+}
 
 pub(crate) async fn limited_copy_bidirectional<A, B>(
     a: &mut A,
@@ -43,6 +74,18 @@ pub(crate) async fn connect_egress_tcp(
     authority: &str,
     egress: &EgressPolicy,
 ) -> Result<TcpStream> {
+    let connector = DefaultOutboundConnector;
+    connector
+        .connect_tcp(EgressRequest {
+            user: "default".to_string(),
+            authority: authority.to_string(),
+            priority: StreamPriority::Interactive,
+            policy: egress.clone(),
+        })
+        .await
+}
+
+async fn connect_egress_tcp_inner(authority: &str, egress: &EgressPolicy) -> Result<TcpStream> {
     egress
         .validate_authority(authority)
         .context("egress policy rejected target")?;
@@ -68,6 +111,15 @@ pub(crate) async fn connect_egress_tcp(
 }
 
 pub(crate) async fn relay_udp_datagram(
+    authority: &str,
+    payload: &[u8],
+    egress: &EgressPolicy,
+    idle: Duration,
+) -> Result<Vec<u8>> {
+    relay_udp_datagram_inner(authority, payload, egress, idle).await
+}
+
+async fn relay_udp_datagram_inner(
     authority: &str,
     payload: &[u8],
     egress: &EgressPolicy,

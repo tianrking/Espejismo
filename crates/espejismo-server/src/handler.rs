@@ -4,7 +4,7 @@ use std::time::Duration;
 use anyhow::Result;
 use espejismo_core::{
     accept_handshake_with_users, read_tunnel_request, spawn_frame_transport, EgressPolicy, Metrics,
-    ReplayCache, TunnelRequest,
+    ReplayCache, TrafficEvent, TrafficObserver, TunnelRequest,
 };
 use futures::StreamExt;
 use tokio::io::AsyncWriteExt;
@@ -129,12 +129,15 @@ pub(crate) async fn handle_peer(
         let current = runtime.settings.read().await.clone();
         let egress = current.egress.clone();
         let limits = current.limits.clone();
+        let traffic = current.traffic.clone();
         let idle = current.idle_timeout;
         let user = user.clone();
         tokio::spawn(async move {
             let _global_stream_permit = global_stream_permit;
             let _stream_permit = stream_permit;
-            if let Err(err) = handle_mux_stream(stream, metrics, egress, limits, idle, user).await {
+            if let Err(err) =
+                handle_mux_stream(stream, metrics, egress, limits, traffic, idle, user).await
+            {
                 debug!(error = %err, "mux stream ended");
             }
         });
@@ -149,6 +152,7 @@ async fn handle_mux_stream(
     metrics: Metrics,
     egress: EgressPolicy,
     limits: UserLimitRegistry,
+    traffic: Arc<dyn TrafficObserver>,
     idle: Duration,
     user: String,
 ) -> Result<()> {
@@ -156,14 +160,30 @@ async fn handle_mux_stream(
     metrics.inc_active_stream();
     metrics.inc_stream_opened();
     metrics.inc_user_stream_opened(&user);
-    let result =
-        handle_mux_stream_inner(&mut stream, metrics.clone(), egress, limits, idle, &user).await;
+    let result = handle_mux_stream_inner(
+        &mut stream,
+        metrics.clone(),
+        egress,
+        limits,
+        traffic.clone(),
+        idle,
+        &user,
+    )
+    .await;
     if let Err(err) = &result {
         let reason = classify_stream_failure(err);
         metrics.inc_stream_failed_reason(reason);
         if reason == "egress_denied" {
             metrics.inc_egress_denied();
         }
+        traffic.observe(TrafficEvent {
+            event: "stream_failed",
+            user,
+            authority: None,
+            client_to_remote: 0,
+            remote_to_client: 0,
+            reason: Some(reason.to_string()),
+        });
     }
     metrics.dec_active_stream();
     result
@@ -174,6 +194,7 @@ async fn handle_mux_stream_inner(
     metrics: Metrics,
     egress: EgressPolicy,
     limits: UserLimitRegistry,
+    traffic: Arc<dyn TrafficObserver>,
     idle: Duration,
     user: &str,
 ) -> Result<()> {
@@ -191,6 +212,14 @@ async fn handle_mux_stream_inner(
                 limited_copy_bidirectional(stream, &mut remote, idle, &limits, user).await?;
             metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
             metrics.add_user_tunnel_bytes(user, client_to_remote, remote_to_client);
+            traffic.observe(TrafficEvent {
+                event: "tcp_stream_closed",
+                user: user.to_string(),
+                authority: Some(authority),
+                client_to_remote,
+                remote_to_client,
+                reason: None,
+            });
         }
         TunnelRequest::UdpDatagram {
             authority,
@@ -207,6 +236,14 @@ async fn handle_mux_stream_inner(
                 .await?;
             metrics.add_tunnel_bytes(payload.len() as u64, response.len() as u64);
             metrics.add_user_tunnel_bytes(user, payload.len() as u64, response.len() as u64);
+            traffic.observe(TrafficEvent {
+                event: "udp_datagram_relayed",
+                user: user.to_string(),
+                authority: Some(authority.clone()),
+                client_to_remote: payload.len() as u64,
+                remote_to_client: response.len() as u64,
+                reason: None,
+            });
             anyhow::ensure!(
                 response.len() <= u16::MAX as usize,
                 "UDP response too large"

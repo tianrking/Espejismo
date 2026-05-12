@@ -7,12 +7,12 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use espejismo_core::config::example_config;
 use espejismo_core::{
-    apply_log_overrides, apply_named_profile, bind_tcp_listener, config_to_toml,
-    decode_profile_url, encode_config_base64, encode_profile_url, init_logging, load_config,
-    load_config_base64, parse_psk, print_update_check, report_config_check, spawn_admin_server,
-    AdminAction, AdminState, ClientProfile, ConfigInput, EspejismoConfig, FrameOptionOverrides,
-    FrameOptions, HandshakeConfig, LogOverrides, Metrics, ProxyAuth, RuntimeState, TcpConfig,
-    TunnelPoolConfig,
+    apply_log_overrides, apply_named_profile, bind_tcp_listener, config_to_toml, connect_handshake,
+    connect_tcp_stream, decode_profile_url, encode_config_base64, encode_profile_url, init_logging,
+    load_config, load_config_base64, parse_psk, print_update_check, report_config_check,
+    spawn_admin_server, AdminAction, AdminState, ClientProfile, ConfigInput, EspejismoConfig,
+    FrameOptionOverrides, FrameOptions, HandshakeConfig, LogOverrides, Metrics, ProxyAuth,
+    RuntimeState, TcpConfig, TunnelPoolConfig,
 };
 use serde_json::json;
 use tokio::net::lookup_host;
@@ -52,6 +52,10 @@ struct Args {
     decode_config_base64: Option<String>,
     #[arg(long)]
     check_config: bool,
+    #[arg(long)]
+    doctor: bool,
+    #[arg(long)]
+    probe_server: bool,
     #[arg(long)]
     check_update: bool,
     #[arg(long)]
@@ -216,8 +220,13 @@ async fn main() -> Result<()> {
         println!("TUN route cleanup completed for {}", config.local.tun.name);
         return Ok(());
     }
-    if args.check_config {
-        check_local_config(&config, &args).await?;
+    if args.check_config || args.doctor {
+        check_local_config(&config, &args, args.doctor).await?;
+        return Ok(());
+    }
+    if args.probe_server {
+        let runtime = build_runtime(config, &args)?;
+        probe_remote_handshake(&runtime).await?;
         return Ok(());
     }
     if args.print_client_profile {
@@ -374,6 +383,23 @@ fn build_tunnel_manager(
         metrics,
         runtime_state,
     )
+}
+
+async fn probe_remote_handshake(runtime: &LocalRuntime) -> Result<()> {
+    let mut upstream = tokio::time::timeout(
+        Duration::from_secs(10),
+        connect_tcp_stream(runtime.server.as_str(), &runtime.tcp),
+    )
+    .await
+    .context("remote TCP probe timed out")??;
+    tokio::time::timeout(
+        Duration::from_secs(10),
+        connect_handshake(&mut upstream, &runtime.handshake),
+    )
+    .await
+    .context("remote handshake probe timed out")??;
+    println!("OK remote handshake succeeded: {}", runtime.server);
+    Ok(())
 }
 
 fn local_reload_action(
@@ -657,7 +683,7 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
     })
 }
 
-async fn check_local_config(config: &EspejismoConfig, args: &Args) -> Result<()> {
+async fn check_local_config(config: &EspejismoConfig, args: &Args, doctor: bool) -> Result<()> {
     let mut warnings = Vec::new();
     let mut errors = Vec::new();
     let socks_addr = args.socks5_listen.or(config.local.socks5_listen);
@@ -693,8 +719,35 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args) -> Result<()>
     match server {
         Some(server) => match lookup_host(server.as_str()).await {
             Ok(addrs) => {
-                if addrs.count() > 0 {
+                let addrs = addrs.collect::<Vec<_>>();
+                if !addrs.is_empty() {
                     println!("OK local.server resolves: {server}");
+                    if doctor {
+                        let mut connected = false;
+                        let mut last_error = None;
+                        for addr in addrs {
+                            match tokio::time::timeout(
+                                Duration::from_secs(3),
+                                tokio::net::TcpStream::connect(addr),
+                            )
+                            .await
+                            {
+                                Ok(Ok(_)) => {
+                                    connected = true;
+                                    println!("OK local.server TCP reachable: {addr}");
+                                    break;
+                                }
+                                Ok(Err(err)) => last_error = Some(err.to_string()),
+                                Err(err) => last_error = Some(err.to_string()),
+                            }
+                        }
+                        if !connected {
+                            warnings.push(format!(
+                                "local.server resolved but TCP probe failed: {}",
+                                last_error.unwrap_or_else(|| "no address attempted".to_string())
+                            ));
+                        }
+                    }
                 } else {
                     errors.push(format!("local.server resolved no addresses: {server}"));
                 }
@@ -742,6 +795,9 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args) -> Result<()>
             "OK pacing cap configured: {} bytes/sec",
             config.shared.pacing.max_bytes_per_sec
         );
+    }
+    if doctor {
+        diagnose_low_feature_profile(config, &mut warnings);
     }
     if pool.max_connections == 0 {
         errors.push("local.tunnel_pool.max_connections must be greater than 0".to_string());
@@ -811,4 +867,37 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args) -> Result<()>
         );
     }
     report_config_check(warnings, errors)
+}
+
+fn diagnose_low_feature_profile(config: &EspejismoConfig, warnings: &mut Vec<String>) {
+    if !config.shared.obfuscation.profile.is_stealth() {
+        warnings.push(
+            "low-feature mode: use profile stealth to avoid variable frame-size patterns"
+                .to_string(),
+        );
+    }
+    if config.shared.max_padding == 0 || config.shared.padding_chance_percent == 0 {
+        warnings.push(
+            "low-feature mode: enable bounded padding to reduce stable payload-size signals"
+                .to_string(),
+        );
+    }
+    if config.shared.jitter_ms == 0 && !config.shared.obfuscation.profile.is_stealth() {
+        warnings.push(
+            "low-feature mode: non-stealth profile without jitter keeps timing more regular"
+                .to_string(),
+        );
+    }
+    if config.shared.key_update_frames > 100_000 {
+        warnings.push(
+            "low-feature mode: very infrequent key updates keep long tunnels on one traffic secret"
+                .to_string(),
+        );
+    }
+    if config.shared.tcp.heartbeat_secs > 0 && !config.shared.obfuscation.profile.is_stealth() {
+        warnings.push(
+            "low-feature mode: regular non-stealth heartbeats can become a timing signal"
+                .to_string(),
+        );
+    }
 }
