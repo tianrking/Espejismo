@@ -17,9 +17,10 @@ use tracing::{debug, info, warn};
 use tun_rs::DeviceBuilder;
 
 use crate::route;
-use crate::tunnel::TunnelService;
+use crate::tunnel::{TunnelService, TunnelStream};
 
 const MAX_TUN_UDP_TASKS: usize = 1024;
+const TUN_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub async fn run_tun_ingress(
     config: LocalTunConfig,
@@ -127,11 +128,10 @@ async fn handle_tun_tcp(
             metrics.inc_stream_opened();
             let result = async {
                 let authority = authority_from_socket(remote);
-                let priority = StreamPriority::Bulk;
                 info!(%local, %remote, authority = %authority, "TUN TCP flow accepted");
-                let mut tunnel_stream = tunnel.open_stream(priority).await?;
+                let (mut tunnel_stream, priority) = open_tun_stream(tunnel.clone()).await?;
                 let lane_id = tunnel_stream.lane_id();
-                debug!(lane_id, %local, %remote, "TUN TCP flow opened tunnel stream");
+                debug!(lane_id, %local, %remote, priority = ?priority, "TUN TCP flow opened tunnel stream");
                 let mut client_to_remote = 0;
                 let mut remote_to_client = 0;
                 let result = async {
@@ -214,8 +214,7 @@ async fn relay_udp_authority(
     authority: &str,
     payload: &[u8],
 ) -> Result<Vec<u8>> {
-    let priority = StreamPriority::Bulk;
-    let mut stream = tunnel.open_stream(priority).await?;
+    let (mut stream, priority) = open_tun_stream(tunnel.clone()).await?;
     let lane_id = stream.lane_id();
     let mut response = Vec::new();
     let result = async {
@@ -231,6 +230,37 @@ async fn relay_udp_authority(
         .await;
     result?;
     Ok(response)
+}
+
+async fn open_tun_stream(tunnel: Arc<TunnelService>) -> Result<(TunnelStream, StreamPriority)> {
+    match timeout(
+        TUN_STREAM_OPEN_TIMEOUT,
+        tunnel.open_stream(StreamPriority::Bulk),
+    )
+    .await
+    {
+        Ok(Ok(stream)) => Ok((stream, StreamPriority::Bulk)),
+        Ok(Err(err)) => {
+            warn!(error = %err, "TUN bulk lane open failed; falling back to interactive lane");
+            let stream = timeout(
+                TUN_STREAM_OPEN_TIMEOUT,
+                tunnel.open_stream(StreamPriority::Interactive),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("TUN interactive lane open timed out"))??;
+            Ok((stream, StreamPriority::Interactive))
+        }
+        Err(_) => {
+            warn!("TUN bulk lane open timed out; falling back to interactive lane");
+            let stream = timeout(
+                TUN_STREAM_OPEN_TIMEOUT,
+                tunnel.open_stream(StreamPriority::Interactive),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("TUN interactive lane open timed out"))??;
+            Ok((stream, StreamPriority::Interactive))
+        }
+    }
 }
 
 fn authority_from_socket(addr: SocketAddr) -> String {
