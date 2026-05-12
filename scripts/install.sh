@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+trap 'echo "Espejismo installer failed near line ${LINENO}. Re-run with: curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh -o /tmp/espejismo-install.sh && bash -x /tmp/espejismo-install.sh" >&2' ERR
 
 REPO="${ESPEJISMO_REPO:-tianrking/Espejismo}"
 VERSION="${ESPEJISMO_VERSION:-latest}"
@@ -58,7 +59,7 @@ prompt_default() {
   local default="$3"
   local secret="${4:-0}"
   local current="${!var_name:-}"
-  if [[ -n "${current}" || ! is_tty ]]; then
+  if [[ -n "${current}" ]] || ! is_tty; then
     printf -v "${var_name}" '%s' "${current:-$default}"
     return
   fi
@@ -385,6 +386,7 @@ EOF
 }
 
 main() {
+  echo "Espejismo installer starting..."
   need_cmd curl
   need_cmd tar
   select_role
