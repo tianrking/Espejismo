@@ -7,6 +7,64 @@ This guide covers the normal production shape:
 3. Point local applications at `127.0.0.1:6680` for SOCKS5 or
    `127.0.0.1:6681` for HTTP proxy.
 
+## Guided Cross-Platform Install
+
+Linux/macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh | bash
+```
+
+Windows PowerShell:
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.ps1 | iex
+```
+
+The guided installer asks whether this machine is `local` or `remote`, downloads
+the latest release, generates a random PSK/admin token/local proxy password when
+not provided, writes config, starts the selected role, and prints management
+commands.
+
+Non-interactive local install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh \
+  | ESPEJISMO_ROLE=local ESPEJISMO_SERVER=203.0.113.10:6690 bash
+```
+
+Non-interactive remote install:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh \
+  | sudo ESPEJISMO_ROLE=remote ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690 bash
+```
+
+Useful shared knobs:
+
+```bash
+ESPEJISMO_PSK='use-existing-shared-secret'
+ESPEJISMO_LISTEN=0.0.0.0:6690
+ESPEJISMO_SERVER=203.0.113.10:6690
+ESPEJISMO_SOCKS5_LISTEN=127.0.0.1:6680
+ESPEJISMO_HTTP_LISTEN=127.0.0.1:6681
+ESPEJISMO_VERSION=v0.0.6
+ESPEJISMO_INSTALL_DIR=/opt/espejismo
+```
+
+Management after install:
+
+```bash
+~/.espejismo/espejismoctl status
+~/.espejismo/espejismoctl logs
+~/.espejismo/espejismoctl edit
+~/.espejismo/espejismoctl reload
+~/.espejismo/espejismoctl restart
+```
+
+Root Linux remote installs additionally create a systemd service and link
+`/usr/local/bin/espejismoctl-remote`.
+
 ## Ubuntu Remote One-Liner
 
 Install the remote endpoint with one command:

@@ -233,29 +233,46 @@ Then point applications at `127.0.0.1:6680` as a SOCKS5 proxy or
 `espejismo://import/...` profile so secrets and user settings are not kept in
 shell history.
 
-### Linux Server
+### Guided Install
 
-Download and extract the Linux release archive on the server, then run:
+Linux/macOS users can run the guided installer. It downloads the latest release,
+generates random secrets unless you provide them, writes config, starts the
+selected role, and installs a small manager command.
 
 ```bash
-./bin/espejismo-remote --config configs/espejismo.toml
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh | bash
 ```
 
-Or install the remote endpoint on Ubuntu with one command:
+Common non-interactive examples:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh \
+  | ESPEJISMO_ROLE=local ESPEJISMO_SERVER=203.0.113.10:6690 bash
+
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh \
+  | sudo ESPEJISMO_ROLE=remote ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690 bash
+```
+
+After install, use the printed manager path:
+
+```bash
+~/.espejismo/espejismoctl status
+~/.espejismo/espejismoctl edit
+~/.espejismo/espejismoctl reload
+~/.espejismo/espejismoctl restart
+~/.espejismo/espejismoctl logs
+```
+
+On a root remote Linux install, the manager is also linked as
+`/usr/local/bin/espejismoctl-remote` and controls a systemd service.
+
+### Linux Server
+
+For the classic Ubuntu remote-only path:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install-ubuntu-remote.sh \
   | sudo bash
-```
-
-The installer downloads the latest GitHub release, generates a random PSK,
-installs `espejismo-remote` as a systemd service, and prints a ready-to-import
-`espejismo://import/...` client profile. If the auto-detected public endpoint is
-not the address your client should dial, provide it explicitly:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690 bash
 ```
 
 Generate a tuned starter config instead of hand-editing every transport knob:

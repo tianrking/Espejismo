@@ -103,7 +103,7 @@ jobs:
           cp README_ES.md "dist/${pkg}/"
           cp CHANGELOG.md "dist/${pkg}/"
           cp docs/ARCHITECTURE.md docs/deployment/ADMIN.md docs/deployment/CLI.md docs/deployment/EGRESS.md docs/deployment/LOGGING.md docs/deployment/PACKAGING.md docs/deployment/PROFILES.md docs/deployment/QUICKSTART.md docs/deployment/TUN.md docs/deployment/UPDATES.md docs/deployment/USERS.md docs/development/STATUS.md docs/testing/TEST_PLAN.md "dist/${pkg}/docs/"
-          cp scripts/setup-windows.ps1 scripts/e2e_smoke.ps1 scripts/stress_smoke.ps1 scripts/install-ubuntu-remote.sh "dist/${pkg}/scripts/"
+          cp scripts/setup-windows.ps1 scripts/e2e_smoke.ps1 scripts/stress_smoke.ps1 scripts/install.sh scripts/install.ps1 scripts/install-ubuntu-remote.sh "dist/${pkg}/scripts/"
           tar -C dist -czf "dist/${pkg}.tar.gz" "${pkg}"
       - name: Package Windows
         if: runner.os == 'Windows'
@@ -118,7 +118,7 @@ jobs:
           Copy-Item "README_ES.md" "dist/$pkg/"
           Copy-Item "CHANGELOG.md" "dist/$pkg/"
           Copy-Item "docs/ARCHITECTURE.md", "docs/deployment/ADMIN.md", "docs/deployment/CLI.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/PACKAGING.md", "docs/deployment/PROFILES.md", "docs/deployment/QUICKSTART.md", "docs/deployment/TUN.md", "docs/deployment/UPDATES.md", "docs/deployment/USERS.md", "docs/development/STATUS.md", "docs/testing/TEST_PLAN.md" "dist/$pkg/docs/"
-          Copy-Item "scripts/setup-windows.ps1", "scripts/e2e_smoke.ps1", "scripts/stress_smoke.ps1", "scripts/install-ubuntu-remote.sh" "dist/$pkg/scripts/"
+          Copy-Item "scripts/setup-windows.ps1", "scripts/e2e_smoke.ps1", "scripts/stress_smoke.ps1", "scripts/install.sh", "scripts/install.ps1", "scripts/install-ubuntu-remote.sh" "dist/$pkg/scripts/"
           Compress-Archive -Path "dist/$pkg" -DestinationPath "dist/$pkg.zip" -Force
       - name: Upload artifact
         uses: actions/upload-artifact@v4

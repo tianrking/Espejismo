@@ -7,6 +7,8 @@ Espejismo is distributed as two native binaries plus configuration:
 - `configs/espejismo.toml`: starter shared configuration.
 - `README.md`, `README_ES.md`, and `CHANGELOG.md`: top-level usage and
   release notes.
+- `scripts/install.sh`: guided Linux/macOS installer and manager bootstrap.
+- `scripts/install.ps1`: guided Windows installer and manager bootstrap.
 - `scripts/setup-windows.ps1`: Windows config generator and launcher.
 - `scripts/install-ubuntu-remote.sh`: Ubuntu remote installer for one-line
   server deployment.

@@ -1,0 +1,457 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+REPO="${ESPEJISMO_REPO:-tianrking/Espejismo}"
+VERSION="${ESPEJISMO_VERSION:-latest}"
+ARCHIVE_URL="${ESPEJISMO_ARCHIVE_URL:-}"
+ROLE="${ESPEJISMO_ROLE:-}"
+INSTALL_DIR="${ESPEJISMO_INSTALL_DIR:-}"
+CONFIG_DIR="${ESPEJISMO_CONFIG_DIR:-}"
+SERVICE_NAME="${ESPEJISMO_SERVICE_NAME:-espejismo}"
+START_NOW="${ESPEJISMO_START:-1}"
+INSTALL_TMPDIR=""
+ADMIN_TOKEN="${ESPEJISMO_ADMIN_TOKEN:-}"
+PSK="${ESPEJISMO_PSK:-}"
+SERVER="${ESPEJISMO_SERVER:-}"
+LISTEN="${ESPEJISMO_LISTEN:-0.0.0.0:6690}"
+PUBLIC_ENDPOINT="${ESPEJISMO_PUBLIC_ENDPOINT:-}"
+SOCKS5_LISTEN="${ESPEJISMO_SOCKS5_LISTEN:-127.0.0.1:6680}"
+HTTP_LISTEN="${ESPEJISMO_HTTP_LISTEN:-127.0.0.1:6681}"
+ADMIN_LISTEN="${ESPEJISMO_ADMIN_LISTEN:-}"
+LOCAL_USER="${ESPEJISMO_LOCAL_AUTH_USER:-local-user}"
+LOCAL_PASSWORD="${ESPEJISMO_LOCAL_AUTH_PASSWORD:-}"
+PROFILE="${ESPEJISMO_PROFILE:-balanced}"
+
+is_tty() {
+  [[ -t 0 && -t 1 ]]
+}
+
+need_cmd() {
+  command -v "$1" >/dev/null 2>&1 || {
+    echo "missing required command: $1" >&2
+    exit 1
+  }
+}
+
+random_secret() {
+  if command -v openssl >/dev/null 2>&1; then
+    openssl rand -base64 32
+  else
+    LC_ALL=C tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48
+    echo
+  fi
+}
+
+prompt_default() {
+  local var_name="$1"
+  local label="$2"
+  local default="$3"
+  local secret="${4:-0}"
+  local current="${!var_name:-}"
+  if [[ -n "${current}" || ! is_tty ]]; then
+    printf -v "${var_name}" '%s' "${current:-$default}"
+    return
+  fi
+  local value
+  if [[ "${secret}" == "1" ]]; then
+    read -r -s -p "${label} [auto-random]: " value
+    echo
+  else
+    read -r -p "${label} [${default}]: " value
+  fi
+  printf -v "${var_name}" '%s' "${value:-$default}"
+}
+
+select_role() {
+  if [[ -n "${ROLE}" ]]; then
+    return
+  fi
+  if is_tty; then
+    echo "Choose install mode:"
+    echo "  1) local  - run SOCKS5/HTTP client on this machine"
+    echo "  2) remote - run server endpoint on this machine"
+    read -r -p "Mode [local]: " choice
+    case "${choice:-local}" in
+      2|remote|server) ROLE="remote" ;;
+      *) ROLE="local" ;;
+    esac
+  else
+    ROLE="local"
+  fi
+}
+
+detect_package() {
+  local os arch
+  case "$(uname -s)" in
+    Linux) os="linux" ;;
+    Darwin) os="darwin" ;;
+    *) echo "unsupported OS: $(uname -s)" >&2; exit 1 ;;
+  esac
+  case "$(uname -m)" in
+    x86_64|amd64) arch="amd64" ;;
+    i386|i486|i586|i686) arch="386" ;;
+    aarch64|arm64) arch="arm64" ;;
+    armv7l|armv7*) arch="armv7" ;;
+    *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
+  esac
+  if [[ "${os}" == "darwin" && "${arch}" != "arm64" ]]; then
+    echo "darwin-amd64 release artifact is not currently published" >&2
+    exit 1
+  fi
+  printf 'espejismo-%s-%s' "${os}" "${arch}"
+}
+
+download_archive() {
+  local dest="$1"
+  local pkg="$2"
+  if [[ -n "${ARCHIVE_URL}" ]]; then
+    curl -fsSL "${ARCHIVE_URL}" -o "${dest}"
+    return
+  fi
+  if [[ "${VERSION}" == "latest" ]]; then
+    curl -fsSL "https://github.com/${REPO}/releases/latest/download/${pkg}.tar.gz" -o "${dest}"
+  else
+    curl -fsSL "https://github.com/${REPO}/releases/download/${VERSION}/${pkg}.tar.gz" -o "${dest}"
+  fi
+}
+
+toml_escape() {
+  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+public_endpoint() {
+  if [[ -n "${PUBLIC_ENDPOINT}" ]]; then
+    printf '%s' "${PUBLIC_ENDPOINT}"
+    return
+  fi
+  local port="${LISTEN##*:}"
+  local first_ip
+  first_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  printf '%s:%s' "${first_ip:-127.0.0.1}" "${port}"
+}
+
+write_config() {
+  local config="$1"
+  local admin_default
+  if [[ "${ROLE}" == "remote" ]]; then
+    admin_default="127.0.0.1:9090"
+  else
+    admin_default="127.0.0.1:9091"
+  fi
+  ADMIN_LISTEN="${ADMIN_LISTEN:-$admin_default}"
+  cat >"${config}" <<EOF
+[shared]
+psk = "$(toml_escape "${PSK}")"
+clock_skew_secs = 30
+puzzle_bits = 12
+max_padding = 64
+jitter_ms = 0
+padding_chance_percent = 35
+tunnel_buffer = 1048576
+idle_timeout_secs = 300
+max_streams = 256
+max_physical_connections = 1024
+key_update_frames = 16384
+
+[shared.tcp]
+nodelay = true
+keepalive_secs = 30
+heartbeat_secs = 30
+user_timeout_ms = 30000
+send_buffer_bytes = 1048576
+recv_buffer_bytes = 1048576
+
+[shared.mux]
+mode = "yamux"
+native_initial_window_bytes = 1048576
+native_stream_buffer_frames = 128
+native_send_queue_frames = 64
+native_idle_timeout_secs = 300
+native_drain_timeout_secs = 30
+
+[shared.pacing]
+enabled = true
+max_bytes_per_sec = 0
+burst_bytes = 65536
+min_write_bytes = 1024
+
+[shared.obfuscation]
+profile = "$(toml_escape "${PROFILE}")"
+chunk_policy = "$(toml_escape "${PROFILE}")"
+randomize_chunks = true
+min_chunk = 4096
+max_chunk = 16384
+
+[shared.stealth]
+frame_size = 4096
+tick_ms = 50
+
+[local]
+server = "$(toml_escape "${SERVER}")"
+socks5_listen = "${SOCKS5_LISTEN}"
+http_listen = "${HTTP_LISTEN}"
+handshake_padding = 256
+
+[local.auth]
+username = "$(toml_escape "${LOCAL_USER}")"
+password = "$(toml_escape "${LOCAL_PASSWORD}")"
+
+[local.tunnel_pool]
+min_connections = 1
+max_connections = 4
+interactive_lanes = 1
+bulk_lanes = 2
+max_reconnect_attempts = 3
+max_connection_age_secs = 3600
+
+[logging]
+level = "info"
+format = "compact"
+ansi = true
+file = "${CONFIG_DIR}/espejismo-${ROLE}.log"
+
+[admin]
+listen = "${ADMIN_LISTEN}"
+token = "$(toml_escape "${ADMIN_TOKEN}")"
+
+[remote]
+listen = "${LISTEN}"
+handshake_timeout_ms = 3000
+reject_delay_ms = 0
+max_handshake_padding = 1024
+replay_window_secs = 60
+cold_start_delay_ms = 35
+tarpit_max = 1024
+tarpit_hold_secs = 300
+
+[remote.egress]
+deny_private_ips = true
+allow_ports = [80, 443]
+block_ports = [25]
+block_hosts = ["169.254.169.254", "metadata.google.internal"]
+EOF
+}
+
+write_manager() {
+  local manager="$1"
+  local bin_dir="$2"
+  local config="$3"
+  local log_file="${CONFIG_DIR}/espejismo-${ROLE}.log"
+  local pid_file="${CONFIG_DIR}/espejismo-${ROLE}.pid"
+  local binary="espejismo-local"
+  [[ "${ROLE}" == "remote" ]] && binary="espejismo-remote"
+  cat >"${manager}" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+ROLE="${ROLE}"
+BIN="${bin_dir}/${binary}"
+CONFIG="${config}"
+PID_FILE="${pid_file}"
+LOG_FILE="${log_file}"
+ADMIN="http://${ADMIN_LISTEN}"
+TOKEN="$(toml_escape "${ADMIN_TOKEN}")"
+SERVICE="${SERVICE_NAME}-${ROLE}.service"
+
+has_systemd_service() {
+  command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "\${SERVICE}" >/dev/null 2>&1
+}
+
+cmd_start() {
+  if has_systemd_service; then
+    sudo systemctl start "\${SERVICE}"
+    return
+  fi
+  if [[ -f "\${PID_FILE}" ]] && kill -0 "\$(cat "\${PID_FILE}")" 2>/dev/null; then
+    echo "\${ROLE} already running: \$(cat "\${PID_FILE}")"
+    return
+  fi
+  nohup "\${BIN}" --config "\${CONFIG}" >>"\${LOG_FILE}" 2>&1 &
+  echo \$! >"\${PID_FILE}"
+  echo "started \${ROLE}: \$(cat "\${PID_FILE}")"
+}
+
+cmd_stop() {
+  if has_systemd_service; then
+    sudo systemctl stop "\${SERVICE}"
+    return
+  fi
+  if [[ -f "\${PID_FILE}" ]]; then
+    kill "\$(cat "\${PID_FILE}")" 2>/dev/null || true
+    rm -f "\${PID_FILE}"
+  fi
+  echo "stopped \${ROLE}"
+}
+
+cmd_status() {
+  if has_systemd_service; then
+    systemctl status "\${SERVICE}" --no-pager || true
+  elif [[ -f "\${PID_FILE}" ]] && kill -0 "\$(cat "\${PID_FILE}")" 2>/dev/null; then
+    echo "\${ROLE} running: \$(cat "\${PID_FILE}")"
+  else
+    echo "\${ROLE} stopped"
+  fi
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS -H "Authorization: Bearer \${TOKEN}" "\${ADMIN}/status" 2>/dev/null || true
+    echo
+  fi
+}
+
+cmd_restart() {
+  cmd_stop
+  sleep 1
+  cmd_start
+}
+
+cmd_reload() {
+  curl -fsS -X POST -H "Authorization: Bearer \${TOKEN}" "\${ADMIN}/reload"
+  echo
+}
+
+cmd_logs() {
+  if has_systemd_service; then
+    journalctl -u "\${SERVICE}" -f
+  else
+    touch "\${LOG_FILE}"
+    tail -f "\${LOG_FILE}"
+  fi
+}
+
+cmd_edit() {
+  "\${EDITOR:-vi}" "\${CONFIG}"
+}
+
+cmd_profile() {
+  if [[ "\${ROLE}" != "remote" ]]; then
+    echo "profile export is most useful on a remote install" >&2
+  fi
+  "${bin_dir}/espejismo-local" --config "\${CONFIG}" --print-client-profile --profile-name default
+}
+
+case "\${1:-status}" in
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  restart) cmd_restart ;;
+  status) cmd_status ;;
+  reload) cmd_reload ;;
+  logs) cmd_logs ;;
+  edit) cmd_edit ;;
+  profile) cmd_profile ;;
+  config) echo "\${CONFIG}" ;;
+  *) echo "usage: \$0 {start|stop|restart|status|reload|logs|edit|profile|config}" >&2; exit 2 ;;
+esac
+EOF
+  chmod 0755 "${manager}"
+}
+
+write_systemd_service() {
+  local bin_dir="$1"
+  local config="$2"
+  local manager="$3"
+  local binary="espejismo-remote"
+  [[ "${ROLE}" == "local" ]] && binary="espejismo-local"
+  if [[ "$(uname -s)" != "Linux" || "${EUID}" -ne 0 || ! -d /etc/systemd/system ]]; then
+    return
+  fi
+  cat >"/etc/systemd/system/${SERVICE_NAME}-${ROLE}.service" <<EOF
+[Unit]
+Description=Espejismo ${ROLE}
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=${bin_dir}/${binary} --config ${config}
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ReadWritePaths=${CONFIG_DIR}
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable "${SERVICE_NAME}-${ROLE}.service" >/dev/null
+  ln -sf "${manager}" "/usr/local/bin/espejismoctl-${ROLE}" 2>/dev/null || true
+}
+
+main() {
+  need_cmd curl
+  need_cmd tar
+  select_role
+
+  if [[ "${ROLE}" != "local" && "${ROLE}" != "remote" ]]; then
+    echo "ESPEJISMO_ROLE must be local or remote" >&2
+    exit 1
+  fi
+
+  [[ -z "${PSK}" ]] && PSK="$(random_secret)"
+  [[ -z "${ADMIN_TOKEN}" ]] && ADMIN_TOKEN="$(random_secret)"
+  [[ -z "${LOCAL_PASSWORD}" ]] && LOCAL_PASSWORD="$(random_secret)"
+
+  if [[ "${ROLE}" == "remote" ]]; then
+    SERVER="${SERVER:-$(public_endpoint)}"
+    prompt_default LISTEN "Remote listen address" "${LISTEN}"
+    prompt_default PUBLIC_ENDPOINT "Public client endpoint" "$(public_endpoint)"
+    SERVER="${PUBLIC_ENDPOINT:-$(public_endpoint)}"
+  else
+    prompt_default SERVER "Remote server endpoint host:port" "${SERVER:-127.0.0.1:6690}"
+    prompt_default SOCKS5_LISTEN "Local SOCKS5 listen" "${SOCKS5_LISTEN}"
+    prompt_default HTTP_LISTEN "Local HTTP proxy listen" "${HTTP_LISTEN}"
+  fi
+  prompt_default PSK "PSK" "${PSK}" 1
+
+  if [[ -z "${INSTALL_DIR}" ]]; then
+    if [[ "${EUID}" -eq 0 && "${ROLE}" == "remote" ]]; then
+      INSTALL_DIR="/opt/espejismo"
+    else
+      INSTALL_DIR="${HOME}/.espejismo"
+    fi
+  fi
+  CONFIG_DIR="${CONFIG_DIR:-${INSTALL_DIR}/config}"
+  local bin_dir="${INSTALL_DIR}/bin"
+  local manager="${INSTALL_DIR}/espejismoctl"
+  local config="${CONFIG_DIR}/espejismo.toml"
+  local archive pkg pkgdir
+  INSTALL_TMPDIR="$(mktemp -d)"
+  trap 'rm -rf "${INSTALL_TMPDIR}"' EXIT
+  archive="${INSTALL_TMPDIR}/espejismo.tar.gz"
+  pkg="$(detect_package)"
+
+  echo "Downloading ${pkg} from ${REPO} (${VERSION})..."
+  download_archive "${archive}" "${pkg}"
+  tar -xzf "${archive}" -C "${INSTALL_TMPDIR}"
+  pkgdir="$(find "${INSTALL_TMPDIR}" -maxdepth 1 -type d -name 'espejismo-*' | head -n 1)"
+  [[ -n "${pkgdir}" ]] || { echo "invalid release archive" >&2; exit 1; }
+
+  mkdir -p "${bin_dir}" "${CONFIG_DIR}"
+  install -m 0755 "${pkgdir}/bin/espejismo-local" "${bin_dir}/espejismo-local"
+  install -m 0755 "${pkgdir}/bin/espejismo-remote" "${bin_dir}/espejismo-remote"
+  write_config "${config}"
+  chmod 0600 "${config}"
+  write_manager "${manager}" "${bin_dir}" "${config}"
+  write_systemd_service "${bin_dir}" "${config}" "${manager}"
+
+  if [[ "${START_NOW}" == "1" ]]; then
+    "${manager}" start
+  fi
+
+  echo
+  echo "Espejismo ${ROLE} installed."
+  echo "  Install dir: ${INSTALL_DIR}"
+  echo "  Config:      ${config}"
+  echo "  Manager:     ${manager}"
+  echo
+  echo "Management:"
+  echo "  ${manager} status"
+  echo "  ${manager} logs"
+  echo "  ${manager} edit"
+  echo "  ${manager} reload"
+  echo "  ${manager} restart"
+  if [[ "${ROLE}" == "remote" ]]; then
+    echo
+    echo "Client import profile:"
+    "${manager}" profile
+  fi
+}
+
+main "$@"

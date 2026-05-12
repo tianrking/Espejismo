@@ -240,6 +240,34 @@ Luego configura las aplicaciones con `127.0.0.1:6680` como proxy SOCKS5 o
 perfil `espejismo://import/...` para no dejar secretos ni ajustes en el
 historial del shell.
 
+### Instalacion guiada
+
+Linux/macOS:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh | bash
+```
+
+Windows PowerShell:
+
+```powershell
+iwr -useb https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.ps1 | iex
+```
+
+El instalador descarga el ultimo release, genera secretos aleatorios si no los
+proporcionas, escribe la configuracion, arranca el rol elegido, e instala un
+comando de gestion para `status`, `logs`, `edit`, `reload`, y `restart`.
+
+Ejemplos no interactivos:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh \
+  | ESPEJISMO_ROLE=local ESPEJISMO_SERVER=203.0.113.10:6690 bash
+
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh \
+  | sudo ESPEJISMO_ROLE=remote ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690 bash
+```
+
 ### Servidor Linux
 
 Descarga y extrae el release de Linux en el servidor, luego ejecuta:
