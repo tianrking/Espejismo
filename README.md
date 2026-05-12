@@ -48,6 +48,13 @@ remote role, and print management plus connection commands. After install, run
 generated proxy credentials, curl test commands, or the remote client import
 profile.
 
+Configs and client profiles are reversible for the local onboarding path:
+
+```bash
+espejismo-local --config client.toml --print-client-profile --profile-name laptop
+espejismo-local --import-profile "espejismo://import/..." --write-config client.toml
+```
+
 ## Release Downloads
 
 Normal users do not need Rust or Cargo. Download the latest package for your

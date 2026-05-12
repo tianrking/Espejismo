@@ -398,8 +398,14 @@ Config exchange:
 espejismo-local --config espejismo.toml --print-config-base64
 espejismo-local --decode-config-base64 "BASE64_CONFIG"
 espejismo-local --config espejismo.toml --print-client-profile --profile-name laptop
-espejismo-local --import-profile "espejismo://import/..."
+espejismo-local --import-profile "espejismo://import/..." --print-config > client.toml
+espejismo-local --import-profile "espejismo://import/..." --write-config client.toml
 ```
+
+Use `--print-client-profile` for TOML-to-profile and `--print-config` or
+`--write-config` for profile-to-TOML. The same `--print-config` and
+`--write-config` flags also work with normal TOML/base64 configs after CLI
+overrides have been applied.
 
 Remote runtime apply:
 

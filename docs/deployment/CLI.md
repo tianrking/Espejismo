@@ -38,6 +38,14 @@ espejismo-local --decode-config-base64 "$CONFIG_B64" > espejismo.toml
 espejismo-remote --decode-config-base64 "$CONFIG_B64" > espejismo.toml
 ```
 
+Print or write the effective TOML after config/profile/CLI overrides:
+
+```bash
+espejismo-local --config espejismo.toml --server remote.example.com:6690 --print-config
+espejismo-local --config espejismo.toml --write-config client.toml
+espejismo-remote --config espejismo.toml --listen 0.0.0.0:6690 --write-config server.toml
+```
+
 Print starter config:
 
 ```bash
@@ -82,6 +90,19 @@ Import that URL:
 
 ```bash
 espejismo-local --import-profile "espejismo://import/..." --socks5-listen 127.0.0.1:6680
+```
+
+Convert between local TOML and a client profile URL:
+
+```bash
+# TOML config -> one-line client import URL
+espejismo-local --config client.toml --print-client-profile --profile-name laptop
+
+# client import URL -> TOML config on stdout
+espejismo-local --import-profile "espejismo://import/..." --print-config > client.toml
+
+# client import URL -> TOML config file directly
+espejismo-local --import-profile "espejismo://import/..." --write-config client.toml
 ```
 
 ## Running

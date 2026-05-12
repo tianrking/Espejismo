@@ -157,6 +157,13 @@ case "${PROFILE_URL}" in
 esac
 cargo run --quiet --bin espejismo-local -- --import-profile "${PROFILE_URL}" --print-client-profile --profile-name smoke-imported \
   | grep -q "espejismo://import/"
+cargo run --quiet --bin espejismo-local -- --import-profile "${PROFILE_URL}" --print-config \
+  | grep -q 'server ='
+PROFILE_CONFIG_FILE="$(mktemp)"
+cargo run --quiet --bin espejismo-local -- --import-profile "${PROFILE_URL}" --write-config "${PROFILE_CONFIG_FILE}" \
+  | grep -q "wrote ${PROFILE_CONFIG_FILE}"
+grep -q 'server =' "${PROFILE_CONFIG_FILE}"
+rm -f "${PROFILE_CONFIG_FILE}"
 
 cargo run --quiet --bin espejismo-local -- --config "${CONFIG_FILE}" --check-config \
   | grep -q "config check passed"

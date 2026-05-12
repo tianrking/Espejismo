@@ -16,7 +16,10 @@ Current release target: `v0.0.6`.
 - Shared TOML configuration and base64 configuration import.
 - CLI config conversion with `--print-config-base64` and
   `--decode-config-base64`.
-- Client profile export/import through `espejismo://import/...` URLs.
+- Effective TOML materialization with `--print-config` and `--write-config`
+  after file/base64/profile/CLI overlays are applied.
+- Client profile export/import through `espejismo://import/...` URLs, including
+  profile-to-TOML conversion for local client onboarding.
 - Multi-user remote authentication with independent per-user PSKs and user
   metrics. Multi-user handshake selection is resolved during envelope parsing
   instead of by early-exit user verification.

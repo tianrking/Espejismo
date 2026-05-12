@@ -45,6 +45,10 @@ struct Args {
     #[arg(long)]
     print_config_base64: bool,
     #[arg(long)]
+    print_config: bool,
+    #[arg(long)]
+    write_config: Option<PathBuf>,
+    #[arg(long)]
     decode_config_base64: Option<String>,
     #[arg(long)]
     check_config: bool,
@@ -206,8 +210,8 @@ async fn main() -> Result<()> {
     if let Some(profile) = &args.profile {
         apply_named_profile(&mut config, profile)?;
     }
+    apply_cli_overrides_to_config(&mut config, &args)?;
     if args.tun_route_cleanup {
-        apply_tun_cli_overrides(&mut config, &args);
         route::cleanup_tun_routes(&config.local.tun).await?;
         println!("TUN route cleanup completed for {}", config.local.tun.name);
         return Ok(());
@@ -219,6 +223,16 @@ async fn main() -> Result<()> {
     if args.print_client_profile {
         let profile = ClientProfile::from_config(args.profile_name.clone(), &config)?;
         println!("{}", encode_profile_url(&profile)?);
+        return Ok(());
+    }
+    if args.print_config {
+        print!("{}", config_to_toml(&config)?);
+        return Ok(());
+    }
+    if let Some(path) = &args.write_config {
+        std::fs::write(path, config_to_toml(&config)?)
+            .with_context(|| format!("write {}", path.display()))?;
+        println!("wrote {}", path.display());
         return Ok(());
     }
     if args.print_config_base64 {
@@ -479,6 +493,71 @@ fn apply_tun_cli_overrides(config: &mut EspejismoConfig, args: &Args) {
     if !args.tun_dns.is_empty() {
         config.local.tun.route.dns_servers = args.tun_dns.clone();
     }
+}
+
+fn apply_cli_overrides_to_config(config: &mut EspejismoConfig, args: &Args) -> Result<()> {
+    if let Some(value) = &args.psk {
+        config.shared.psk = Some(value.clone());
+    }
+    if let Some(value) = args.clock_skew_secs {
+        config.shared.clock_skew_secs = value;
+    }
+    if let Some(value) = args.max_padding {
+        config.shared.max_padding = value;
+    }
+    if let Some(value) = args.jitter_ms {
+        config.shared.jitter_ms = value;
+    }
+    if let Some(value) = args.padding_chance_percent {
+        config.shared.padding_chance_percent = value;
+    }
+    if let Some(value) = args.backpressure_threshold_ms {
+        config.shared.backpressure_threshold_ms = value;
+    }
+    if let Some(value) = args.backpressure_cooldown_ms {
+        config.shared.backpressure_cooldown_ms = value;
+    }
+    if let Some(value) = args.puzzle_bits {
+        config.shared.puzzle_bits = value;
+    }
+    if let Some(value) = args.tunnel_buffer {
+        config.shared.tunnel_buffer = value;
+    }
+    if let Some(value) = &args.server {
+        config.local.server = Some(value.clone());
+    }
+    if let Some(value) = args.socks5_listen {
+        config.local.socks5_listen = Some(value);
+    }
+    if let Some(value) = args.http_listen {
+        config.local.http_listen = Some(value);
+    }
+    if let Some(value) = args.handshake_padding {
+        config.local.handshake_padding = value;
+    }
+    if let Some(value) = args.tunnel_min_connections {
+        config.local.tunnel_pool.min_connections = value;
+    }
+    if let Some(value) = args.tunnel_max_connections {
+        config.local.tunnel_pool.max_connections = value;
+    }
+    if let Some(value) = args.tunnel_interactive_lanes {
+        config.local.tunnel_pool.interactive_lanes = value;
+    }
+    if let Some(value) = args.tunnel_bulk_lanes {
+        config.local.tunnel_pool.bulk_lanes = value;
+    }
+    if let Some(value) = args.admin_listen {
+        config.admin.listen = Some(value);
+    }
+    if let Some(value) = &args.admin_token {
+        config.admin.token = Some(value.clone());
+    }
+    apply_tun_cli_overrides(config, args);
+    apply_log_overrides(&mut config.logging, &log_overrides(args))?;
+    let normalized = config_to_toml(config)?;
+    *config = espejismo_core::parse_config(&normalized)?;
+    Ok(())
 }
 
 fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {

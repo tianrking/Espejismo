@@ -145,11 +145,14 @@ with `--config-base64`. `--print-example-config` and
 config overlay before printing, checking, or running.
 `--print-config-base64` converts a selected config into a one-line import
 string, and `--decode-config-base64` prints that string back as TOML.
+`--print-config` and `--write-config` materialize the effective TOML after file,
+base64, profile, named profile, and CLI overrides have been applied.
 `--check-config` performs deployment diagnostics before startup.
 
 `espejismo-local --print-client-profile` creates an `espejismo://import/...`
 profile URL for client onboarding. `--import-profile` applies that profile to a
-local config before startup.
+local config before startup, or before `--print-config` / `--write-config` when
+converting a profile URL back into a TOML file.
 
 Both binaries can hot-apply runtime settings through the authenticated admin
 endpoint. `POST /reload` re-reads the original config source; `POST /apply`

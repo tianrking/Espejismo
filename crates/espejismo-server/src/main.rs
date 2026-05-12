@@ -47,6 +47,10 @@ pub(crate) struct Args {
     #[arg(long)]
     print_config_base64: bool,
     #[arg(long)]
+    print_config: bool,
+    #[arg(long)]
+    write_config: Option<PathBuf>,
+    #[arg(long)]
     decode_config_base64: Option<String>,
     #[arg(long)]
     check_config: bool,
@@ -169,8 +173,19 @@ async fn main() -> Result<()> {
     if let Some(profile) = &args.profile {
         apply_named_profile(&mut config, profile)?;
     }
+    apply_cli_overrides_to_config(&mut config, &args)?;
     if args.check_config {
         check_remote_config(&config, &args).await?;
+        return Ok(());
+    }
+    if args.print_config {
+        print!("{}", config_to_toml(&config)?);
+        return Ok(());
+    }
+    if let Some(path) = &args.write_config {
+        std::fs::write(path, config_to_toml(&config)?)
+            .with_context(|| format!("write {}", path.display()))?;
+        println!("wrote {}", path.display());
         return Ok(());
     }
     if args.print_config_base64 {
@@ -232,6 +247,70 @@ fn log_overrides(args: &Args) -> LogOverrides {
         file: args.log_file.clone(),
         no_ansi: args.no_log_ansi,
     }
+}
+
+fn apply_cli_overrides_to_config(config: &mut EspejismoConfig, args: &Args) -> Result<()> {
+    if let Some(value) = &args.psk {
+        config.shared.psk = Some(value.clone());
+    }
+    if let Some(value) = args.clock_skew_secs {
+        config.shared.clock_skew_secs = value;
+    }
+    if let Some(value) = args.max_padding {
+        config.shared.max_padding = value;
+    }
+    if let Some(value) = args.jitter_ms {
+        config.shared.jitter_ms = value;
+    }
+    if let Some(value) = args.padding_chance_percent {
+        config.shared.padding_chance_percent = value;
+    }
+    if let Some(value) = args.backpressure_threshold_ms {
+        config.shared.backpressure_threshold_ms = value;
+    }
+    if let Some(value) = args.backpressure_cooldown_ms {
+        config.shared.backpressure_cooldown_ms = value;
+    }
+    if let Some(value) = args.puzzle_bits {
+        config.shared.puzzle_bits = value;
+    }
+    if let Some(value) = args.tunnel_buffer {
+        config.shared.tunnel_buffer = value;
+    }
+    if let Some(value) = args.listen {
+        config.remote.listen = value;
+    }
+    if let Some(value) = args.handshake_timeout_ms {
+        config.remote.handshake_timeout_ms = value;
+    }
+    if let Some(value) = args.reject_delay_ms {
+        config.remote.reject_delay_ms = value;
+    }
+    if let Some(value) = args.max_handshake_padding {
+        config.remote.max_handshake_padding = value;
+    }
+    if let Some(value) = args.replay_window_secs {
+        config.remote.replay_window_secs = value;
+    }
+    if let Some(value) = args.cold_start_delay_ms {
+        config.remote.cold_start_delay_ms = value;
+    }
+    if let Some(value) = args.tarpit_max {
+        config.remote.tarpit_max = value;
+    }
+    if let Some(value) = args.tarpit_hold_secs {
+        config.remote.tarpit_hold_secs = value;
+    }
+    if let Some(value) = args.admin_listen {
+        config.admin.listen = Some(value);
+    }
+    if let Some(value) = &args.admin_token {
+        config.admin.token = Some(value.clone());
+    }
+    apply_log_overrides(&mut config.logging, &log_overrides(args))?;
+    let normalized = config_to_toml(config)?;
+    *config = parse_config(&normalized)?;
+    Ok(())
 }
 
 async fn check_remote_config(config: &EspejismoConfig, args: &Args) -> Result<()> {

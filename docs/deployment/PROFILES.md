@@ -45,6 +45,25 @@ Import:
 espejismo-local --import-profile 'espejismo://import/...' --socks5-listen 127.0.0.1:6680
 ```
 
+Import and materialize a normal TOML config:
+
+```bash
+espejismo-local --import-profile 'espejismo://import/...' --print-config > client.toml
+espejismo-local --import-profile 'espejismo://import/...' --write-config client.toml
+```
+
+This makes the profile URL and the local TOML config reversible for the client
+settings carried by the profile. You can also adjust local listeners while
+materializing:
+
+```bash
+espejismo-local \
+  --import-profile 'espejismo://import/...' \
+  --socks5-listen 127.0.0.1:6680 \
+  --http-listen 127.0.0.1:6681 \
+  --write-config client.toml
+```
+
 Profiles currently carry the local client essentials: profile name, remote
 server address, PSK, local proxy listeners, and optional local proxy auth.
 Obfuscation settings, including `profile = "stealth"` and `[shared.stealth]`,
