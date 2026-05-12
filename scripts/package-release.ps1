@@ -1,5 +1,6 @@
 param(
-    [string]$Target = ""
+    [string]$Target = "",
+    [string]$WintunVersion = "0.14.1"
 )
 
 $ErrorActionPreference = "Stop"
@@ -15,6 +16,19 @@ if ($Target -ne "") {
     $TargetDir = "target/release"
 }
 
+$WintunArch = $null
+if ($Target -like "*windows*") {
+    if ($Target -like "x86_64-*") {
+        $WintunArch = "amd64"
+    } elseif ($Target -like "i686-*") {
+        $WintunArch = "x86"
+    } elseif ($Target -like "aarch64-*") {
+        $WintunArch = "arm64"
+    } else {
+        throw "unsupported Windows target for wintun mapping: $Target"
+    }
+}
+
 $Pkg = "espejismo-$Target"
 $Out = "dist/$Pkg"
 Remove-Item -Recurse -Force $Out, "dist/$Pkg.zip" -ErrorAction SilentlyContinue
@@ -22,6 +36,18 @@ New-Item -ItemType Directory -Force "$Out/bin", "$Out/configs", "$Out/docs", "$O
 
 Copy-Item "$TargetDir/espejismo-local.exe" "$Out/bin/"
 Copy-Item "$TargetDir/espejismo-remote.exe" "$Out/bin/"
+if ($WintunArch) {
+    $tmpZip = Join-Path $env:TEMP "wintun-$WintunVersion.zip"
+    $tmpDir = Join-Path $env:TEMP "wintun-$WintunVersion"
+    Remove-Item -Recurse -Force $tmpDir -ErrorAction SilentlyContinue
+    Invoke-WebRequest -UseBasicParsing -Uri "https://www.wintun.net/builds/wintun-$WintunVersion.zip" -OutFile $tmpZip
+    Expand-Archive -Path $tmpZip -DestinationPath $tmpDir -Force
+    $dllPath = Join-Path $tmpDir "wintun\bin\$WintunArch\wintun.dll"
+    if (!(Test-Path $dllPath)) {
+        throw "wintun.dll not found in archive for arch $WintunArch at $dllPath"
+    }
+    Copy-Item $dllPath "$Out/bin/wintun.dll"
+}
 Copy-Item "configs/examples/espejismo.toml" "$Out/configs/"
 Copy-Item "README.md" "$Out/"
 Copy-Item "README_ES.md" "$Out/"

@@ -110,15 +110,35 @@ jobs:
         shell: pwsh
         run: |
           $pkg = "espejismo-${{ matrix.name }}"
+          $wintunVersion = "0.14.1"
+          $wintunZip = Join-Path $env:RUNNER_TEMP "wintun-$wintunVersion.zip"
+          $wintunDir = Join-Path $env:RUNNER_TEMP "wintun-$wintunVersion"
+          Invoke-WebRequest -UseBasicParsing -Uri "https://www.wintun.net/builds/wintun-$wintunVersion.zip" -OutFile $wintunZip
+          Expand-Archive -Path $wintunZip -DestinationPath $wintunDir -Force
+          $wintunArch = switch ("${{ matrix.target }}") {
+            "x86_64-pc-windows-msvc" { "amd64" }
+            "i686-pc-windows-msvc" { "x86" }
+            "aarch64-pc-windows-msvc" { "arm64" }
+            default { throw "unsupported Windows target for wintun mapping: ${{ matrix.target }}" }
+          }
+          $wintunDll = Join-Path $wintunDir "wintun\bin\$wintunArch\wintun.dll"
+          if (!(Test-Path $wintunDll)) {
+            throw "wintun.dll not found for arch $wintunArch at $wintunDll"
+          }
+
           New-Item -ItemType Directory -Force "dist/$pkg/bin", "dist/$pkg/configs", "dist/$pkg/docs", "dist/$pkg/scripts" | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/espejismo-local.exe" "dist/$pkg/bin/"
           Copy-Item "target/${{ matrix.target }}/release/espejismo-remote.exe" "dist/$pkg/bin/"
+          Copy-Item $wintunDll "dist/$pkg/bin/wintun.dll"
           Copy-Item "configs/examples/espejismo.toml" "dist/$pkg/configs/"
           Copy-Item "README.md" "dist/$pkg/"
           Copy-Item "README_ES.md" "dist/$pkg/"
           Copy-Item "CHANGELOG.md" "dist/$pkg/"
           Copy-Item "docs/ARCHITECTURE.md", "docs/deployment/ADMIN.md", "docs/deployment/CLI.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/PACKAGING.md", "docs/deployment/PROFILES.md", "docs/deployment/QUICKSTART.md", "docs/deployment/TUN.md", "docs/deployment/UPDATES.md", "docs/deployment/USERS.md", "docs/development/STATUS.md", "docs/testing/TEST_PLAN.md" "dist/$pkg/docs/"
           Copy-Item "scripts/setup-windows.ps1", "scripts/e2e_smoke.ps1", "scripts/stress_smoke.ps1", "scripts/install.sh", "scripts/install.ps1", "scripts/install-ubuntu-remote.sh" "dist/$pkg/scripts/"
+          if (!(Test-Path "dist/$pkg/bin/wintun.dll")) {
+            throw "packaging error: dist/$pkg/bin/wintun.dll missing"
+          }
           Compress-Archive -Path "dist/$pkg" -DestinationPath "dist/$pkg.zip" -Force
       - name: Upload artifact
         uses: actions/upload-artifact@v4

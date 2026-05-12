@@ -104,6 +104,56 @@ espejismo-local --config espejismo.toml --probe-server
 `--probe-server` opens TCP to `local.server` and completes the Espejismo
 handshake. It does not start SOCKS5, HTTP, or TUN listeners.
 
+## Platform Command Recipes
+
+Linux/macOS local proxy mode:
+
+```bash
+./bin/espejismo-local --import-profile "espejismo://import/..."
+```
+
+Linux/macOS local TUN mode:
+
+```bash
+sudo ./bin/espejismo-local \
+  --config ./client.toml \
+  --tun-enabled \
+  --tun-auto-route \
+  --tun-auto-dns
+```
+
+Linux/macOS remote mode:
+
+```bash
+./bin/espejismo-remote --config ./server.toml
+```
+
+Windows local proxy mode (PowerShell):
+
+```powershell
+.\bin\espejismo-local.exe --import-profile "espejismo://import/..."
+```
+
+Windows local profile -> TOML -> TUN mode (PowerShell as Administrator):
+
+```powershell
+.\bin\espejismo-local.exe --import-profile "espejismo://import/..." --write-config .\client.toml
+.\bin\espejismo-local.exe --config .\client.toml --tun-enabled --tun-auto-route --tun-auto-dns --check-config
+.\bin\espejismo-local.exe --config .\client.toml --tun-enabled --tun-auto-route --tun-auto-dns
+```
+
+Windows remote mode (PowerShell):
+
+```powershell
+.\bin\espejismo-remote.exe --config .\server.toml
+```
+
+Windows cleanup after TUN crash:
+
+```powershell
+.\bin\espejismo-local.exe --config .\client.toml --tun-route-cleanup
+```
+
 ## Client Profiles
 
 Export a local-client import URL:

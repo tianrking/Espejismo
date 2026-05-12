@@ -4,6 +4,7 @@ Espejismo is distributed as two native binaries plus configuration:
 
 - `espejismo-local`: local SOCKS5/HTTP proxy.
 - `espejismo-remote`: remote tunnel endpoint.
+- `wintun.dll` (Windows archives only): runtime required for Windows TUN mode.
 - `configs/espejismo.toml`: starter shared configuration.
 - `README.md`, `README_ES.md`, and `CHANGELOG.md`: top-level usage and
   release notes.
@@ -27,6 +28,9 @@ The release workflow builds these packages:
 | `espejismo-windows-amd64.zip` | Windows | `x86_64-pc-windows-msvc` |
 | `espejismo-windows-386.zip` | Windows | `i686-pc-windows-msvc` |
 | `espejismo-windows-arm64.zip` | Windows | `aarch64-pc-windows-msvc` |
+
+Windows archives include `bin/wintun.dll`, so users can run TUN mode without a
+separate manual Wintun download.
 
 The workflow runs on `v*` tags and can also be started manually from GitHub
 Actions.

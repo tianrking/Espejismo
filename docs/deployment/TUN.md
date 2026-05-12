@@ -188,6 +188,46 @@ route ADD 128.0.0.0 MASK 128.0.0.0 10.255.0.1 METRIC 1 IF <tun-ifindex>
 netsh interface ipv4 set dnsservers name="esptun0" static 1.1.1.1 primary
 ```
 
+## Windows TUN Troubleshooting
+
+Typical startup failure:
+
+```text
+Error: create TUN device esptun0
+Caused by:
+  0: LoadLibraryExW failed
+  1: The specified module could not be found. (os error 126)
+```
+
+This means the Windows TUN runtime dependency is missing from the process DLL
+search path. Espejismo on Windows requires the Wintun runtime (`wintun.dll`).
+Official Windows release archives include `bin/wintun.dll` by default.
+
+Recommended recovery steps:
+
+1. Run the terminal as Administrator.
+2. Ensure `wintun.dll` (matching process architecture) is placed next to
+   `bin\espejismo-local.exe`, or in a standard DLL search location.
+3. Use release package architecture that matches your OS
+   (`windows-amd64` for most systems).
+4. Re-run config diagnostics first:
+
+```powershell
+.\bin\espejismo-local.exe --config .\client.toml --tun-enabled --tun-auto-route --tun-auto-dns --check-config
+```
+
+5. Start TUN mode:
+
+```powershell
+.\bin\espejismo-local.exe --config .\client.toml --tun-enabled --tun-auto-route --tun-auto-dns
+```
+
+If route or DNS state becomes inconsistent after a crash:
+
+```powershell
+.\bin\espejismo-local.exe --config .\client.toml --tun-route-cleanup
+```
+
 macOS manual route equivalent:
 
 ```bash

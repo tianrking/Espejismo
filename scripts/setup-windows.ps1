@@ -71,7 +71,16 @@ param(
     [string]$LogFormat = "compact",
     [string]$LogLevel = "info",
     [switch]$NoStart,
-    [switch]$PrintCommand
+    [switch]$PrintCommand,
+    [switch]$TunEnabled,
+    [string]$TunName = "esptun0",
+    [string]$TunAddress = "10.255.0.2",
+    [int]$TunPrefix = 24,
+    [string]$TunDestination = "10.255.0.1",
+    [int]$TunMtu = 1500,
+    [switch]$TunAutoRoute,
+    [switch]$TunAutoDns,
+    [string]$TunDns = "1.1.1.1,8.8.8.8"
 )
 
 $ErrorActionPreference = "Stop"
@@ -119,6 +128,34 @@ function Decode-ProfileUrl {
     $json | ConvertFrom-Json
 }
 
+function Assert-WintunRuntime {
+    param(
+        [string]$BinaryPath,
+        [string]$InstallDir
+    )
+    $binaryDir = Split-Path -Parent $BinaryPath
+    $candidates = @(
+        (Join-Path $binaryDir "wintun.dll"),
+        (Join-Path $InstallDir "bin\wintun.dll"),
+        (Join-Path $InstallDir "wintun.dll")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path $candidate) {
+            return
+        }
+    }
+    throw @"
+TUN mode requires wintun.dll, but it was not found.
+Expected one of:
+  $($candidates -join "`n  ")
+
+Fix:
+  1) Put wintun.dll next to espejismo-local.exe (recommended).
+  2) Re-run:
+     .\bin\espejismo-local.exe --config <config> --tun-enabled --tun-auto-route --tun-auto-dns
+"@
+}
+
 if ($InstallDir -eq "") {
     $InstallDir = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 }
@@ -154,6 +191,9 @@ if ($Psk -eq "") {
 }
 if ($Mode -eq "local" -and $Server -eq "") {
     throw "-Server is required for local mode, for example -Server 203.0.113.10:6690"
+}
+if ($Mode -ne "local" -and ($TunEnabled -or $TunAutoRoute -or $TunAutoDns)) {
+    throw "TUN flags are only supported in local mode"
 }
 if ($ProxyUsername -eq "" -and $ProxyPassword -ne "") {
     throw "-ProxyUsername is required when -ProxyPassword is set"
@@ -253,6 +293,20 @@ interactive_lanes = $TunnelPoolInteractiveLanes
 bulk_lanes = $TunnelPoolBulkLanes
 max_reconnect_attempts = $TunnelPoolMaxReconnectAttempts
 
+[local.tun]
+enabled = $($TunEnabled.ToString().ToLowerInvariant())
+name = $(Quote-Toml $TunName)
+address = $(Quote-Toml $TunAddress)
+prefix = $TunPrefix
+destination = $(Quote-Toml $TunDestination)
+mtu = $TunMtu
+
+[local.tun.route]
+enabled = $($TunAutoRoute.ToString().ToLowerInvariant())
+protect_server_route = true
+dns_enabled = $($TunAutoDns.ToString().ToLowerInvariant())
+dns_servers = $(String-Array ($TunDns -split "," | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne "" }))
+
 "@
     if ($ProxyUsername -ne "") {
         $config += @"
@@ -287,6 +341,25 @@ block_ports = $(Number-Array $BlockPorts)
 Set-Content -LiteralPath $ConfigPath -Value $config -Encoding UTF8
 
 $commandLine = "& `"$binaryPath`" --config `"$ConfigPath`""
+$startArgs = @("--config", $ConfigPath)
+if ($Mode -eq "local") {
+    if ($TunEnabled) {
+        $commandLine += " --tun-enabled"
+        $startArgs += "--tun-enabled"
+    }
+    if ($TunAutoRoute) {
+        $commandLine += " --tun-auto-route"
+        $startArgs += "--tun-auto-route"
+    }
+    if ($TunAutoDns) {
+        $commandLine += " --tun-auto-dns"
+        $startArgs += "--tun-auto-dns"
+    }
+    if ($TunDns -ne "") {
+        $commandLine += " --tun-dns `"$TunDns`""
+        $startArgs += @("--tun-dns", $TunDns)
+    }
+}
 Write-Host "Wrote config: $ConfigPath"
 Write-Host "Binary: $binaryPath"
 if ($Mode -eq "local") {
@@ -298,5 +371,8 @@ if ($PrintCommand -or $NoStart) {
     Write-Host "  $commandLine"
 }
 if (!$NoStart) {
-    & $binaryPath --config $ConfigPath
+    if ($Mode -eq "local" -and $TunEnabled) {
+        Assert-WintunRuntime -BinaryPath $binaryPath -InstallDir $InstallDir
+    }
+    & $binaryPath @startArgs
 }

@@ -349,6 +349,12 @@ SOCKS5:     127.0.0.1:6680
 HTTP proxy: 127.0.0.1:6681
 ```
 
+For TUN mode on Windows, run from an elevated PowerShell and ensure the
+Wintun runtime (`wintun.dll`) is available to `bin\espejismo-local.exe`.
+Official release ZIP packages include this DLL under `bin\wintun.dll`.
+If startup fails with `LoadLibraryExW failed ... (os error 126)`, see
+`docs/deployment/TUN.md` -> **Windows TUN Troubleshooting**.
+
 Generate config without starting:
 
 ```powershell
@@ -358,6 +364,21 @@ Generate config without starting:
   -NoStart `
   -PrintCommand
 ```
+
+Generate and start local TUN mode directly (Administrator PowerShell):
+
+```powershell
+.\scripts\setup-windows.ps1 `
+  -Mode local `
+  -ProfileUrl "espejismo://import/..." `
+  -TunEnabled `
+  -TunAutoRoute `
+  -TunAutoDns `
+  -TunDns "1.1.1.1,8.8.8.8"
+```
+
+If `wintun.dll` is missing, `setup-windows.ps1` now fails early with the exact
+expected paths before trying to start TUN mode.
 
 ## Windows Remote Server
 
