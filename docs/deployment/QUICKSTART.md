@@ -22,9 +22,10 @@ iwr -useb https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/ins
 ```
 
 The guided installer asks whether this machine is `local` or `remote`, downloads
-the latest release, generates a random PSK/admin token/local proxy password when
-not provided, writes config, starts the selected role, and prints management and
-connection commands.
+the latest release, generates a random PSK/admin token when not provided, writes
+config, starts the selected role, and prints management and connection commands.
+Local SOCKS5/HTTP proxy authentication is disabled by default for localhost-only
+browser use.
 
 When the installer is run non-interactively, root Linux defaults to `remote`
 because that is the normal server setup path. Non-root Linux/macOS defaults to
@@ -84,6 +85,7 @@ ESPEJISMO_PUBLIC_HOST=203.0.113.10
 ESPEJISMO_SERVER=203.0.113.10:6690
 ESPEJISMO_SOCKS5_LISTEN=127.0.0.1:6680
 ESPEJISMO_HTTP_LISTEN=127.0.0.1:6681
+ESPEJISMO_LOCAL_AUTH_PASSWORD='optional-local-proxy-password'
 ESPEJISMO_VERSION=v0.0.6
 ESPEJISMO_INSTALL_DIR=/opt/espejismo
 ```
@@ -170,19 +172,23 @@ or app:
 ```text
 SOCKS5: 127.0.0.1:6680
 HTTP:   127.0.0.1:6681
-User:   local-user
-Pass:   <generated-password>
+Proxy auth: disabled
 ```
 
 It also prints ready-to-run curl tests:
 
 ```bash
-curl --proxy-user 'local-user:<generated-password>' --socks5-hostname 127.0.0.1:6680 https://ifconfig.me
-curl --proxy-user 'local-user:<generated-password>' -x http://127.0.0.1:6681 https://ifconfig.me
+curl --socks5-hostname 127.0.0.1:6680 https://ifconfig.me
+curl -x http://127.0.0.1:6681 https://ifconfig.me
 ```
 
 For a remote install, `connect` prints the `espejismo://import/...` profile and
 the one-line client start command.
+
+To enable optional local proxy authentication, set
+`ESPEJISMO_LOCAL_AUTH_PASSWORD` on guided local installs or
+`ESPEJISMO_CLIENT_AUTH_PASSWORD` on remote installs that generate a client
+profile.
 
 ## Ubuntu Remote One-Liner
 
@@ -238,7 +244,7 @@ ESPEJISMO_PSK='use-a-long-random-secret'
 ESPEJISMO_CLIENT_SOCKS5_LISTEN=127.0.0.1:6680
 ESPEJISMO_CLIENT_HTTP_LISTEN=127.0.0.1:6681
 ESPEJISMO_CLIENT_AUTH_USER=local-user
-ESPEJISMO_CLIENT_AUTH_PASSWORD='use-a-local-proxy-password'
+ESPEJISMO_CLIENT_AUTH_PASSWORD='optional-local-proxy-password'
 ESPEJISMO_ADMIN_LISTEN=127.0.0.1:9090
 ESPEJISMO_ADMIN_TOKEN='use-a-long-random-admin-token'
 ESPEJISMO_DENY_PRIVATE_IPS=true

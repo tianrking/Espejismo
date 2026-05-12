@@ -57,8 +57,6 @@ if ($Role -ne "local" -and $Role -ne "remote") {
 
 if ([string]::IsNullOrWhiteSpace($Psk)) { $Psk = New-Secret }
 if ([string]::IsNullOrWhiteSpace($AdminToken)) { $AdminToken = New-Secret }
-if ([string]::IsNullOrWhiteSpace($LocalPassword)) { $LocalPassword = New-Secret }
-
 if ($Role -eq "remote") {
     $Listen = Ask-Default "Remote listen address" $Listen
     if ([string]::IsNullOrWhiteSpace($PublicEndpoint)) {
@@ -82,6 +80,15 @@ $LogPath = Join-Path $ConfigDir "espejismo-$Role.log"
 $PidPath = Join-Path $ConfigDir "espejismo-$Role.pid"
 $CtlPath = Join-Path $InstallDir "espejismoctl.ps1"
 $AdminListen = if ($Role -eq "remote") { "127.0.0.1:9090" } else { "127.0.0.1:9091" }
+$LocalAuthToml = ""
+if (-not [string]::IsNullOrWhiteSpace($LocalPassword)) {
+    $LocalAuthToml = @"
+
+[local.auth]
+username = "$(Escape-Toml $LocalUser)"
+password = "$(Escape-Toml $LocalPassword)"
+"@
+}
 
 New-Item -ItemType Directory -Force $BinDir, $ConfigDir | Out-Null
 
@@ -156,10 +163,7 @@ server = "$(Escape-Toml $Server)"
 socks5_listen = "$Socks5Listen"
 http_listen = "$HttpListen"
 handshake_padding = 256
-
-[local.auth]
-username = "$(Escape-Toml $LocalUser)"
-password = "$(Escape-Toml $LocalPassword)"
+$LocalAuthToml
 
 [local.tunnel_pool]
 min_connections = 1
@@ -257,17 +261,24 @@ function Connect-Info {
         Write-Host "Local proxy is ready."
         Write-Host "  SOCKS5: `$Socks5Addr"
         Write-Host "  HTTP:   `$HttpAddr"
-        Write-Host "  User:   `$LocalAuthUser"
-        Write-Host "  Pass:   `$LocalAuthPassword"
         Write-Host ""
         Write-Host "Test commands:"
-        Write-Host "  curl.exe --proxy-user ""`$LocalAuthUser`:`$LocalAuthPassword"" --socks5-hostname ""`$Socks5Addr"" https://ifconfig.me"
-        Write-Host "  curl.exe --proxy-user ""`$LocalAuthUser`:`$LocalAuthPassword"" -x ""http://`$HttpAddr"" https://ifconfig.me"
+        if (`$LocalAuthPassword) {
+            Write-Host "  curl.exe --proxy-user ""`$LocalAuthUser`:`$LocalAuthPassword"" --socks5-hostname ""`$Socks5Addr"" https://ifconfig.me"
+            Write-Host "  curl.exe --proxy-user ""`$LocalAuthUser`:`$LocalAuthPassword"" -x ""http://`$HttpAddr"" https://ifconfig.me"
+        } else {
+            Write-Host "  curl.exe --socks5-hostname ""`$Socks5Addr"" https://ifconfig.me"
+            Write-Host "  curl.exe -x ""http://`$HttpAddr"" https://ifconfig.me"
+        }
         Write-Host ""
         Write-Host "Browser/app settings:"
         Write-Host "  SOCKS5 host/port: `$Socks5Addr"
         Write-Host "  HTTP proxy:       `$HttpAddr"
-        Write-Host "  Proxy auth:       `$LocalAuthUser / `$LocalAuthPassword"
+        if (`$LocalAuthPassword) {
+            Write-Host "  Proxy auth:       `$LocalAuthUser / `$LocalAuthPassword"
+        } else {
+            Write-Host "  Proxy auth:       disabled"
+        }
     } else {
         `$profileUrl = & (Join-Path (Split-Path `$Bin) "espejismo-local.exe") --config `$Config --print-client-profile --profile-name default
         Write-Host "Remote endpoint is ready."

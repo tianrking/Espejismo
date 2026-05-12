@@ -265,10 +265,6 @@ fi
 if [[ -z "${ESPEJISMO_ADMIN_TOKEN}" ]]; then
   ESPEJISMO_ADMIN_TOKEN="$(random_secret)"
 fi
-if [[ -z "${ESPEJISMO_CLIENT_AUTH_PASSWORD}" ]]; then
-  ESPEJISMO_CLIENT_AUTH_PASSWORD="$(random_secret)"
-fi
-
 tmpdir="$(mktemp -d)"
 cleanup() {
   rm -rf "${tmpdir}"
@@ -462,11 +458,14 @@ max_connections = ${ESPEJISMO_CLIENT_TUNNEL_POOL_MAX_CONNECTIONS}
 interactive_lanes = ${ESPEJISMO_CLIENT_TUNNEL_POOL_INTERACTIVE_LANES}
 bulk_lanes = ${ESPEJISMO_CLIENT_TUNNEL_POOL_BULK_LANES}
 max_reconnect_attempts = ${ESPEJISMO_CLIENT_TUNNEL_POOL_MAX_RECONNECT_ATTEMPTS}
-
+EOF
+if [[ -n "${ESPEJISMO_CLIENT_AUTH_PASSWORD}" ]]; then
+  cat >>"${client_config}" <<EOF
 [local.auth]
 username = "${ESPEJISMO_CLIENT_AUTH_USER//\"/\\\"}"
 password = "${ESPEJISMO_CLIENT_AUTH_PASSWORD//\"/\\\"}"
 EOF
+fi
 client_profile="$(/usr/local/bin/espejismo-local --config "${client_config}" --print-client-profile --profile-name default)"
 
 cat <<EOF
@@ -493,8 +492,8 @@ Client server endpoint in profile:
 Local proxy after import:
   SOCKS5: ${ESPEJISMO_CLIENT_SOCKS5_LISTEN}
   HTTP:   ${ESPEJISMO_CLIENT_HTTP_LISTEN}
-  Auth:   ${ESPEJISMO_CLIENT_AUTH_USER} / ${ESPEJISMO_CLIENT_AUTH_PASSWORD}
+  Auth:   $([[ -n "${ESPEJISMO_CLIENT_AUTH_PASSWORD}" ]] && printf "%s / %s" "${ESPEJISMO_CLIENT_AUTH_USER}" "${ESPEJISMO_CLIENT_AUTH_PASSWORD}" || printf "disabled")
 
 Keep the client import profile private. It contains the server address, PSK,
-and local proxy credentials.
+and may contain local proxy credentials when local auth is enabled.
 EOF

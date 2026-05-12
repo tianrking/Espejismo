@@ -53,9 +53,10 @@ socks5_listen = "127.0.0.1:6680"
 http_listen = "127.0.0.1:6681"
 handshake_padding = 256
 
-[local.auth]
-username = "local-user"
-password = "local-pass"
+# Optional. Keep disabled for localhost-only browser use.
+# [local.auth]
+# username = "local-user"
+# password = "local-pass"
 
 [local.tunnel_pool]
 min_connections = 1

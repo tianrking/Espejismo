@@ -135,6 +135,18 @@ toml_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+local_auth_toml() {
+  if [[ -z "${LOCAL_PASSWORD}" ]]; then
+    return
+  fi
+  cat <<EOF
+
+[local.auth]
+username = "$(toml_escape "${LOCAL_USER}")"
+password = "$(toml_escape "${LOCAL_PASSWORD}")"
+EOF
+}
+
 public_endpoint() {
   if [[ -n "${PUBLIC_ENDPOINT}" ]]; then
     validate_public_endpoint "${PUBLIC_ENDPOINT}"
@@ -284,10 +296,7 @@ server = "$(toml_escape "${SERVER}")"
 socks5_listen = "${SOCKS5_LISTEN}"
 http_listen = "${HTTP_LISTEN}"
 handshake_padding = 256
-
-[local.auth]
-username = "$(toml_escape "${LOCAL_USER}")"
-password = "$(toml_escape "${LOCAL_PASSWORD}")"
+$(local_auth_toml)
 
 [local.tunnel_pool]
 min_connections = 1
@@ -431,24 +440,32 @@ shell_quote() {
 
 cmd_connect() {
   if [[ "\${ROLE}" == "local" ]]; then
-    local auth socks http
-    auth="\$(shell_quote "\${LOCAL_AUTH_USER}:\${LOCAL_AUTH_PASSWORD}")"
+    local socks http
     socks="\$(shell_quote "\${SOCKS5_ADDR}")"
     http="\$(shell_quote "http://\${HTTP_ADDR}")"
     echo "Local proxy is ready."
     echo "  SOCKS5: \${SOCKS5_ADDR}"
     echo "  HTTP:   \${HTTP_ADDR}"
-    echo "  User:   \${LOCAL_AUTH_USER}"
-    echo "  Pass:   \${LOCAL_AUTH_PASSWORD}"
     echo
     echo "Test commands:"
-    echo "  curl --proxy-user \${auth} --socks5-hostname \${socks} https://ifconfig.me"
-    echo "  curl --proxy-user \${auth} -x \${http} https://ifconfig.me"
+    if [[ -n "\${LOCAL_AUTH_PASSWORD}" ]]; then
+      local auth
+      auth="\$(shell_quote "\${LOCAL_AUTH_USER}:\${LOCAL_AUTH_PASSWORD}")"
+      echo "  curl --proxy-user \${auth} --socks5-hostname \${socks} https://ifconfig.me"
+      echo "  curl --proxy-user \${auth} -x \${http} https://ifconfig.me"
+    else
+      echo "  curl --socks5-hostname \${socks} https://ifconfig.me"
+      echo "  curl -x \${http} https://ifconfig.me"
+    fi
     echo
     echo "Browser/app settings:"
     echo "  SOCKS5 host/port: \${SOCKS5_ADDR}"
     echo "  HTTP proxy:       \${HTTP_ADDR}"
-    echo "  Proxy auth:       \${LOCAL_AUTH_USER} / \${LOCAL_AUTH_PASSWORD}"
+    if [[ -n "\${LOCAL_AUTH_PASSWORD}" ]]; then
+      echo "  Proxy auth:       \${LOCAL_AUTH_USER} / \${LOCAL_AUTH_PASSWORD}"
+    else
+      echo "  Proxy auth:       disabled"
+    fi
     return
   fi
 
@@ -529,7 +546,6 @@ main() {
 
   [[ -z "${PSK}" ]] && PSK="$(random_secret)"
   [[ -z "${ADMIN_TOKEN}" ]] && ADMIN_TOKEN="$(random_secret)"
-  [[ -z "${LOCAL_PASSWORD}" ]] && LOCAL_PASSWORD="$(random_secret)"
 
   if [[ "${ROLE}" == "remote" ]]; then
     prompt_default LISTEN "Remote listen address" "${LISTEN}"

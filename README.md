@@ -52,8 +52,7 @@ The installers download the matching binary from GitHub Releases latest,
 generate random secrets by default, write config, start the selected local or
 remote role, and print management plus connection commands. After install, run
 `~/.espejismo/espejismoctl connect` to see the SOCKS5/HTTP proxy address,
-generated proxy credentials, curl test commands, or the remote client import
-profile.
+curl test commands, or the remote client import profile.
 
 In non-interactive mode, root Linux defaults to `remote`; non-root Linux/macOS
 defaults to `local`. Set `ESPEJISMO_ROLE=local` or `ESPEJISMO_ROLE=remote` to be
@@ -64,6 +63,10 @@ Use `ESPEJISMO_PUBLIC_HOST=your.domain` or
 `ESPEJISMO_PUBLIC_ENDPOINT=your.domain:6690` when you already know the client
 dial address. `0.0.0.0` is only for `ESPEJISMO_LISTEN`, not for public client
 profiles.
+
+Local SOCKS5/HTTP proxy authentication is disabled by default because listeners
+bind to `127.0.0.1`. Set `ESPEJISMO_LOCAL_AUTH_PASSWORD` when you explicitly
+want browser/app proxy authentication.
 
 Configs and client profiles are reversible for the local onboarding path:
 
