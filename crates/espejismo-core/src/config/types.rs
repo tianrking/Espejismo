@@ -151,6 +151,7 @@ impl SharedConfig {
             min_chunk: self.obfuscation.min_chunk,
             max_chunk: self.obfuscation.max_chunk,
             stealth_frame_size: self.stealth.frame_size,
+            stealth_frame_size_candidates: self.stealth.frame_size_candidates.clone(),
             stealth_tick_ms: self.stealth.tick_ms,
             pacing_enabled: self.pacing.enabled,
             pacing_max_bytes_per_sec: self.pacing.max_bytes_per_sec,
@@ -193,6 +194,8 @@ pub struct ObfuscationConfig {
 pub struct StealthConfig {
     #[serde(default = "default_stealth_frame_size")]
     pub frame_size: usize,
+    #[serde(default = "default_stealth_frame_size_candidates")]
+    pub frame_size_candidates: Vec<usize>,
     #[serde(default = "default_stealth_tick_ms")]
     pub tick_ms: u64,
 }
@@ -458,6 +461,7 @@ impl Default for StealthConfig {
     fn default() -> Self {
         Self {
             frame_size: default_stealth_frame_size(),
+            frame_size_candidates: default_stealth_frame_size_candidates(),
             tick_ms: default_stealth_tick_ms(),
         }
     }

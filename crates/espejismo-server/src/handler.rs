@@ -89,6 +89,9 @@ pub(crate) async fn handle_peer(
     runtime.runtime_state.record_connect_success();
     info!(user = %user, "authenticated tunnel accepted");
     let mut frames = settings.frames.clone();
+    if frames.is_stealth() {
+        frames.stealth_frame_size = frames.select_stealth_frame_size(keys.keys.stealth_selector());
+    }
     frames.metrics = Some(metrics.clone());
     let transport = spawn_frame_transport(inbound, keys.keys, frames, runtime.tunnel_buffer);
     let mut session = server_session(transport, settings.mux);

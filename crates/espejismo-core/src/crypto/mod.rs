@@ -117,6 +117,10 @@ pub struct SessionKeys {
 }
 
 impl SessionKeys {
+    pub fn stealth_selector(&self) -> u64 {
+        u64::from_be_bytes(self.nonce_tag)
+    }
+
     pub(crate) fn update_tx(&mut self) -> Result<()> {
         self.tx_generation = self.tx_generation.saturating_add(1);
         let (key, len_mask) =

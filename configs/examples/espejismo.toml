@@ -45,6 +45,7 @@ max_chunk = 16384
 
 [shared.stealth]
 frame_size = 4096
+frame_size_candidates = [3328, 3584, 4096, 4608]
 tick_ms = 50
 
 [local]

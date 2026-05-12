@@ -108,6 +108,7 @@ pub struct FrameOptions {
     pub min_chunk: usize,
     pub max_chunk: usize,
     pub stealth_frame_size: usize,
+    pub stealth_frame_size_candidates: Vec<usize>,
     pub stealth_tick_ms: u64,
     pub pacing_enabled: bool,
     pub pacing_max_bytes_per_sec: u64,
@@ -132,6 +133,7 @@ impl Default for FrameOptions {
             min_chunk: 1024,
             max_chunk: DATA_CHUNK,
             stealth_frame_size: DEFAULT_STEALTH_FRAME_SIZE,
+            stealth_frame_size_candidates: Vec::new(),
             stealth_tick_ms: DEFAULT_STEALTH_TICK_MS,
             pacing_enabled: true,
             pacing_max_bytes_per_sec: 0,
@@ -201,6 +203,14 @@ impl FrameOptions {
     pub fn stealth_payload_capacity(&self) -> Result<usize> {
         self.validate_stealth()?;
         Ok(self.stealth_frame_size - AEAD_TAG_LEN - STEALTH_HEADER_LEN)
+    }
+
+    pub fn select_stealth_frame_size(&self, selector: u64) -> usize {
+        if self.stealth_frame_size_candidates.is_empty() {
+            return self.stealth_frame_size;
+        }
+        let index = (selector as usize) % self.stealth_frame_size_candidates.len();
+        self.stealth_frame_size_candidates[index]
     }
 }
 
@@ -735,6 +745,18 @@ mod tests {
             options.normalized_chunk_bounds(),
             (NORMAL_PAYLOAD_CAPACITY, NORMAL_PAYLOAD_CAPACITY)
         );
+    }
+
+    #[test]
+    fn stealth_frame_size_selection_is_deterministic() {
+        let options = FrameOptions {
+            stealth_frame_size: 4096,
+            stealth_frame_size_candidates: vec![3328, 3584, 4096, 4608],
+            ..FrameOptions::default()
+        };
+        assert_eq!(options.select_stealth_frame_size(0), 3328);
+        assert_eq!(options.select_stealth_frame_size(3), 4608);
+        assert_eq!(options.select_stealth_frame_size(4), 3328);
     }
 
     #[tokio::test]

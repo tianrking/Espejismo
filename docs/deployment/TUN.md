@@ -3,6 +3,26 @@
 TUN mode is an optional local ingress for system-level traffic capture. It is
 disabled by default and does not change the stable SOCKS5/HTTP proxy path.
 
+In ordinary mode, Espejismo is an explicit local proxy: only applications that
+use the local SOCKS5 or HTTP proxy listeners enter the encrypted tunnel. In TUN
+mode, Espejismo creates a virtual interface and can route ordinary IPv4 TCP/UDP
+traffic from the operating system into the same encrypted protocol path, giving
+the client a global-forwarding mode without changing the remote server.
+
+## Support Matrix
+
+| Capability | Linux | macOS | Windows | Notes |
+|---|---|---|---|---|
+| Ordinary proxy mode (SOCKS5/HTTP) | Yes | Yes | Yes | Explicit app-level proxy configuration. |
+| TUN ingress (local capture) | Yes | Yes | Yes | Requires elevated privileges or platform entitlement. |
+| Global IPv4 TCP forwarding via TUN | Yes | Yes | Yes | Split-default route takeover plus remote route protection. |
+| Global IPv4 UDP forwarding via TUN | Yes | Yes | Yes | Application-level UDP relay over encrypted TCP mux tunnel. |
+| Global IPv6 route takeover via TUN | No | No | No | Not advertised as complete in `v0.0.9`. |
+| ICMP forwarding (`ping`) | No | No | No | Use TCP/HTTP probes for validation. |
+| Physical UDP underlay takeover | No | No | No | UDP underlay remains reserved/experimental. |
+| Auto DNS takeover | Yes | Yes | Yes (IPv4 DNS only) | Windows uses `netsh interface ipv4` DNS APIs. |
+| Crash recovery via `--tun-route-cleanup` | Yes | Yes | Yes | Replays saved route/DNS state from temp file. |
+
 ```toml
 [local.tun]
 enabled = true
@@ -63,6 +83,9 @@ How it works:
 - UDP datagrams are converted into existing tunnel UDP relay requests.
 - `espejismo-remote` is unchanged; existing users, quota, bandwidth, egress,
   logging, and admin status still apply.
+- The current automatic route takeover is IPv4 split-default routing. IPv6
+  global takeover is intentionally not advertised as complete in this release.
+- ICMP echo is not proxied. Use TCP/HTTP probes instead of `ping`.
 
 Important deployment notes:
 
@@ -84,7 +107,9 @@ Important deployment notes:
 - Windows route takeover is also opt-in. It protects the remote server route
   through the current default gateway and installs split-default
   `0.0.0.0/1` plus `128.0.0.0/1` routes through the TUN interface, leaving the
-  original default route intact for recovery.
+  original default route intact for recovery. The automatic Windows DNS manager
+  currently applies IPv4 DNS servers through `netsh interface ipv4`; use IPv4
+  DNS addresses such as `1.1.1.1` and `8.8.8.8`.
 - macOS route takeover is also opt-in. It protects the remote server route
   through the current default gateway and installs the same split-default
   `0.0.0.0/1` plus `128.0.0.0/1` routes through the TUN interface.
@@ -104,8 +129,10 @@ Important deployment notes:
   `--tun-route-cleanup` to replay that state and remove the saved file.
 - The current TUN implementation is intended for TCP-first deployments. UDP is
   supported as application-level datagram relay over the encrypted TCP mux tunnel.
-- ICMP echo is not proxied. Use `curl` or another TCP-based probe instead of
-  `ping` when checking TUN connectivity.
+- Use `espejismo-local --doctor --tun-enabled --tun-auto-route --tun-auto-dns`
+  before route takeover when possible. Doctor checks listener conflicts,
+  server resolution/reachability, IPv4 server-route requirements, DNS inputs,
+  and release-profile risks.
 
 Crash recovery command:
 
@@ -174,6 +201,8 @@ Use `--check-config` first:
 
 ```bash
 espejismo-local --config espejismo.toml --tun-enabled --tun-auto-route --check-config
+espejismo-local --config espejismo.toml --tun-enabled --tun-auto-route --tun-auto-dns --doctor
+espejismo-local --config espejismo.toml --probe-server
 ```
 
 TCP-first smoke tests:

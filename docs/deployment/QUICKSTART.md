@@ -86,7 +86,7 @@ ESPEJISMO_SERVER=203.0.113.10:6690
 ESPEJISMO_SOCKS5_LISTEN=127.0.0.1:6680
 ESPEJISMO_HTTP_LISTEN=127.0.0.1:6681
 ESPEJISMO_LOCAL_AUTH_PASSWORD='optional-local-proxy-password'
-ESPEJISMO_VERSION=v0.0.7
+ESPEJISMO_VERSION=v0.0.9
 ESPEJISMO_INSTALL_DIR=/opt/espejismo
 ```
 
@@ -223,7 +223,7 @@ Pinned release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_VERSION=v0.0.7 bash
+  | sudo ESPEJISMO_VERSION=v0.0.9 bash
 ```
 
 Custom archive URL, useful for private releases or self-hosted packages:
@@ -409,10 +409,15 @@ The most important knobs are:
   large chunks capped just below 64 KiB to leave room for frame metadata and the
   AEAD tag, `stealth` for fixed stealth capacity, or `custom` to honor
   `min_chunk` / `max_chunk` within that payload cap.
-- `shared.stealth.frame_size` / `shared.stealth.tick_ms`: fixed frame size and
-  base pacing when `profile = "stealth"`. The transport starts with a short
-  random padding warmup, sends data or padding on a paced cadence, and slows
-  idle padding toward heartbeat-like intervals.
+- `shared.stealth.frame_size` / `shared.stealth.tick_ms`: stealth handshake
+  wrapper size and base pacing when `profile = "stealth"`.
+- `shared.stealth.frame_size_candidates`: optional per-session fixed-size set
+  for stealth data frames. When present, each authenticated session picks one
+  deterministic candidate from this list; when empty, transport uses
+  `shared.stealth.frame_size`.
+- Stealth transport starts with a short random padding warmup, sends data or
+  padding on a paced cadence, and slows idle padding toward heartbeat-like
+  intervals.
 - `local.server`: remote server address.
 - `local.tunnel_pool`: number of physical TCP tunnel lanes and their
   interactive/bulk split. New streams are assigned by priority and lane health.

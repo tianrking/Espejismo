@@ -78,6 +78,32 @@ PSK length, admin token exposure, and pacing bounds. The remote check verifies
 `remote.listen`, admin bindability, users or fallback PSK, broad egress policy
 warnings, SOCKS5 chain DNS, quotas, bandwidth, and shared TCP/pacing options.
 
+Run doctor mode for deployment-oriented checks and low-feature profile advice:
+
+```bash
+espejismo-local --config espejismo.toml --doctor
+espejismo-remote --config espejismo.toml --doctor
+```
+
+Local doctor additionally probes remote TCP reachability, checks TUN IPv4
+auto-route requirements when TUN route takeover is requested, validates DNS
+inputs, and warns when a config is not aligned with the no-impersonation,
+low-feature transport profile.
+
+For stealth profile rollouts, configure `[shared.stealth].frame_size_candidates`
+with identical values on both local and remote. The handshake wrapper still
+uses `frame_size`, while data frames select one fixed size per authenticated
+session from the candidate set.
+
+Probe the remote handshake from the local side:
+
+```bash
+espejismo-local --config espejismo.toml --probe-server
+```
+
+`--probe-server` opens TCP to `local.server` and completes the Espejismo
+handshake. It does not start SOCKS5, HTTP, or TUN listeners.
+
 ## Client Profiles
 
 Export a local-client import URL:

@@ -228,3 +228,7 @@ pub(super) fn default_stealth_frame_size() -> usize {
 pub(super) fn default_stealth_tick_ms() -> u64 {
     DEFAULT_STEALTH_TICK_MS
 }
+
+pub(super) fn default_stealth_frame_size_candidates() -> Vec<usize> {
+    Vec::new()
+}

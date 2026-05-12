@@ -17,8 +17,8 @@ Available profiles:
 - `balanced`: production default for general proxy use.
 - `low-latency`: smaller chunks, TCP_NODELAY, tighter pacing, and fewer lanes
   for interactive requests.
-- `stealth`: fixed-size stealth frames, modest jitter, and more frequent frame
-  key updates.
+- `stealth`: fixed-size stealth frames, per-session frame-size diversification
+  candidates, modest jitter, and more frequent frame key updates.
 - `server-safe`: conservative remote defaults with private-IP denial, common
   web ports, capped stream/connection limits, and bounded tarpit pressure.
 
@@ -66,7 +66,8 @@ espejismo-local \
 
 Profiles currently carry the local client essentials: profile name, remote
 server address, PSK, local proxy listeners, and optional local proxy auth.
-Obfuscation settings, including `profile = "stealth"` and `[shared.stealth]`,
+Obfuscation settings, including `profile = "stealth"` and `[shared.stealth]`
+(`frame_size`, `frame_size_candidates`, `tick_ms`),
 remain in TOML/CLI config and are not embedded in the import URL. Server
 egress/admin/logging policy also remains in TOML because those are
 deployment-side operator settings.

@@ -353,8 +353,11 @@ impl TunnelManager {
             health.last_error = None;
             self.publish_lane(&lane, &health, "connected");
         }
-        let transport =
-            spawn_frame_transport(upstream, keys, self.frames.clone(), self.tunnel_buffer);
+        let mut frames = self.frames.clone();
+        if frames.is_stealth() {
+            frames.stealth_frame_size = frames.select_stealth_frame_size(keys.stealth_selector());
+        }
+        let transport = spawn_frame_transport(upstream, keys, frames, self.tunnel_buffer);
         let (control, mut session) = client_session(transport, self.mux);
         let metrics = self.metrics.clone();
         let runtime_state = self.runtime_state.clone();

@@ -78,7 +78,7 @@ When `[shared.obfuscation].profile = "stealth"`, the transport switches to
 fixed-size encrypted frames:
 
 ```text
-[ AEAD ciphertext exactly shared.stealth.frame_size bytes ]
+[ AEAD ciphertext exactly selected_stealth_frame_size bytes ]
 ```
 
 The plaintext inside each stealth frame is `type || payload_len || payload ||
@@ -88,11 +88,17 @@ warmup after handshake completion, then emits data or padding on a paced
 schedule. Idle padding decays toward slower heartbeat-like intervals and active
 payload resets the cadence.
 
+`selected_stealth_frame_size` is resolved per authenticated session. If
+`shared.stealth.frame_size_candidates` is empty, transport uses
+`shared.stealth.frame_size`. Otherwise the session key material deterministically
+selects one candidate, so each session keeps fixed-size behavior without forcing
+the same global deployment-wide size.
+
 ## Stealth Handshake Wrapper
 
 Plain mode uses the variable-length masked envelope described above. Stealth
 mode wraps the client hello and server hello in fixed-size blocks that match the
-configured stealth frame size. Each block starts with a random 24-byte nonce and
+configured `shared.stealth.frame_size`. Each block starts with a random 24-byte nonce and
 masks the hello plus random padding with an HMAC-derived XOR stream keyed by the
 PSK auth key. This replaces the variable-length envelope with fixed-size
 handshake blocks without changing the underlying X25519/HMAC/puzzle handshake

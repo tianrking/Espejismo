@@ -36,6 +36,15 @@ pub fn load_config_base64(encoded: &str) -> Result<EspejismoConfig> {
 
 pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     let config: EspejismoConfig = toml::from_str(content)?;
+    let validate_stealth_frame_size = |frame_size: usize, field: &str| -> Result<()> {
+        anyhow::ensure!(frame_size <= 64 * 1024, "{field} must be <= 65536");
+        let min_stealth_frame = 24 + 32 + 84 + 16 + 1;
+        anyhow::ensure!(
+            frame_size >= min_stealth_frame,
+            "{field} must leave room for handshake, AEAD tag, and at least one payload byte"
+        );
+        Ok(())
+    };
     if let Some(auth) = &config.local.auth {
         auth.validate()?;
     }
@@ -195,18 +204,21 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
         );
     }
     if config.shared.obfuscation.profile == ObfuscationProfile::Stealth {
-        anyhow::ensure!(
-            config.shared.stealth.frame_size <= 64 * 1024,
-            "shared.stealth.frame_size must be <= 65536"
-        );
-        let min_stealth_frame = 24 + 32 + 84 + 16 + 1;
-        anyhow::ensure!(
-            config.shared.stealth.frame_size >= min_stealth_frame,
-            "shared.stealth.frame_size must leave room for handshake, AEAD tag, and at least one payload byte"
-        );
+        validate_stealth_frame_size(
+            config.shared.stealth.frame_size,
+            "shared.stealth.frame_size",
+        )?;
         anyhow::ensure!(
             config.shared.stealth.tick_ms > 0,
             "shared.stealth.tick_ms must be greater than 0"
+        );
+    }
+    let mut stealth_sizes = std::collections::BTreeSet::new();
+    for &frame_size in &config.shared.stealth.frame_size_candidates {
+        validate_stealth_frame_size(frame_size, "shared.stealth.frame_size_candidates[]")?;
+        anyhow::ensure!(
+            stealth_sizes.insert(frame_size),
+            "shared.stealth.frame_size_candidates must not contain duplicates"
         );
     }
     if let Some(upstream) = &config.remote.fallback_http.upstream {
@@ -273,6 +285,7 @@ pub fn apply_named_profile(config: &mut EspejismoConfig, name: &str) -> Result<(
             config.shared.padding_chance_percent = 0;
             config.shared.jitter_ms = 3;
             config.shared.stealth.frame_size = 4096;
+            config.shared.stealth.frame_size_candidates = vec![3328, 3584, 4096, 4608];
             config.shared.stealth.tick_ms = 20;
             config.shared.key_update_frames = 8192;
             config.local.handshake_padding = config.local.handshake_padding.max(256);
@@ -447,5 +460,33 @@ mod tests {
 
         let err = apply_named_profile(&mut config, "unknown").unwrap_err();
         assert!(err.to_string().contains("unknown profile"));
+    }
+
+    #[test]
+    fn rejects_duplicate_stealth_frame_size_candidates() {
+        let config = r#"
+            [shared.obfuscation]
+            profile = "stealth"
+
+            [shared.stealth]
+            frame_size = 4096
+            frame_size_candidates = [3328, 4096, 4096]
+        "#;
+        let err = parse_config(config).unwrap_err().to_string();
+        assert!(err.contains("frame_size_candidates"), "{err}");
+    }
+
+    #[test]
+    fn rejects_too_small_stealth_frame_size_candidate() {
+        let config = r#"
+            [shared.obfuscation]
+            profile = "stealth"
+
+            [shared.stealth]
+            frame_size = 4096
+            frame_size_candidates = [128]
+        "#;
+        let err = parse_config(config).unwrap_err().to_string();
+        assert!(err.contains("frame_size_candidates"), "{err}");
     }
 }

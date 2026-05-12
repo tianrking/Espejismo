@@ -1,6 +1,6 @@
 # Espejismo Protocol Specification
 
-This document describes the Espejismo wire protocol for the `v0.0.7` line. It
+This document describes the Espejismo wire protocol for the `v0.0.9` line. It
 is written as an implementation contract for compatible clients, servers, test
 fixtures, and future transports.
 
@@ -137,9 +137,11 @@ header-mask stream keyed by the frame sequence number.
 Frame types are encrypted. Current frame semantics are:
 
 - DATA: carries tunnel or mux bytes.
+- CLOSE: marks clean sender-side stream close intent at frame layer.
 - PADDING: carries no application data.
-- HEARTBEAT: keeps an idle physical tunnel alive.
 - KEY_UPDATE: authenticates the transition to the next traffic secret.
+- TARGET: reserved for legacy/compat framing paths; not used by the current
+  request-preface tunnel flow.
 
 An AEAD authentication failure MUST fail the physical connection immediately.
 Implementations MUST NOT scan for a new frame boundary or attempt to
@@ -160,7 +162,7 @@ separate for read and write directions.
 In stealth mode, encrypted frames are fixed-size blocks:
 
 ```text
-[ AEAD ciphertext exactly shared.stealth.frame_size bytes ]
+[ AEAD ciphertext exactly selected_stealth_frame_size bytes ]
 ```
 
 The encrypted plaintext contains:
@@ -169,10 +171,17 @@ The encrypted plaintext contains:
 [ frame type ][ payload length ][ payload ][ random padding ]
 ```
 
-DATA, PADDING, HEARTBEAT, and KEY_UPDATE frames share the same outer size. The
+DATA, CLOSE, PADDING, and KEY_UPDATE frames share the same outer size. The
 writer MAY send a short random padding warmup after handshake completion. During
 idle periods, the writer SHOULD decay toward a slower heartbeat-like cadence;
 active payload SHOULD reset the cadence.
+
+`selected_stealth_frame_size` is chosen per authenticated session. If
+`shared.stealth.frame_size_candidates` is empty, the transport uses
+`shared.stealth.frame_size`. Otherwise both peers deterministically select one
+candidate from `shared.stealth.frame_size_candidates` using session key
+material. This keeps fixed-size protection while avoiding a single global frame
+size signature across all deployments.
 
 ## Tunnel Requests
 

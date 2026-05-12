@@ -694,6 +694,11 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args, doctor: bool)
     let tun_mtu = args.tun_mtu.unwrap_or(config.local.tun.mtu);
     let tun_route_enabled = args.tun_auto_route || config.local.tun.route.enabled;
     let tun_dns_enabled = args.tun_auto_dns || config.local.tun.route.dns_enabled;
+    let dns_servers = if args.tun_dns.is_empty() {
+        &config.local.tun.route.dns_servers
+    } else {
+        &args.tun_dns
+    };
     let mut pool = config.local.tunnel_pool.clone();
     if let Some(value) = args.tunnel_min_connections {
         pool.min_connections = value;
@@ -722,6 +727,11 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args, doctor: bool)
                 let addrs = addrs.collect::<Vec<_>>();
                 if !addrs.is_empty() {
                     println!("OK local.server resolves: {server}");
+                    if let Some(error) =
+                        validate_tun_auto_route_server_ipv4(tun_route_enabled, &addrs)
+                    {
+                        errors.push(error);
+                    }
                     if doctor {
                         let mut connected = false;
                         let mut last_error = None;
@@ -830,6 +840,12 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args, doctor: bool)
         warnings.push(
             "TUN mode requires OS privileges; --tun-auto-route changes system routes".to_string(),
         );
+        if doctor {
+            warnings.push(
+                "TUN mode currently captures IPv4 TCP/UDP through split-default routing; IPv6 global takeover is not implemented"
+                    .to_string(),
+            );
+        }
         println!("OK TUN ingress requested");
     }
     if tun_route_enabled {
@@ -845,15 +861,14 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args, doctor: bool)
         );
     }
     if tun_dns_enabled {
-        let dns_servers = if args.tun_dns.is_empty() {
-            &config.local.tun.route.dns_servers
-        } else {
-            &args.tun_dns
-        };
         if dns_servers.is_empty() {
             errors.push(
                 "local.tun.route.dns_servers must not be empty when DNS is enabled".to_string(),
             );
+        }
+        #[cfg(target_os = "windows")]
+        if let Some(error) = validate_windows_tun_dns_servers(dns_servers) {
+            errors.push(error);
         }
         #[cfg(target_os = "linux")]
         println!("OK Linux TUN auto-DNS requested");
@@ -899,5 +914,57 @@ fn diagnose_low_feature_profile(config: &EspejismoConfig, warnings: &mut Vec<Str
             "low-feature mode: regular non-stealth heartbeats can become a timing signal"
                 .to_string(),
         );
+    }
+}
+
+fn validate_tun_auto_route_server_ipv4(
+    tun_route_enabled: bool,
+    addrs: &[SocketAddr],
+) -> Option<String> {
+    if tun_route_enabled && !addrs.iter().any(|addr| addr.is_ipv4()) {
+        return Some(
+            "TUN auto-route currently requires local.server to resolve to at least one IPv4 address"
+                .to_string(),
+        );
+    }
+    None
+}
+
+#[cfg(target_os = "windows")]
+fn validate_windows_tun_dns_servers(dns_servers: &[IpAddr]) -> Option<String> {
+    if dns_servers.iter().any(|addr| addr.is_ipv6()) {
+        return Some("Windows TUN auto-DNS currently supports IPv4 DNS servers only".to_string());
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_tun_auto_route_server_ipv4;
+    #[cfg(target_os = "windows")]
+    use super::validate_windows_tun_dns_servers;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    #[test]
+    fn tun_auto_route_requires_ipv4_server_address() {
+        let ipv6_only = vec![SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 6690)];
+        assert!(validate_tun_auto_route_server_ipv4(true, &ipv6_only).is_some());
+
+        let mixed = vec![
+            SocketAddr::new(IpAddr::V6(Ipv6Addr::LOCALHOST), 6690),
+            SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 6690),
+        ];
+        assert!(validate_tun_auto_route_server_ipv4(true, &mixed).is_none());
+        assert!(validate_tun_auto_route_server_ipv4(false, &ipv6_only).is_none());
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn windows_tun_dns_rejects_ipv6_server_entries() {
+        let ipv6_dns = vec![IpAddr::V6(Ipv6Addr::LOCALHOST)];
+        assert!(validate_windows_tun_dns_servers(&ipv6_dns).is_some());
+
+        let ipv4_dns = vec![IpAddr::V4(Ipv4Addr::new(1, 1, 1, 1))];
+        assert!(validate_windows_tun_dns_servers(&ipv4_dns).is_none());
     }
 }

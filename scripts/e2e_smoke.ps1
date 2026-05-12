@@ -207,10 +207,20 @@ allow_ports = [$HttpPort, $UdpPort]
     & $Cargo run --quiet --bin espejismo-remote -- --config $ConfigFile --check-config | Out-String | ForEach-Object {
         Assert-Contains $_ "config check passed"
     }
+    & $Cargo run --quiet --bin espejismo-remote -- --config $ConfigFile --doctor | Out-String | ForEach-Object {
+        Assert-Contains $_ "low-feature mode"
+    }
 
     Start-ProbeProcess $Cargo @("run", "--quiet", "--bin", "espejismo-remote", "--", "--config-base64", $ConfigB64, "--admin-listen", $RemoteAdminAddr) "remote" | Out-Null
     Wait-Port "127.0.0.1" ($PortBase + 1) "espejismo remote"
     Wait-Port "127.0.0.1" ($PortBase + 5) "espejismo remote admin"
+
+    & $Cargo run --quiet --bin espejismo-local -- --config $ConfigFile --doctor | Out-String | ForEach-Object {
+        Assert-Contains $_ "local.server TCP reachable"
+    }
+    & $Cargo run --quiet --bin espejismo-local -- --config $ConfigFile --probe-server | Out-String | ForEach-Object {
+        Assert-Contains $_ "remote handshake succeeded"
+    }
 
     Start-ProbeProcess $Cargo @("run", "--quiet", "--bin", "espejismo-local", "--", "--config", $ConfigFile) "local" | Out-Null
     Wait-Port "127.0.0.1" ($PortBase + 2) "SOCKS5 proxy"

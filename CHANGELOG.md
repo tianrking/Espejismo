@@ -2,6 +2,52 @@
 
 ## Unreleased
 
+## v0.0.9
+
+`v0.0.9` focuses on featureless-chaos hardening and release-doc alignment.
+
+### Added
+
+- Per-session stealth frame-size diversification through
+  `shared.stealth.frame_size_candidates`.
+- Config validation for stealth frame-size candidates (bounds, minimum viable
+  encrypted payload, duplicate rejection).
+- Coverage for stealth frame-size candidate validation and deterministic
+  session selection.
+
+### Changed
+
+- Stealth transport now selects fixed frame size per authenticated session
+  instead of using a single global deployment-wide size.
+- Default and local starter config templates now include
+  `shared.stealth.frame_size_candidates`.
+- Release documentation, checklists, and packaging/tag instructions are aligned
+  to `v0.0.9`.
+
+## v0.0.8
+
+`v0.0.8` focuses on release-readiness for the low-feature transport direction
+and TUN reliability checks.
+
+### Added
+
+- Protocol specification documenting the no-impersonation, low-feature
+  encrypted transport model.
+- Extension traits for authentication, outbound connectors, request policy,
+  traffic observation, and transport connectors.
+- `--doctor` diagnostics for low-feature configuration risks and TUN deployment
+  checks.
+- `--probe-server` for local TCP plus Espejismo handshake probing.
+- Structured traffic observation events on the remote relay path.
+
+### Changed
+
+- Local physical tunnel dialing now goes through `TransportConnector`, keeping
+  TCP as the default connector while making future underlays explicit.
+- Release packaging now includes the protocol specification.
+- TUN documentation now states the current IPv4 global-forwarding scope,
+  route-recovery behavior, and ordinary proxy versus TUN mode boundary.
+
 ## v0.0.7
 
 `v0.0.7` focuses on making Linux TUN takeover usable in real desktop routing

@@ -61,6 +61,8 @@ The probe sends a unique token through these paths:
 - HTTP proxy authentication rejection
 - Config-to-base64 and base64-to-config CLI conversion for both binaries
 - Update-check CLI path with a deterministic local release metadata fixture
+- Config doctor checks for TUN route/DNS readiness and low-feature profile
+  warnings
 - JSON logging configuration during process startup
 - Admin health/status/metrics endpoint checks
 - Admin `/apply` hot reload, verified by changing remote egress policy at
@@ -112,6 +114,9 @@ Current unit tests cover:
 - SOCKS5 UDP ASSOCIATE packet wrapping for chained UDP egress.
 - Admin authorization and request length parsing.
 - Configuration validation for TUN, DNS route, and duplicate users.
+- Local `--probe-server` TCP plus handshake probe path.
+- Doctor diagnostics for TUN IPv4 auto-route constraints and Windows IPv4 DNS
+  inputs.
 - Local SOCKS5 UDP parser boundary cases.
 - Transport idle timeout behavior.
 

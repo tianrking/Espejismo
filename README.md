@@ -16,7 +16,7 @@ networks. It provides a local SOCKS5/HTTP proxy, optional native TUN ingress,
 X25519 session establishment, XChaCha20-Poly1305 encrypted frames, TCP-friendly
 pacing, adaptive frame shaping, and selectable logical stream multiplexing.
 
-Current release target: `v0.0.7`.
+Current release target: `v0.0.9`.
 
 ## Quick Start
 
@@ -182,6 +182,8 @@ Windows:
 - [Architecture](docs/ARCHITECTURE.md)
 - [Implementation Status](docs/development/STATUS.md)
 - [Test Plan](docs/testing/TEST_PLAN.md)
+- [v0.0.9 Release Checklist](docs/release/V0.0.9_CHECKLIST.md)
+- [Maturity Gap vs Hysteria2](docs/release/MATURITY_GAP_VS_HYSTERIA2.md)
 - [Design Principles](docs/research/DESIGN_PRINCIPLES.md)
 
 ## Responsible Use

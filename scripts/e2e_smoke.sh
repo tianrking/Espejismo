@@ -53,12 +53,12 @@ wait_for_port "${HTTP_ADDR}" "${HTTP_PORT}" "http fixture"
 cargo run --quiet --bin espejismo-local -- \
   --check-update \
   --update-url "http://${HTTP_ADDR}:${HTTP_PORT}/release/latest" \
-  | grep -q "update available: 0.0.7 -> v99.0.0"
+  | grep -q "update available: 0.0.8 -> v99.0.0"
 
 cargo run --quiet --bin espejismo-remote -- \
   --check-update \
   --update-url "http://${HTTP_ADDR}:${HTTP_PORT}/release/latest" \
-  | grep -q "update available: 0.0.7 -> v99.0.0"
+  | grep -q "update available: 0.0.8 -> v99.0.0"
 
 python3 "${ROOT}/scripts/probe_udp_server.py" --host "${HTTP_ADDR}" --port "${UDP_PORT}" >/tmp/espejismo-udp.log 2>&1 &
 UDP_PID=$!
@@ -181,6 +181,8 @@ case "$(uname -s)" in
 esac
 cargo run --quiet --bin espejismo-remote -- --config "${CONFIG_FILE}" --check-config \
   | grep -q "config check passed"
+cargo run --quiet --bin espejismo-remote -- --config "${CONFIG_FILE}" --doctor \
+  | grep -q "low-feature mode"
 
 cargo run --quiet --bin espejismo-remote -- \
   --config-base64 "${CONFIG_B64}" \
@@ -188,6 +190,11 @@ cargo run --quiet --bin espejismo-remote -- \
 REMOTE_PID=$!
 wait_for_port "127.0.0.1" "$((PORT_BASE + 1))" "espejismo remote"
 wait_for_port "127.0.0.1" "$((PORT_BASE + 5))" "espejismo remote admin"
+
+cargo run --quiet --bin espejismo-local -- --config "${CONFIG_FILE}" --doctor \
+  | grep -q "local.server TCP reachable"
+cargo run --quiet --bin espejismo-local -- --config "${CONFIG_FILE}" --probe-server \
+  | grep -q "remote handshake succeeded"
 
 cargo run --quiet --bin espejismo-local -- \
   --config "${CONFIG_FILE}" >/tmp/espejismo-local.log 2>&1 &
