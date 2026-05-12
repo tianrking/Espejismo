@@ -266,6 +266,18 @@ After install, use the printed manager path:
 On a root remote Linux install, the manager is also linked as
 `/usr/local/bin/espejismoctl-remote` and controls a systemd service.
 
+Installer binary downloads always come from GitHub Releases, not source
+archives. With `ESPEJISMO_VERSION=latest` the installer selects:
+
+```text
+https://github.com/tianrking/Espejismo/releases/latest/download/espejismo-<platform>-<arch>.tar.gz
+https://github.com/tianrking/Espejismo/releases/latest/download/espejismo-windows-<arch>.zip
+```
+
+Platform/architecture mapping is automatic: `linux-amd64`, `linux-386`,
+`linux-arm64`, `linux-armv7`, `darwin-arm64`, `windows-amd64`, `windows-386`,
+or `windows-arm64`.
+
 ### Linux Server
 
 For the classic Ubuntu remote-only path:

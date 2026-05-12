@@ -26,6 +26,19 @@ the latest release, generates a random PSK/admin token/local proxy password when
 not provided, writes config, starts the selected role, and prints management
 commands.
 
+All binary downloads come from GitHub Releases. With the default
+`ESPEJISMO_VERSION=latest`, installers resolve the current platform and fetch
+the matching artifact from:
+
+```text
+https://github.com/tianrking/Espejismo/releases/latest/download/espejismo-<platform>-<arch>.tar.gz
+https://github.com/tianrking/Espejismo/releases/latest/download/espejismo-windows-<arch>.zip
+```
+
+Supported release artifact names are `linux-amd64`, `linux-386`, `linux-arm64`,
+`linux-armv7`, `darwin-arm64`, `windows-amd64`, `windows-386`, and
+`windows-arm64`.
+
 Non-interactive local install:
 
 ```bash
