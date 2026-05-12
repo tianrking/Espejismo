@@ -16,6 +16,7 @@ PSK="${ESPEJISMO_PSK:-}"
 SERVER="${ESPEJISMO_SERVER:-}"
 LISTEN="${ESPEJISMO_LISTEN:-0.0.0.0:6690}"
 PUBLIC_ENDPOINT="${ESPEJISMO_PUBLIC_ENDPOINT:-}"
+PUBLIC_HOST="${ESPEJISMO_PUBLIC_HOST:-}"
 SOCKS5_LISTEN="${ESPEJISMO_SOCKS5_LISTEN:-127.0.0.1:6680}"
 HTTP_LISTEN="${ESPEJISMO_HTTP_LISTEN:-127.0.0.1:6681}"
 ADMIN_LISTEN="${ESPEJISMO_ADMIN_LISTEN:-}"
@@ -136,13 +137,90 @@ toml_escape() {
 
 public_endpoint() {
   if [[ -n "${PUBLIC_ENDPOINT}" ]]; then
+    validate_public_endpoint "${PUBLIC_ENDPOINT}"
     printf '%s' "${PUBLIC_ENDPOINT}"
     return
   fi
-  local port="${LISTEN##*:}"
-  local first_ip
-  first_ip="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  printf '%s:%s' "${first_ip:-127.0.0.1}" "${port}"
+  local host port endpoint
+  port="$(listen_port "${LISTEN}")"
+  host="$(detect_public_host)"
+  endpoint="$(format_endpoint "${host}" "${port}")"
+  validate_public_endpoint "${endpoint}"
+  printf '%s' "${endpoint}"
+}
+
+listen_port() {
+  local value="$1"
+  printf '%s' "${value##*:}"
+}
+
+format_endpoint() {
+  local host="$1"
+  local port="$2"
+  if [[ "${host}" == *:* && "${host}" != \[*\] ]]; then
+    printf '[%s]:%s' "${host}" "${port}"
+  else
+    printf '%s:%s' "${host}" "${port}"
+  fi
+}
+
+endpoint_host() {
+  local endpoint="$1"
+  if [[ "${endpoint}" == \[*\]:* ]]; then
+    endpoint="${endpoint#\[}"
+    printf '%s' "${endpoint%%\]*}"
+  else
+    printf '%s' "${endpoint%:*}"
+  fi
+}
+
+detect_public_host() {
+  if [[ -n "${PUBLIC_HOST}" ]]; then
+    printf '%s' "${PUBLIC_HOST}"
+    return
+  fi
+
+  local url candidate
+  for url in \
+    "https://api.ipify.org" \
+    "https://ifconfig.me/ip" \
+    "https://checkip.amazonaws.com"; do
+    candidate="$(curl -fsSL --max-time 4 "${url}" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ "${candidate}" =~ ^[0-9A-Fa-f:.]+$ && "${candidate}" != "0.0.0.0" && "${candidate}" != "::" ]]; then
+      printf '%s' "${candidate}"
+      return
+    fi
+  done
+
+  candidate="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if [[ -n "${candidate}" ]]; then
+    echo "WARN could not detect public IP from external services; falling back to local address ${candidate}" >&2
+    printf '%s' "${candidate}"
+    return
+  fi
+
+  echo "cannot determine public endpoint; set ESPEJISMO_PUBLIC_ENDPOINT=host:port or ESPEJISMO_PUBLIC_HOST=host" >&2
+  exit 1
+}
+
+validate_public_endpoint() {
+  local endpoint="$1"
+  local host port
+  host="$(endpoint_host "${endpoint}")"
+  port="${endpoint##*:}"
+  if [[ -z "${host}" || "${host}" == "0.0.0.0" || "${host}" == "::" || "${host}" == "*" ]]; then
+    echo "invalid ESPEJISMO_PUBLIC_ENDPOINT '${endpoint}': use a client-reachable public IP or domain, not a listen address" >&2
+    exit 1
+  fi
+  if [[ "${port}" == "${endpoint}" || ! "${port}" =~ ^[0-9]+$ || "${port}" -lt 1 || "${port}" -gt 65535 ]]; then
+    echo "invalid ESPEJISMO_PUBLIC_ENDPOINT '${endpoint}': expected host:port, for example proxy.example.com:6690" >&2
+    exit 1
+  fi
+  case "${host}" in
+    127.*|localhost|10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*)
+      echo "WARN public endpoint '${endpoint}' looks private/local; this is fine for local tests but remote clients may not reach it" >&2
+      ;;
+  esac
 }
 
 write_config() {
@@ -454,10 +532,12 @@ main() {
   [[ -z "${LOCAL_PASSWORD}" ]] && LOCAL_PASSWORD="$(random_secret)"
 
   if [[ "${ROLE}" == "remote" ]]; then
-    SERVER="${SERVER:-$(public_endpoint)}"
     prompt_default LISTEN "Remote listen address" "${LISTEN}"
-    prompt_default PUBLIC_ENDPOINT "Public client endpoint" "$(public_endpoint)"
-    SERVER="${PUBLIC_ENDPOINT:-$(public_endpoint)}"
+    detected_endpoint="$(public_endpoint)"
+    prompt_default PUBLIC_ENDPOINT "Public client endpoint" "${detected_endpoint}"
+    validate_public_endpoint "${PUBLIC_ENDPOINT}"
+    SERVER="${PUBLIC_ENDPOINT}"
+    echo "Public client endpoint: ${SERVER}"
   else
     prompt_default SERVER "Remote server endpoint host:port" "${SERVER:-127.0.0.1:6690}"
     prompt_default SOCKS5_LISTEN "Local SOCKS5 listen" "${SOCKS5_LISTEN}"

@@ -34,6 +34,10 @@ curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/in
 # Linux remote server, non-interactive root install.
 curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh | sudo bash
 
+# Linux remote server with an explicit public domain or IP.
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh \
+  | sudo ESPEJISMO_ROLE=remote ESPEJISMO_PUBLIC_HOST=proxy.example.com bash
+
 # Linux local client, explicit non-interactive install.
 curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh \
   | ESPEJISMO_ROLE=local ESPEJISMO_SERVER=203.0.113.10:6690 bash
@@ -54,6 +58,12 @@ profile.
 In non-interactive mode, root Linux defaults to `remote`; non-root Linux/macOS
 defaults to `local`. Set `ESPEJISMO_ROLE=local` or `ESPEJISMO_ROLE=remote` to be
 explicit.
+
+Remote installs auto-detect the public IP when no endpoint is provided.
+Use `ESPEJISMO_PUBLIC_HOST=your.domain` or
+`ESPEJISMO_PUBLIC_ENDPOINT=your.domain:6690` when you already know the client
+dial address. `0.0.0.0` is only for `ESPEJISMO_LISTEN`, not for public client
+profiles.
 
 Configs and client profiles are reversible for the local onboarding path:
 

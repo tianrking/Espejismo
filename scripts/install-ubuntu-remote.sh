@@ -149,24 +149,85 @@ toml_number_array() {
 
 client_endpoint() {
   if [[ -n "${ESPEJISMO_PUBLIC_ENDPOINT}" ]]; then
+    validate_client_endpoint "${ESPEJISMO_PUBLIC_ENDPOINT}"
     printf "%s" "${ESPEJISMO_PUBLIC_ENDPOINT}"
     return
   fi
   local listen_port="${ESPEJISMO_LISTEN##*:}"
   if [[ -n "${ESPEJISMO_PUBLIC_HOST}" ]]; then
-    printf "%s:%s" "${ESPEJISMO_PUBLIC_HOST}" "${listen_port}"
+    local endpoint
+    endpoint="$(format_endpoint "${ESPEJISMO_PUBLIC_HOST}" "${listen_port}")"
+    validate_client_endpoint "${endpoint}"
+    printf "%s" "${endpoint}"
     return
   fi
-  local listen_host="${ESPEJISMO_LISTEN%:*}"
-  listen_host="${listen_host#[}"
-  listen_host="${listen_host%]}"
-  if [[ "${listen_host}" != "0.0.0.0" && "${listen_host}" != "::" && -n "${listen_host}" ]]; then
-    printf "%s:%s" "${listen_host}" "${listen_port}"
+  local host endpoint
+  host="$(detect_public_host)"
+  endpoint="$(format_endpoint "${host}" "${listen_port}")"
+  validate_client_endpoint "${endpoint}"
+  printf "%s" "${endpoint}"
+}
+
+format_endpoint() {
+  local host="$1"
+  local port="$2"
+  if [[ "${host}" == *:* && "${host}" != \[*\] ]]; then
+    printf "[%s]:%s" "${host}" "${port}"
+  else
+    printf "%s:%s" "${host}" "${port}"
+  fi
+}
+
+endpoint_host() {
+  local endpoint="$1"
+  if [[ "${endpoint}" == \[*\]:* ]]; then
+    endpoint="${endpoint#\[}"
+    printf "%s" "${endpoint%%\]*}"
+  else
+    printf "%s" "${endpoint%:*}"
+  fi
+}
+
+detect_public_host() {
+  local url candidate
+  for url in \
+    "https://api.ipify.org" \
+    "https://ifconfig.me/ip" \
+    "https://checkip.amazonaws.com"; do
+    candidate="$(curl -fsSL --max-time 4 "${url}" 2>/dev/null | tr -d '[:space:]' || true)"
+    if [[ "${candidate}" =~ ^[0-9A-Fa-f:.]+$ && "${candidate}" != "0.0.0.0" && "${candidate}" != "::" ]]; then
+      printf "%s" "${candidate}"
+      return
+    fi
+  done
+  candidate="$(hostname -I 2>/dev/null | awk '{print $1}')"
+  if [[ -n "${candidate}" ]]; then
+    echo "WARN could not detect public IP from external services; falling back to local address ${candidate}" >&2
+    printf "%s" "${candidate}"
     return
   fi
-  local first_host
-  first_host="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  printf "%s:%s" "${first_host:-127.0.0.1}" "${listen_port}"
+  echo "cannot determine public endpoint; set ESPEJISMO_PUBLIC_ENDPOINT=host:port or ESPEJISMO_PUBLIC_HOST=host" >&2
+  exit 1
+}
+
+validate_client_endpoint() {
+  local endpoint="$1"
+  local host port
+  host="$(endpoint_host "${endpoint}")"
+  port="${endpoint##*:}"
+  if [[ -z "${host}" || "${host}" == "0.0.0.0" || "${host}" == "::" || "${host}" == "*" ]]; then
+    echo "invalid ESPEJISMO_PUBLIC_ENDPOINT '${endpoint}': use a client-reachable public IP or domain, not a listen address" >&2
+    exit 1
+  fi
+  if [[ "${port}" == "${endpoint}" || ! "${port}" =~ ^[0-9]+$ || "${port}" -lt 1 || "${port}" -gt 65535 ]]; then
+    echo "invalid ESPEJISMO_PUBLIC_ENDPOINT '${endpoint}': expected host:port, for example proxy.example.com:6690" >&2
+    exit 1
+  fi
+  case "${host}" in
+    127.*|localhost|10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*)
+      echo "WARN public endpoint '${endpoint}' looks private/local; this is fine for local tests but remote clients may not reach it" >&2
+      ;;
+  esac
 }
 
 download_archive() {

@@ -64,11 +64,23 @@ Root Linux server shortcut:
 curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh | sudo bash
 ```
 
+On remote installs, the script builds the client endpoint like this:
+
+1. Use `ESPEJISMO_PUBLIC_ENDPOINT=host:port` when provided.
+2. Otherwise use `ESPEJISMO_PUBLIC_HOST=host` plus the port from
+   `ESPEJISMO_LISTEN`.
+3. Otherwise try to detect the public IP with HTTPS IP-check services.
+
+`ESPEJISMO_LISTEN=0.0.0.0:6690` is the server bind address. Do not use
+`0.0.0.0` as `ESPEJISMO_PUBLIC_ENDPOINT`; the installer rejects it because
+clients cannot dial it.
+
 Useful shared knobs:
 
 ```bash
 ESPEJISMO_PSK='use-existing-shared-secret'
 ESPEJISMO_LISTEN=0.0.0.0:6690
+ESPEJISMO_PUBLIC_HOST=203.0.113.10
 ESPEJISMO_SERVER=203.0.113.10:6690
 ESPEJISMO_SOCKS5_LISTEN=127.0.0.1:6680
 ESPEJISMO_HTTP_LISTEN=127.0.0.1:6681
@@ -185,7 +197,8 @@ The installer prints a single `espejismo://import/...` client profile. Keep it
 private. It contains the remote address, PSK, local proxy listeners, and local
 proxy credentials. By default the installer downloads the latest release from
 `tianrking/Espejismo`, generates a random PSK, writes a production config, and
-starts the systemd service.
+starts the systemd service. If no public endpoint is provided, it attempts to
+detect this server's public IP and uses the port from `ESPEJISMO_LISTEN`.
 
 For a ready-to-use client profile, pass the public endpoint that clients should
 connect to:
@@ -219,7 +232,8 @@ Useful install-time variables:
 ```bash
 ESPEJISMO_LISTEN=0.0.0.0:6690
 ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690
-# Or use ESPEJISMO_PUBLIC_HOST=203.0.113.10 with the port from ESPEJISMO_LISTEN.
+ESPEJISMO_PUBLIC_HOST=203.0.113.10
+# PUBLIC_HOST uses the port from ESPEJISMO_LISTEN.
 ESPEJISMO_PSK='use-a-long-random-secret'
 ESPEJISMO_CLIENT_SOCKS5_LISTEN=127.0.0.1:6680
 ESPEJISMO_CLIENT_HTTP_LISTEN=127.0.0.1:6681
