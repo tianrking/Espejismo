@@ -95,6 +95,7 @@ jobs:
         run: |
           set -euo pipefail
           pkg="espejismo-${{ matrix.name }}"
+          server_pkg="espejismo-server-${{ matrix.name }}"
           mkdir -p "dist/${pkg}/bin" "dist/${pkg}/configs" "dist/${pkg}/docs" "dist/${pkg}/scripts"
           cp "target/${{ matrix.target }}/release/espejismo-local" "dist/${pkg}/bin/"
           cp "target/${{ matrix.target }}/release/espejismo-remote" "dist/${pkg}/bin/"
@@ -105,11 +106,20 @@ jobs:
           cp docs/ARCHITECTURE.md docs/deployment/ADMIN.md docs/deployment/CLI.md docs/deployment/EGRESS.md docs/deployment/LOGGING.md docs/deployment/PACKAGING.md docs/deployment/PROFILES.md docs/deployment/QUICKSTART.md docs/deployment/TUN.md docs/deployment/UPDATES.md docs/deployment/USERS.md docs/development/STATUS.md docs/testing/TEST_PLAN.md "dist/${pkg}/docs/"
           cp scripts/setup-windows.ps1 scripts/e2e_smoke.ps1 scripts/stress_smoke.ps1 scripts/install.sh scripts/install.ps1 scripts/install-ubuntu-remote.sh "dist/${pkg}/scripts/"
           tar -C dist -czf "dist/${pkg}.tar.gz" "${pkg}"
+
+          mkdir -p "dist/${server_pkg}/bin" "dist/${server_pkg}/configs" "dist/${server_pkg}/docs" "dist/${server_pkg}/scripts"
+          cp "target/${{ matrix.target }}/release/espejismo-remote" "dist/${server_pkg}/bin/"
+          cp configs/examples/espejismo.toml "dist/${server_pkg}/configs/"
+          cp README.md CHANGELOG.md "dist/${server_pkg}/"
+          cp docs/deployment/ADMIN.md docs/deployment/EGRESS.md docs/deployment/LOGGING.md docs/deployment/QUICKSTART.md docs/deployment/USERS.md "dist/${server_pkg}/docs/"
+          cp scripts/install-ubuntu-remote.sh "dist/${server_pkg}/scripts/"
+          tar -C dist -czf "dist/${server_pkg}.tar.gz" "${server_pkg}"
       - name: Package Windows
         if: runner.os == 'Windows'
         shell: pwsh
         run: |
           $pkg = "espejismo-${{ matrix.name }}"
+          $serverPkg = "espejismo-server-${{ matrix.name }}"
           $wintunVersion = "0.14.1"
           $wintunZip = Join-Path $env:RUNNER_TEMP "wintun-$wintunVersion.zip"
           $wintunDir = Join-Path $env:RUNNER_TEMP "wintun-$wintunVersion"
@@ -140,6 +150,14 @@ jobs:
             throw "packaging error: dist/$pkg/bin/wintun.dll missing"
           }
           Compress-Archive -Path "dist/$pkg" -DestinationPath "dist/$pkg.zip" -Force
+
+          New-Item -ItemType Directory -Force "dist/$serverPkg/bin", "dist/$serverPkg/configs", "dist/$serverPkg/docs", "dist/$serverPkg/scripts" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/espejismo-remote.exe" "dist/$serverPkg/bin/"
+          Copy-Item "configs/examples/espejismo.toml" "dist/$serverPkg/configs/"
+          Copy-Item "README.md", "CHANGELOG.md" "dist/$serverPkg/"
+          Copy-Item "docs/deployment/ADMIN.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/QUICKSTART.md", "docs/deployment/USERS.md" "dist/$serverPkg/docs/"
+          Copy-Item "scripts/install-ubuntu-remote.sh" "dist/$serverPkg/scripts/"
+          Compress-Archive -Path "dist/$serverPkg" -DestinationPath "dist/$serverPkg.zip" -Force
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:

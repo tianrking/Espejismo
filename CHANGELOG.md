@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+### Changed
+
+- Linux remote installs now install only the `espejismo-remote` server binary
+  and expose `/usr/local/bin/espejismoctl` for status, config viewing/editing,
+  reload/apply, start, stop, restart, logs, and client profile output.
+- Release packaging now publishes `espejismo-server-<platform>-<arch>` artifacts
+  for one-line server installs, and Linux remote installers prefer those
+  server-only packages.
+
 ## v0.0.9
 
 `v0.0.9` focuses on featureless-chaos hardening and release-doc alignment.

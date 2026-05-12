@@ -12,7 +12,8 @@ Espejismo is distributed as two native binaries plus configuration:
 - `scripts/install.ps1`: guided Windows installer and manager bootstrap.
 - `scripts/setup-windows.ps1`: Windows config generator and launcher.
 - `scripts/install-ubuntu-remote.sh`: Ubuntu remote installer for one-line
-  server deployment.
+  server deployment. It installs only `espejismo-remote` plus an
+  `espejismoctl` manager on the server.
 
 ## GitHub Release Artifacts
 
@@ -28,6 +29,11 @@ The release workflow builds these packages:
 | `espejismo-windows-amd64.zip` | Windows | `x86_64-pc-windows-msvc` |
 | `espejismo-windows-386.zip` | Windows | `i686-pc-windows-msvc` |
 | `espejismo-windows-arm64.zip` | Windows | `aarch64-pc-windows-msvc` |
+
+For server one-line installs, the workflow also publishes server-only packages
+with the same platform names and an `espejismo-server-` prefix, for example
+`espejismo-server-linux-amd64.tar.gz`. Those packages contain only
+`bin/espejismo-remote`, the server install helper, and server deployment docs.
 
 Windows archives include `bin/wintun.dll`, so users can run TUN mode without a
 separate manual Wintun download.

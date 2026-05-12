@@ -80,6 +80,10 @@ need_cmd() {
   }
 }
 
+shell_quote() {
+  printf "%q" "$1"
+}
+
 random_secret() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -base64 32
@@ -230,6 +234,29 @@ validate_client_endpoint() {
   esac
 }
 
+json_escape() {
+  printf "%s" "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+encode_client_profile() {
+  local name="$1"
+  local server="$2"
+  local psk="$3"
+  local socks5_listen="$4"
+  local http_listen="$5"
+  local auth_user="$6"
+  local auth_password="$7"
+  local auth json encoded
+  if [[ -n "${auth_password}" ]]; then
+    auth=",\"auth\":{\"username\":\"$(json_escape "${auth_user}")\",\"password\":\"$(json_escape "${auth_password}")\"}"
+  else
+    auth=",\"auth\":null"
+  fi
+  json="{\"name\":\"$(json_escape "${name}")\",\"server\":\"$(json_escape "${server}")\",\"psk\":\"$(json_escape "${psk}")\",\"socks5_listen\":\"$(json_escape "${socks5_listen}")\",\"http_listen\":\"$(json_escape "${http_listen}")\"${auth}}"
+  encoded="$(printf "%s" "${json}" | base64 | tr '+/' '-_' | tr -d '=\n')"
+  printf "espejismo://import/%s\n" "${encoded}"
+}
+
 download_archive() {
   local dest="$1"
   local package_arch
@@ -248,16 +275,27 @@ download_archive() {
     return
   fi
   local base="https://github.com/${ESPEJISMO_REPO}/releases"
+  local server_name="espejismo-server-${package_arch}.tar.gz"
+  local legacy_name="espejismo-${package_arch}.tar.gz"
+  local server_url legacy_url
   if [[ "${ESPEJISMO_VERSION}" == "latest" ]]; then
-    curl -fsSL "${base}/latest/download/espejismo-${package_arch}.tar.gz" -o "${dest}"
+    server_url="${base}/latest/download/${server_name}"
+    legacy_url="${base}/latest/download/${legacy_name}"
   else
-    curl -fsSL "${base}/download/${ESPEJISMO_VERSION}/espejismo-${package_arch}.tar.gz" -o "${dest}"
+    server_url="${base}/download/${ESPEJISMO_VERSION}/${server_name}"
+    legacy_url="${base}/download/${ESPEJISMO_VERSION}/${legacy_name}"
   fi
+  if curl -fsSL "${server_url}" -o "${dest}"; then
+    return
+  fi
+  echo "WARN server-only package ${server_name} was not found; falling back to legacy ${legacy_name}" >&2
+  curl -fsSL "${legacy_url}" -o "${dest}"
 }
 
 need_cmd curl
 need_cmd tar
 need_cmd systemctl
+need_cmd base64
 
 if [[ -z "${ESPEJISMO_PSK}" ]]; then
   ESPEJISMO_PSK="$(random_secret)"
@@ -282,7 +320,7 @@ fi
 
 install -d -m 0755 /usr/local/bin /etc/espejismo /var/log/espejismo
 install -m 0755 "${pkgdir}/bin/espejismo-remote" /usr/local/bin/espejismo-remote
-install -m 0755 "${pkgdir}/bin/espejismo-local" /usr/local/bin/espejismo-local
+rm -f /usr/local/bin/espejismo-local
 
 if ! id espejismo >/dev/null 2>&1; then
   useradd --system --create-home --shell /usr/sbin/nologin espejismo
@@ -400,73 +438,139 @@ EOF
 systemctl daemon-reload
 systemctl enable --now espejismo-remote.service
 
+client_server="$(client_endpoint)"
+
+cat >/usr/local/bin/espejismoctl <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+SERVICE=espejismo-remote.service
+BIN=/usr/local/bin/espejismo-remote
+CONFIG=/etc/espejismo/espejismo.toml
+LOG_FILE=/var/log/espejismo/espejismo-remote.log
+ADMIN=http://$(shell_quote "${ESPEJISMO_ADMIN_LISTEN}")
+TOKEN=$(shell_quote "${ESPEJISMO_ADMIN_TOKEN}")
+SERVER_ENDPOINT=$(shell_quote "${client_server}")
+SOCKS5_ADDR=$(shell_quote "${ESPEJISMO_CLIENT_SOCKS5_LISTEN}")
+HTTP_ADDR=$(shell_quote "${ESPEJISMO_CLIENT_HTTP_LISTEN}")
+LOCAL_AUTH_USER=$(shell_quote "${ESPEJISMO_CLIENT_AUTH_USER}")
+LOCAL_AUTH_PASSWORD=$(shell_quote "${ESPEJISMO_CLIENT_AUTH_PASSWORD}")
+
+cmd_start() {
+  systemctl start "\${SERVICE}"
+}
+
+cmd_stop() {
+  systemctl stop "\${SERVICE}"
+}
+
+cmd_restart() {
+  systemctl restart "\${SERVICE}"
+}
+
+cmd_status() {
+  systemctl status "\${SERVICE}" --no-pager || true
+  if command -v curl >/dev/null 2>&1; then
+    curl -fsS -H "Authorization: Bearer \${TOKEN}" "\${ADMIN}/status" 2>/dev/null || true
+    echo
+  fi
+}
+
+cmd_logs() {
+  journalctl -u "\${SERVICE}" -f
+}
+
+cmd_edit() {
+  "\${EDITOR:-vi}" "\${CONFIG}"
+}
+
+cmd_reload() {
+  curl -fsS -X POST -H "Authorization: Bearer \${TOKEN}" "\${ADMIN}/reload"
+  echo
+}
+
+cmd_apply() {
+  curl -fsS -X POST -H "Authorization: Bearer \${TOKEN}" --data-binary @"\${CONFIG}" "\${ADMIN}/apply"
+  echo
+}
+
+cmd_check_config() {
+  "\${BIN}" --config "\${CONFIG}" --check-config
+}
+
+shared_psk() {
+  awk '
+    /^\\[shared\\]/ { in_shared = 1; next }
+    /^\\[/ { in_shared = 0 }
+    in_shared && /^[[:space:]]*psk[[:space:]]*=/ {
+      sub(/^[[:space:]]*psk[[:space:]]*=[[:space:]]*/, "")
+      sub(/[[:space:]]*(#.*)?$/, "")
+      gsub(/^"|"$/, "")
+      print
+      exit
+    }
+  ' "\${CONFIG}"
+}
+
+json_escape() {
+  printf '%s' "\$1" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g'
+}
+
+cmd_profile() {
+  local psk auth json encoded
+  psk="\$(shared_psk)"
+  if [[ -z "\${psk}" ]]; then
+    echo "shared.psk is required to generate a client profile" >&2
+    return 1
+  fi
+  if [[ -n "\${LOCAL_AUTH_PASSWORD}" ]]; then
+    auth=",\\"auth\\":{\\"username\\":\\"\$(json_escape "\${LOCAL_AUTH_USER}")\\",\\"password\\":\\"\$(json_escape "\${LOCAL_AUTH_PASSWORD}")\\"}"
+  else
+    auth=",\\"auth\\":null"
+  fi
+  json="{\\"name\\":\\"default\\",\\"server\\":\\"\$(json_escape "\${SERVER_ENDPOINT}")\\",\\"psk\\":\\"\$(json_escape "\${psk}")\\",\\"socks5_listen\\":\\"\$(json_escape "\${SOCKS5_ADDR}")\\",\\"http_listen\\":\\"\$(json_escape "\${HTTP_ADDR}")\\"\${auth}}"
+  encoded="\$(printf '%s' "\${json}" | base64 | tr '+/' '-_' | tr -d '=\\n')"
+  printf 'espejismo://import/%s\\n' "\${encoded}"
+}
+
+cmd_connect() {
+  local profile_url
+  profile_url="\$(cmd_profile)"
+  echo "Remote endpoint is ready."
+  echo "  Public endpoint: \${SERVER_ENDPOINT}"
+  echo
+  echo "Client import profile:"
+  echo "  \${profile_url}"
+  echo
+  echo "Client one-line start:"
+  echo "  espejismo-local --import-profile '\${profile_url}'"
+}
+
+case "\${1:-status}" in
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  restart) cmd_restart ;;
+  status) cmd_status ;;
+  logs) cmd_logs ;;
+  edit) cmd_edit ;;
+  reload) cmd_reload ;;
+  apply) cmd_apply ;;
+  check-config) cmd_check_config ;;
+  profile) cmd_profile ;;
+  connect) cmd_connect ;;
+  config) echo "\${CONFIG}" ;;
+  show-config) cat "\${CONFIG}" ;;
+  *) echo "usage: \$0 {start|stop|restart|status|logs|edit|reload|apply|check-config|profile|connect|config|show-config}" >&2; exit 2 ;;
+esac
+EOF
+chmod 0755 /usr/local/bin/espejismoctl
+ln -sf /usr/local/bin/espejismoctl /usr/local/bin/espejismoctl-remote
+
 listen_port="${ESPEJISMO_LISTEN##*:}"
 if [[ "${ESPEJISMO_OPEN_UFW}" == "1" ]] && command -v ufw >/dev/null 2>&1; then
   ufw allow "${listen_port}/tcp"
 fi
 
-client_server="$(client_endpoint)"
-client_config="${tmpdir}/client-profile.toml"
-cat >"${client_config}" <<EOF
-[shared]
-psk = "${ESPEJISMO_PSK//\"/\\\"}"
-max_streams = ${ESPEJISMO_MAX_STREAMS}
-max_physical_connections = ${ESPEJISMO_MAX_PHYSICAL_CONNECTIONS}
-key_update_frames = ${ESPEJISMO_KEY_UPDATE_FRAMES}
-
-[shared.tcp]
-nodelay = ${ESPEJISMO_TCP_NODELAY}
-keepalive_secs = ${ESPEJISMO_TCP_KEEPALIVE_SECS}
-heartbeat_secs = ${ESPEJISMO_TCP_HEARTBEAT_SECS}
-user_timeout_ms = ${ESPEJISMO_TCP_USER_TIMEOUT_MS}
-send_buffer_bytes = ${ESPEJISMO_TCP_SEND_BUFFER_BYTES}
-recv_buffer_bytes = ${ESPEJISMO_TCP_RECV_BUFFER_BYTES}
-
-[shared.mux]
-mode = "${ESPEJISMO_MUX_MODE}"
-native_initial_window_bytes = ${ESPEJISMO_NATIVE_MUX_INITIAL_WINDOW_BYTES}
-native_stream_buffer_frames = ${ESPEJISMO_NATIVE_MUX_STREAM_BUFFER_FRAMES}
-native_send_queue_frames = ${ESPEJISMO_NATIVE_MUX_SEND_QUEUE_FRAMES}
-native_idle_timeout_secs = ${ESPEJISMO_NATIVE_MUX_IDLE_TIMEOUT_SECS}
-native_drain_timeout_secs = ${ESPEJISMO_NATIVE_MUX_DRAIN_TIMEOUT_SECS}
-
-[shared.pacing]
-enabled = ${ESPEJISMO_PACING_ENABLED}
-max_bytes_per_sec = ${ESPEJISMO_PACING_MAX_BYTES_PER_SEC}
-burst_bytes = ${ESPEJISMO_PACING_BURST_BYTES}
-min_write_bytes = ${ESPEJISMO_PACING_MIN_WRITE_BYTES}
-
-[shared.obfuscation]
-profile = "${ESPEJISMO_OBFUSCATION_PROFILE}"
-chunk_policy = "${ESPEJISMO_CHUNK_POLICY}"
-randomize_chunks = ${ESPEJISMO_RANDOMIZE_CHUNKS}
-min_chunk = ${ESPEJISMO_MIN_CHUNK}
-max_chunk = ${ESPEJISMO_MAX_CHUNK}
-
-[shared.stealth]
-frame_size = ${ESPEJISMO_STEALTH_FRAME_SIZE}
-tick_ms = ${ESPEJISMO_STEALTH_TICK_MS}
-
-[local]
-server = "${client_server}"
-socks5_listen = "${ESPEJISMO_CLIENT_SOCKS5_LISTEN}"
-http_listen = "${ESPEJISMO_CLIENT_HTTP_LISTEN}"
-
-[local.tunnel_pool]
-min_connections = ${ESPEJISMO_CLIENT_TUNNEL_POOL_MIN_CONNECTIONS}
-max_connections = ${ESPEJISMO_CLIENT_TUNNEL_POOL_MAX_CONNECTIONS}
-interactive_lanes = ${ESPEJISMO_CLIENT_TUNNEL_POOL_INTERACTIVE_LANES}
-bulk_lanes = ${ESPEJISMO_CLIENT_TUNNEL_POOL_BULK_LANES}
-max_reconnect_attempts = ${ESPEJISMO_CLIENT_TUNNEL_POOL_MAX_RECONNECT_ATTEMPTS}
-EOF
-if [[ -n "${ESPEJISMO_CLIENT_AUTH_PASSWORD}" ]]; then
-  cat >>"${client_config}" <<EOF
-[local.auth]
-username = "${ESPEJISMO_CLIENT_AUTH_USER//\"/\\\"}"
-password = "${ESPEJISMO_CLIENT_AUTH_PASSWORD//\"/\\\"}"
-EOF
-fi
-client_profile="$(/usr/local/bin/espejismo-local --config "${client_config}" --print-client-profile --profile-name default)"
+client_profile="$(encode_client_profile default "${client_server}" "${ESPEJISMO_PSK}" "${ESPEJISMO_CLIENT_SOCKS5_LISTEN}" "${ESPEJISMO_CLIENT_HTTP_LISTEN}" "${ESPEJISMO_CLIENT_AUTH_USER}" "${ESPEJISMO_CLIENT_AUTH_PASSWORD}")"
 
 cat <<EOF
 Espejismo remote is installed and running.
@@ -475,8 +579,18 @@ Server config:
   /etc/espejismo/espejismo.toml
 
 Status:
-  systemctl status espejismo-remote --no-pager
-  journalctl -u espejismo-remote -f
+  espejismoctl status
+  espejismoctl logs
+
+Management:
+  espejismoctl start
+  espejismoctl stop
+  espejismoctl restart
+  espejismoctl show-config
+  espejismoctl edit
+  espejismoctl reload
+  espejismoctl apply
+  espejismoctl connect
 
 Client import profile:
   ${client_profile}

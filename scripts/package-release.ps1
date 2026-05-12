@@ -31,7 +31,9 @@ if ($Target -like "*windows*") {
 
 $Pkg = "espejismo-$Target"
 $Out = "dist/$Pkg"
-Remove-Item -Recurse -Force $Out, "dist/$Pkg.zip" -ErrorAction SilentlyContinue
+$ServerPkg = "espejismo-server-$Target"
+$ServerOut = "dist/$ServerPkg"
+Remove-Item -Recurse -Force $Out, $ServerOut, "dist/$Pkg.zip", "dist/$ServerPkg.zip" -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force "$Out/bin", "$Out/configs", "$Out/docs", "$Out/scripts" | Out-Null
 
 Copy-Item "$TargetDir/espejismo-local.exe" "$Out/bin/"
@@ -57,3 +59,13 @@ Copy-Item "scripts/setup-windows.ps1", "scripts/e2e_smoke.sh", "scripts/e2e_smok
 
 Compress-Archive -Path $Out -DestinationPath "dist/$Pkg.zip" -Force
 Write-Host "created dist/$Pkg.zip"
+
+New-Item -ItemType Directory -Force "$ServerOut/bin", "$ServerOut/configs", "$ServerOut/docs", "$ServerOut/scripts" | Out-Null
+Copy-Item "$TargetDir/espejismo-remote.exe" "$ServerOut/bin/"
+Copy-Item "configs/examples/espejismo.toml" "$ServerOut/configs/"
+Copy-Item "README.md", "CHANGELOG.md" "$ServerOut/"
+Copy-Item "docs/deployment/ADMIN.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/QUICKSTART.md", "docs/deployment/USERS.md" "$ServerOut/docs/"
+Copy-Item "scripts/install-ubuntu-remote.sh" "$ServerOut/scripts/"
+
+Compress-Archive -Path $ServerOut -DestinationPath "dist/$ServerPkg.zip" -Force
+Write-Host "created dist/$ServerPkg.zip"

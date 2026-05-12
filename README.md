@@ -48,11 +48,12 @@ curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/in
 iwr -useb https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.ps1 | iex
 ```
 
-The installers download the matching binary from GitHub Releases latest,
-generate random secrets by default, write config, start the selected local or
-remote role, and print management plus connection commands. After install, run
-`~/.espejismo/espejismoctl connect` to see the SOCKS5/HTTP proxy address,
-curl test commands, or the remote client import profile.
+The server command is a one-line bootstrap: it downloads the latest matching
+`espejismo-server-<platform>-<arch>` release package, generates random secrets
+by default, writes config, starts `espejismo-remote`, and installs
+`espejismoctl` for status/config/start/stop/restart. No repository clone or
+saved `.sh` file is needed. Local installs similarly set up `espejismo-local`
+and a local manager command.
 
 In non-interactive mode, root Linux defaults to `remote`; non-root Linux/macOS
 defaults to `local`. Set `ESPEJISMO_ROLE=local` or `ESPEJISMO_ROLE=remote` to be
@@ -101,6 +102,10 @@ Each release package contains:
 - `scripts/install.sh`
 - `scripts/install.ps1`
 - deployment and testing documentation
+
+Server-only release packages are also published as
+`espejismo-server-<platform>-<arch>` and contain `bin/espejismo-remote` plus
+the server installer and deployment docs.
 
 ## Project Layout
 

@@ -124,9 +124,25 @@ download_archive() {
     curl -fsSL "${ARCHIVE_URL}" -o "${dest}"
     return
   fi
+  local release_pkg="${pkg}"
+  if [[ "${ROLE:-}" == "remote" ]]; then
+    release_pkg="espejismo-server-${pkg#espejismo-}"
+  fi
   if [[ "${VERSION}" == "latest" ]]; then
+    if curl -fsSL "https://github.com/${REPO}/releases/latest/download/${release_pkg}.tar.gz" -o "${dest}"; then
+      return
+    fi
+    if [[ "${release_pkg}" != "${pkg}" ]]; then
+      echo "WARN server-only package ${release_pkg}.tar.gz was not found; falling back to legacy ${pkg}.tar.gz" >&2
+    fi
     curl -fsSL "https://github.com/${REPO}/releases/latest/download/${pkg}.tar.gz" -o "${dest}"
   else
+    if curl -fsSL "https://github.com/${REPO}/releases/download/${VERSION}/${release_pkg}.tar.gz" -o "${dest}"; then
+      return
+    fi
+    if [[ "${release_pkg}" != "${pkg}" ]]; then
+      echo "WARN server-only package ${release_pkg}.tar.gz was not found; falling back to legacy ${pkg}.tar.gz" >&2
+    fi
     curl -fsSL "https://github.com/${REPO}/releases/download/${VERSION}/${pkg}.tar.gz" -o "${dest}"
   fi
 }
@@ -433,6 +449,11 @@ cmd_reload() {
   echo
 }
 
+cmd_apply() {
+  curl -fsS -X POST -H "Authorization: Bearer \${TOKEN}" --data-binary @"\${CONFIG}" "\${ADMIN}/apply"
+  echo
+}
+
 cmd_logs() {
   if has_systemd_service; then
     journalctl -u "\${SERVICE}" -f
@@ -446,37 +467,43 @@ cmd_edit() {
   "\${EDITOR:-vi}" "\${CONFIG}"
 }
 
+json_escape() {
+  printf '%s' "\$1" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g'
+}
+
+encode_client_profile() {
+  local name="\${1:-default}"
+  local psk
+  psk="\$(awk '
+    /^\[shared\]/ { in_shared = 1; next }
+    /^\[/ { in_shared = 0 }
+    in_shared && /^[[:space:]]*psk[[:space:]]*=/ {
+      sub(/^[[:space:]]*psk[[:space:]]*=[[:space:]]*/, "")
+      sub(/[[:space:]]*(#.*)?$/, "")
+      gsub(/^"|"$/, "")
+      print
+      exit
+    }
+  ' "\${CONFIG}")"
+  if [[ -z "\${psk}" ]]; then
+    echo "shared.psk is required to generate a client profile" >&2
+    return 1
+  fi
+
+  local json auth encoded
+  if [[ -n "\${LOCAL_AUTH_PASSWORD}" ]]; then
+    auth=",\"auth\":{\"username\":\"\$(json_escape "\${LOCAL_AUTH_USER}")\",\"password\":\"\$(json_escape "\${LOCAL_AUTH_PASSWORD}")\"}"
+  else
+    auth=",\"auth\":null"
+  fi
+  json="{\"name\":\"\$(json_escape "\${name}")\",\"server\":\"\$(json_escape "\${SERVER_ENDPOINT}")\",\"psk\":\"\$(json_escape "\${psk}")\",\"socks5_listen\":\"\$(json_escape "\${SOCKS5_ADDR}")\",\"http_listen\":\"\$(json_escape "\${HTTP_ADDR}")\"\${auth}}"
+  encoded="\$(printf '%s' "\${json}" | base64 | tr '+/' '-_' | tr -d '=\n')"
+  printf 'espejismo://import/%s\n' "\${encoded}"
+}
+
 cmd_profile() {
   if [[ "\${ROLE}" == "remote" ]]; then
-    local tmp_config
-    tmp_config="\$(mktemp)"
-    cp "\${CONFIG}" "\${tmp_config}"
-    cat >>"\${tmp_config}" <<PROFILE_EOF
-
-[local]
-server = "\${SERVER_ENDPOINT}"
-socks5_listen = "\${SOCKS5_ADDR}"
-http_listen = "\${HTTP_ADDR}"
-handshake_padding = 256
-
-[local.tunnel_pool]
-min_connections = 1
-max_connections = 4
-interactive_lanes = 1
-bulk_lanes = 2
-max_reconnect_attempts = 3
-max_connection_age_secs = 3600
-PROFILE_EOF
-    if [[ -n "\${LOCAL_AUTH_PASSWORD}" ]]; then
-      cat >>"\${tmp_config}" <<PROFILE_EOF
-
-[local.auth]
-username = "\${LOCAL_AUTH_USER}"
-password = "\${LOCAL_AUTH_PASSWORD}"
-PROFILE_EOF
-    fi
-    "${bin_dir}/espejismo-local" --config "\${tmp_config}" --print-client-profile --profile-name default
-    rm -f "\${tmp_config}"
+    encode_client_profile default
     return
   fi
   "${bin_dir}/espejismo-local" --config "\${CONFIG}" --print-client-profile --profile-name default
@@ -535,12 +562,15 @@ case "\${1:-status}" in
   restart) cmd_restart ;;
   status) cmd_status ;;
   reload) cmd_reload ;;
+  apply) cmd_apply ;;
   logs) cmd_logs ;;
   edit) cmd_edit ;;
   profile) cmd_profile ;;
   connect) cmd_connect ;;
   config) echo "\${CONFIG}" ;;
-  *) echo "usage: \$0 {start|stop|restart|status|reload|logs|edit|profile|connect|config}" >&2; exit 2 ;;
+  show-config) cat "\${CONFIG}" ;;
+  check-config) "\${BIN}" --config "\${CONFIG}" --check-config ;;
+  *) echo "usage: \$0 {start|stop|restart|status|reload|apply|logs|edit|profile|connect|config|show-config|check-config}" >&2; exit 2 ;;
 esac
 EOF
   chmod 0755 "${manager}"
@@ -575,6 +605,9 @@ EOF
   systemctl daemon-reload
   systemctl enable "${SERVICE_NAME}-${ROLE}.service" >/dev/null
   ln -sf "${manager}" "/usr/local/bin/espejismoctl-${ROLE}" 2>/dev/null || true
+  if [[ "${ROLE}" == "remote" ]]; then
+    ln -sf "${manager}" "/usr/local/bin/espejismoctl" 2>/dev/null || true
+  fi
 }
 
 main() {
@@ -586,6 +619,9 @@ main() {
   if [[ "${ROLE}" != "local" && "${ROLE}" != "remote" ]]; then
     echo "ESPEJISMO_ROLE must be local or remote" >&2
     exit 1
+  fi
+  if [[ "${ROLE}" == "remote" ]]; then
+    need_cmd base64
   fi
   echo "Selected install mode: ${ROLE}"
   if ! is_tty; then
@@ -633,8 +669,12 @@ main() {
   [[ -n "${pkgdir}" ]] || { echo "invalid release archive" >&2; exit 1; }
 
   mkdir -p "${bin_dir}" "${CONFIG_DIR}"
-  install -m 0755 "${pkgdir}/bin/espejismo-local" "${bin_dir}/espejismo-local"
-  install -m 0755 "${pkgdir}/bin/espejismo-remote" "${bin_dir}/espejismo-remote"
+  if [[ "${ROLE}" == "remote" ]]; then
+    install -m 0755 "${pkgdir}/bin/espejismo-remote" "${bin_dir}/espejismo-remote"
+    rm -f "${bin_dir}/espejismo-local"
+  else
+    install -m 0755 "${pkgdir}/bin/espejismo-local" "${bin_dir}/espejismo-local"
+  fi
   write_config "${config}"
   chmod 0600 "${config}"
   write_manager "${manager}" "${bin_dir}" "${config}"
@@ -655,6 +695,7 @@ main() {
   echo "  ${manager} logs"
   echo "  ${manager} edit"
   echo "  ${manager} reload"
+  echo "  ${manager} apply"
   echo "  ${manager} restart"
   echo "  ${manager} connect"
   echo

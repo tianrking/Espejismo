@@ -17,7 +17,9 @@ fi
 
 PKG="espejismo-${TARGET}"
 OUT="dist/${PKG}"
-rm -rf "${OUT}" "dist/${PKG}.tar.gz"
+SERVER_PKG="espejismo-server-${TARGET}"
+SERVER_OUT="dist/${SERVER_PKG}"
+rm -rf "${OUT}" "${SERVER_OUT}" "dist/${PKG}.tar.gz" "dist/${SERVER_PKG}.tar.gz"
 mkdir -p "${OUT}/bin" "${OUT}/configs" "${OUT}/docs" "${OUT}/scripts"
 
 cp "${TARGET_DIR}/espejismo-local" "${OUT}/bin/"
@@ -31,3 +33,13 @@ cp "scripts/setup-windows.ps1" "scripts/e2e_smoke.sh" "scripts/e2e_smoke.ps1" "s
 
 tar -C dist -czf "dist/${PKG}.tar.gz" "${PKG}"
 echo "created dist/${PKG}.tar.gz"
+
+mkdir -p "${SERVER_OUT}/bin" "${SERVER_OUT}/configs" "${SERVER_OUT}/docs" "${SERVER_OUT}/scripts"
+cp "${TARGET_DIR}/espejismo-remote" "${SERVER_OUT}/bin/"
+cp "configs/examples/espejismo.toml" "${SERVER_OUT}/configs/"
+cp "README.md" "CHANGELOG.md" "${SERVER_OUT}/"
+cp "docs/deployment/ADMIN.md" "docs/deployment/EGRESS.md" "docs/deployment/LOGGING.md" "docs/deployment/QUICKSTART.md" "docs/deployment/USERS.md" "${SERVER_OUT}/docs/"
+cp "scripts/install-ubuntu-remote.sh" "${SERVER_OUT}/scripts/"
+
+tar -C dist -czf "dist/${SERVER_PKG}.tar.gz" "${SERVER_PKG}"
+echo "created dist/${SERVER_PKG}.tar.gz"

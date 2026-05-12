@@ -22,8 +22,9 @@ iwr -useb https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/ins
 ```
 
 The guided installer asks whether this machine is `local` or `remote`, downloads
-the latest release, generates a random PSK/admin token when not provided, writes
-config, starts the selected role, and prints management and connection commands.
+the latest matching release package, generates a random PSK/admin token when not
+provided, writes config, starts the selected role, and prints management and
+connection commands.
 Local SOCKS5/HTTP proxy authentication is disabled by default for localhost-only
 browser use.
 
@@ -34,16 +35,18 @@ explicit.
 
 All binary downloads come from GitHub Releases. With the default
 `ESPEJISMO_VERSION=latest`, installers resolve the current platform and fetch
-the matching artifact from:
+the matching artifact. Remote/server installs prefer the server-only package:
 
 ```text
+https://github.com/tianrking/Espejismo/releases/latest/download/espejismo-server-<platform>-<arch>.tar.gz
 https://github.com/tianrking/Espejismo/releases/latest/download/espejismo-<platform>-<arch>.tar.gz
 https://github.com/tianrking/Espejismo/releases/latest/download/espejismo-windows-<arch>.zip
 ```
 
-Supported release artifact names are `linux-amd64`, `linux-386`, `linux-arm64`,
-`linux-armv7`, `darwin-arm64`, `windows-amd64`, `windows-386`, and
-`windows-arm64`.
+Supported full release artifact names are `linux-amd64`, `linux-386`,
+`linux-arm64`, `linux-armv7`, `darwin-arm64`, `windows-amd64`, `windows-386`,
+and `windows-arm64`. Server-only artifacts add the `espejismo-server-` prefix,
+for example `espejismo-server-linux-amd64.tar.gz`.
 
 Non-interactive local install:
 
@@ -96,13 +99,17 @@ Management after install:
 ~/.espejismo/espejismoctl status
 ~/.espejismo/espejismoctl logs
 ~/.espejismo/espejismoctl edit
+~/.espejismo/espejismoctl show-config
 ~/.espejismo/espejismoctl reload
 ~/.espejismo/espejismoctl restart
 ~/.espejismo/espejismoctl connect
 ```
 
 Root Linux remote installs additionally create a systemd service and link
-`/usr/local/bin/espejismoctl-remote`.
+`/usr/local/bin/espejismoctl` and `/usr/local/bin/espejismoctl-remote`, so the
+server can be managed with commands such as `espejismoctl status`,
+`espejismoctl show-config`, `espejismoctl edit`, `espejismoctl start`,
+`espejismoctl stop`, and `espejismoctl restart`.
 
 Re-running the installer rewrites config and restarts the selected role so the
 printed credentials match the running service immediately.
@@ -118,7 +125,6 @@ Guided Linux/macOS local installs default to `~/.espejismo`:
 
 ```text
 ~/.espejismo/bin/espejismo-local       Local client binary
-~/.espejismo/bin/espejismo-remote      Remote server binary
 ~/.espejismo/config/espejismo.toml     Active config
 ~/.espejismo/config/espejismo-*.log    Local log file when not using systemd
 ~/.espejismo/espejismoctl              Manager command
@@ -127,7 +133,11 @@ Guided Linux/macOS local installs default to `~/.espejismo`:
 Root remote Linux installs default to `/opt/espejismo` and also create:
 
 ```text
+/opt/espejismo/bin/espejismo-remote    Remote server binary
+/opt/espejismo/config/espejismo.toml   Active server config
+/opt/espejismo/espejismoctl            Manager command
 /etc/systemd/system/espejismo-remote.service
+/usr/local/bin/espejismoctl
 /usr/local/bin/espejismoctl-remote
 ```
 
@@ -152,9 +162,12 @@ espejismoctl restart   # stop then start
 espejismoctl logs      # follow log output
 espejismoctl edit      # open active TOML config in $EDITOR or vi
 espejismoctl reload    # POST /reload to apply runtime-safe config changes
+espejismoctl apply     # POST the active config to /apply when supported
+espejismoctl check-config # validate the active config
 espejismoctl profile   # print an espejismo://import/... client profile
 espejismoctl connect   # print browser/app proxy settings and test commands
 espejismoctl config    # print the active config path
+espejismoctl show-config # print the active config contents
 ```
 
 On Windows:
@@ -204,12 +217,19 @@ curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/in
   | sudo bash
 ```
 
+You do not need to clone the repository or save an installer file. The command
+above streams the bootstrap, downloads the latest matching server package, writes
+the server config, starts systemd, and leaves `espejismoctl` on the server for
+daily operations.
+
 The installer prints a single `espejismo://import/...` client profile. Keep it
 private. It contains the remote address, PSK, local proxy listeners, and local
 proxy credentials. By default the installer downloads the latest release from
-`tianrking/Espejismo`, generates a random PSK, writes a production config, and
-starts the systemd service. If no public endpoint is provided, it attempts to
-detect this server's public IP and uses the port from `ESPEJISMO_LISTEN`.
+`tianrking/Espejismo`, preferring the latest matching
+`espejismo-server-linux-<arch>.tar.gz` package, generates a random PSK, writes a
+production config, and starts the systemd service. If no public endpoint is
+provided, it attempts to detect this server's public IP and uses the port from
+`ESPEJISMO_LISTEN`.
 
 For a ready-to-use client profile, pass the public endpoint that clients should
 connect to:
@@ -230,13 +250,14 @@ Custom archive URL, useful for private releases or self-hosted packages:
 
 ```bash
 curl -fsSL https://example.com/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_ARCHIVE_URL=https://example.com/espejismo-linux-amd64.tar.gz bash
+  | sudo ESPEJISMO_ARCHIVE_URL=https://example.com/espejismo-server-linux-amd64.tar.gz bash
 ```
 
-The installer downloads `espejismo-linux-amd64.tar.gz`, installs
-`espejismo-remote` and `espejismo-local` into `/usr/local/bin`, writes
+The installer downloads `espejismo-server-linux-amd64.tar.gz` on amd64 servers,
+installs only `espejismo-remote` into `/usr/local/bin`, writes
 `/etc/espejismo/espejismo.toml`, creates an `espejismo` system user, installs a
-systemd unit, and starts `espejismo-remote`.
+systemd unit, creates `/usr/local/bin/espejismoctl`, and starts
+`espejismo-remote`.
 
 Useful install-time variables:
 
