@@ -83,9 +83,19 @@ need_cmd() {
 random_secret() {
   if command -v openssl >/dev/null 2>&1; then
     openssl rand -base64 32
-  else
-    tr -dc 'A-Za-z0-9' </dev/urandom | head -c 48
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 - <<'PY'
+import base64
+import os
+
+print(base64.b64encode(os.urandom(32)).decode())
+PY
+  elif command -v base64 >/dev/null 2>&1; then
+    dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64 | tr -d '\n'
     echo
+  else
+    echo "cannot generate a random secret: install openssl or python3, or set ESPEJISMO_PSK" >&2
+    exit 1
   fi
 }
 
