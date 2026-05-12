@@ -23,8 +23,8 @@ iwr -useb https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/ins
 
 The guided installer asks whether this machine is `local` or `remote`, downloads
 the latest release, generates a random PSK/admin token/local proxy password when
-not provided, writes config, starts the selected role, and prints management
-commands.
+not provided, writes config, starts the selected role, and prints management and
+connection commands.
 
 All binary downloads come from GitHub Releases. With the default
 `ESPEJISMO_VERSION=latest`, installers resolve the current platform and fetch
@@ -73,6 +73,7 @@ Management after install:
 ~/.espejismo/espejismoctl edit
 ~/.espejismo/espejismoctl reload
 ~/.espejismo/espejismoctl restart
+~/.espejismo/espejismoctl connect
 ```
 
 Root Linux remote installs additionally create a systemd service and link
@@ -119,6 +120,7 @@ espejismoctl logs      # follow log output
 espejismoctl edit      # open active TOML config in $EDITOR or vi
 espejismoctl reload    # POST /reload to apply runtime-safe config changes
 espejismoctl profile   # print an espejismo://import/... client profile
+espejismoctl connect   # print browser/app proxy settings and test commands
 espejismoctl config    # print the active config path
 ```
 
@@ -128,12 +130,33 @@ On Windows:
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Espejismo\espejismoctl.ps1" status
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Espejismo\espejismoctl.ps1" edit
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Espejismo\espejismoctl.ps1" restart
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Espejismo\espejismoctl.ps1" connect
 ```
 
 After editing config, use `reload` for runtime-safe changes such as server,
 auth, pacing, mux mode, users, quotas, and egress policy. Use `restart` for
 listener changes, log file changes, TUN ownership, or anything that changes
 process-owned resources.
+
+For a local client install, `connect` prints exactly what to put into a browser
+or app:
+
+```text
+SOCKS5: 127.0.0.1:6680
+HTTP:   127.0.0.1:6681
+User:   local-user
+Pass:   <generated-password>
+```
+
+It also prints ready-to-run curl tests:
+
+```bash
+curl --proxy-user 'local-user:<generated-password>' --socks5-hostname 127.0.0.1:6680 https://ifconfig.me
+curl --proxy-user 'local-user:<generated-password>' -x http://127.0.0.1:6681 https://ifconfig.me
+```
+
+For a remote install, `connect` prints the `espejismo://import/...` profile and
+the one-line client start command.
 
 ## Ubuntu Remote One-Liner
 

@@ -43,7 +43,10 @@ iwr -useb https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/ins
 
 The installers download the matching binary from GitHub Releases latest,
 generate random secrets by default, write config, start the selected local or
-remote role, and print management commands.
+remote role, and print management plus connection commands. After install, run
+`~/.espejismo/espejismoctl connect` to see the SOCKS5/HTTP proxy address,
+generated proxy credentials, curl test commands, or the remote client import
+profile.
 
 ## Release Downloads
 

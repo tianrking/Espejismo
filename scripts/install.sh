@@ -262,6 +262,11 @@ LOG_FILE="${log_file}"
 ADMIN="http://${ADMIN_LISTEN}"
 TOKEN="$(toml_escape "${ADMIN_TOKEN}")"
 SERVICE="${SERVICE_NAME}-${ROLE}.service"
+SERVER_ENDPOINT="$(toml_escape "${SERVER}")"
+SOCKS5_ADDR="$(toml_escape "${SOCKS5_LISTEN}")"
+HTTP_ADDR="$(toml_escape "${HTTP_LISTEN}")"
+LOCAL_AUTH_USER="$(toml_escape "${LOCAL_USER}")"
+LOCAL_AUTH_PASSWORD="$(toml_escape "${LOCAL_PASSWORD}")"
 
 has_systemd_service() {
   command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "\${SERVICE}" >/dev/null 2>&1
@@ -338,6 +343,45 @@ cmd_profile() {
   "${bin_dir}/espejismo-local" --config "\${CONFIG}" --print-client-profile --profile-name default
 }
 
+shell_quote() {
+  printf '%q' "\$1"
+}
+
+cmd_connect() {
+  if [[ "\${ROLE}" == "local" ]]; then
+    local auth socks http
+    auth="\$(shell_quote "\${LOCAL_AUTH_USER}:\${LOCAL_AUTH_PASSWORD}")"
+    socks="\$(shell_quote "\${SOCKS5_ADDR}")"
+    http="\$(shell_quote "http://\${HTTP_ADDR}")"
+    echo "Local proxy is ready."
+    echo "  SOCKS5: \${SOCKS5_ADDR}"
+    echo "  HTTP:   \${HTTP_ADDR}"
+    echo "  User:   \${LOCAL_AUTH_USER}"
+    echo "  Pass:   \${LOCAL_AUTH_PASSWORD}"
+    echo
+    echo "Test commands:"
+    echo "  curl --proxy-user \${auth} --socks5-hostname \${socks} https://ifconfig.me"
+    echo "  curl --proxy-user \${auth} -x \${http} https://ifconfig.me"
+    echo
+    echo "Browser/app settings:"
+    echo "  SOCKS5 host/port: \${SOCKS5_ADDR}"
+    echo "  HTTP proxy:       \${HTTP_ADDR}"
+    echo "  Proxy auth:       \${LOCAL_AUTH_USER} / \${LOCAL_AUTH_PASSWORD}"
+    return
+  fi
+
+  local profile_url
+  profile_url="\$(cmd_profile)"
+  echo "Remote endpoint is ready."
+  echo "  Public endpoint: \${SERVER_ENDPOINT}"
+  echo
+  echo "Client import profile:"
+  echo "  \${profile_url}"
+  echo
+  echo "Client one-line start:"
+  echo "  espejismo-local --import-profile '\${profile_url}'"
+}
+
 case "\${1:-status}" in
   start) cmd_start ;;
   stop) cmd_stop ;;
@@ -347,8 +391,9 @@ case "\${1:-status}" in
   logs) cmd_logs ;;
   edit) cmd_edit ;;
   profile) cmd_profile ;;
+  connect) cmd_connect ;;
   config) echo "\${CONFIG}" ;;
-  *) echo "usage: \$0 {start|stop|restart|status|reload|logs|edit|profile|config}" >&2; exit 2 ;;
+  *) echo "usage: \$0 {start|stop|restart|status|reload|logs|edit|profile|connect|config}" >&2; exit 2 ;;
 esac
 EOF
   chmod 0755 "${manager}"
@@ -459,11 +504,10 @@ main() {
   echo "  ${manager} edit"
   echo "  ${manager} reload"
   echo "  ${manager} restart"
-  if [[ "${ROLE}" == "remote" ]]; then
-    echo
-    echo "Client import profile:"
-    "${manager}" profile
-  fi
+  echo "  ${manager} connect"
+  echo
+  echo "Connection:"
+  "${manager}" connect
 }
 
 main "$@"

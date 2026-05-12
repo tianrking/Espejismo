@@ -33,6 +33,10 @@ function Escape-Toml([string]$Value) {
     if ($null -eq $Value) { "" } else { $Value.Replace("\", "\\").Replace('"', '\"') }
 }
 
+function Escape-PowerShellSingle([string]$Value) {
+    if ($null -eq $Value) { "" } else { $Value.Replace("'", "''") }
+}
+
 function Package-Name {
     $arch = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture
     switch ($arch) {
@@ -204,6 +208,11 @@ param([string]`$Command = "status")
 `$LogFile = "$($LogPath.Replace('\', '\\'))"
 `$Admin = "http://$AdminListen"
 `$Token = "$AdminToken"
+`$ServerEndpoint = '$(Escape-PowerShellSingle $Server)'
+`$Socks5Addr = '$(Escape-PowerShellSingle $Socks5Listen)'
+`$HttpAddr = '$(Escape-PowerShellSingle $HttpListen)'
+`$LocalAuthUser = '$(Escape-PowerShellSingle $LocalUser)'
+`$LocalAuthPassword = '$(Escape-PowerShellSingle $LocalPassword)'
 
 function Start-Espejismo {
     if (Test-Path `$PidFile) {
@@ -243,6 +252,35 @@ function Status-Espejismo {
     } catch {}
 }
 
+function Connect-Info {
+    if (`$Role -eq "local") {
+        Write-Host "Local proxy is ready."
+        Write-Host "  SOCKS5: `$Socks5Addr"
+        Write-Host "  HTTP:   `$HttpAddr"
+        Write-Host "  User:   `$LocalAuthUser"
+        Write-Host "  Pass:   `$LocalAuthPassword"
+        Write-Host ""
+        Write-Host "Test commands:"
+        Write-Host "  curl.exe --proxy-user ""`$LocalAuthUser`:`$LocalAuthPassword"" --socks5-hostname ""`$Socks5Addr"" https://ifconfig.me"
+        Write-Host "  curl.exe --proxy-user ""`$LocalAuthUser`:`$LocalAuthPassword"" -x ""http://`$HttpAddr"" https://ifconfig.me"
+        Write-Host ""
+        Write-Host "Browser/app settings:"
+        Write-Host "  SOCKS5 host/port: `$Socks5Addr"
+        Write-Host "  HTTP proxy:       `$HttpAddr"
+        Write-Host "  Proxy auth:       `$LocalAuthUser / `$LocalAuthPassword"
+    } else {
+        `$profileUrl = & (Join-Path (Split-Path `$Bin) "espejismo-local.exe") --config `$Config --print-client-profile --profile-name default
+        Write-Host "Remote endpoint is ready."
+        Write-Host "  Public endpoint: `$ServerEndpoint"
+        Write-Host ""
+        Write-Host "Client import profile:"
+        Write-Host "  `$profileUrl"
+        Write-Host ""
+        Write-Host "Client one-line start:"
+        Write-Host "  espejismo-local --import-profile '`$profileUrl'"
+    }
+}
+
 switch (`$Command) {
     "start" { Start-Espejismo }
     "stop" { Stop-Espejismo }
@@ -252,8 +290,9 @@ switch (`$Command) {
     "logs" { Get-Content `$LogFile -Wait }
     "edit" { notepad `$Config }
     "profile" { & (Join-Path (Split-Path `$Bin) "espejismo-local.exe") --config `$Config --print-client-profile --profile-name default }
+    "connect" { Connect-Info }
     "config" { Write-Host `$Config }
-    default { Write-Host "usage: .\espejismoctl.ps1 start|stop|restart|status|reload|logs|edit|profile|config"; exit 2 }
+    default { Write-Host "usage: .\espejismoctl.ps1 start|stop|restart|status|reload|logs|edit|profile|connect|config"; exit 2 }
 }
 "@
 Set-Content -Path $CtlPath -Value $ctl -Encoding UTF8
@@ -273,8 +312,7 @@ Write-Host "  powershell -ExecutionPolicy Bypass -File `"$CtlPath`" status"
 Write-Host "  powershell -ExecutionPolicy Bypass -File `"$CtlPath`" logs"
 Write-Host "  powershell -ExecutionPolicy Bypass -File `"$CtlPath`" edit"
 Write-Host "  powershell -ExecutionPolicy Bypass -File `"$CtlPath`" restart"
-if ($Role -eq "remote") {
-    Write-Host ""
-    Write-Host "Client import profile:"
-    & powershell -ExecutionPolicy Bypass -File $CtlPath profile
-}
+Write-Host "  powershell -ExecutionPolicy Bypass -File `"$CtlPath`" connect"
+Write-Host ""
+Write-Host "Connection:"
+& powershell -ExecutionPolicy Bypass -File $CtlPath connect
