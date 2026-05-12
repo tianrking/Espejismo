@@ -54,7 +54,7 @@ pub async fn run_tun_ingress(
     let (stack, runner, udp_socket, tcp_listener) = StackBuilder::default()
         .enable_tcp(true)
         .enable_udp(true)
-        .enable_icmp(true)
+        .enable_icmp(false)
         .mtu(config.mtu as usize)
         .build()
         .context("create userspace netstack")?;
@@ -128,8 +128,10 @@ async fn handle_tun_tcp(
             let result = async {
                 let authority = authority_from_socket(remote);
                 let priority = StreamPriority::Bulk;
+                info!(%local, %remote, authority = %authority, "TUN TCP flow accepted");
                 let mut tunnel_stream = tunnel.open_stream(priority).await?;
                 let lane_id = tunnel_stream.lane_id();
+                debug!(lane_id, %local, %remote, "TUN TCP flow opened tunnel stream");
                 let mut client_to_remote = 0;
                 let mut remote_to_client = 0;
                 let result = async {
@@ -150,7 +152,7 @@ async fn handle_tun_tcp(
             .await;
             if let Err(err) = result {
                 metrics.inc_stream_failed();
-                debug!(%local, %remote, error = %err, "TUN TCP flow ended");
+                warn!(%local, %remote, error = %err, "TUN TCP flow failed");
             }
             metrics.dec_active_stream();
         });
@@ -186,6 +188,13 @@ async fn handle_tun_udp(udp_socket: UdpSocket, tunnel: Arc<TunnelService>, metri
         tokio::spawn(async move {
             let _permit = permit;
             let authority = authority_from_socket(remote);
+            debug!(
+                %local,
+                %remote,
+                authority = %authority,
+                bytes = payload.len(),
+                "TUN UDP datagram accepted"
+            );
             match relay_udp_authority(tunnel, &authority, &payload).await {
                 Ok(response) => {
                     metrics.add_tunnel_bytes(payload.len() as u64, response.len() as u64);
@@ -193,7 +202,7 @@ async fn handle_tun_udp(udp_socket: UdpSocket, tunnel: Arc<TunnelService>, metri
                 }
                 Err(err) => {
                     metrics.inc_stream_failed();
-                    debug!(%local, %remote, error = %err, "TUN UDP datagram ended");
+                    warn!(%local, %remote, error = %err, "TUN UDP datagram failed");
                 }
             }
         });

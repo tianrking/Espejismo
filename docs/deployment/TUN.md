@@ -100,6 +100,8 @@ Important deployment notes:
   `--tun-route-cleanup` to replay that state and remove the saved file.
 - The current TUN implementation is intended for TCP-first deployments. UDP is
   supported as application-level datagram relay over the encrypted TCP mux tunnel.
+- ICMP echo is not proxied. Use `curl` or another TCP-based probe instead of
+  `ping` when checking TUN connectivity.
 
 Crash recovery command:
 
@@ -169,3 +171,13 @@ Use `--check-config` first:
 ```bash
 espejismo-local --config espejismo.toml --tun-enabled --tun-auto-route --check-config
 ```
+
+TCP-first smoke tests:
+
+```bash
+curl --max-time 20 http://1.1.1.1/cdn-cgi/trace
+curl --max-time 20 https://ifconfig.me
+```
+
+The first command avoids DNS and checks whether TCP reaches the tunnel. The
+second command also checks DNS takeover and UDP DNS relay.
