@@ -44,21 +44,27 @@ wait_for_port() {
   return 1
 }
 
+assert_update_check() {
+  local role="$1"
+  local output
+  output="$(cargo run --quiet --bin "${role}" -- \
+    --check-update \
+    --update-url "http://${HTTP_ADDR}:${HTTP_PORT}/release/latest")"
+  if ! grep -Eq "update available: .* -> v99\.0\.0" <<<"${output}"; then
+    echo "unexpected --check-update output for ${role}:" >&2
+    echo "${output}" >&2
+    return 1
+  fi
+}
+
 cd "${ROOT}"
 
 python3 "${ROOT}/scripts/probe_http_server.py" --host "${HTTP_ADDR}" --port "${HTTP_PORT}" >/tmp/espejismo-http.log 2>&1 &
 HTTP_PID=$!
 wait_for_port "${HTTP_ADDR}" "${HTTP_PORT}" "http fixture"
 
-cargo run --quiet --bin espejismo-local -- \
-  --check-update \
-  --update-url "http://${HTTP_ADDR}:${HTTP_PORT}/release/latest" \
-  | grep -q "update available: 0.0.8 -> v99.0.0"
-
-cargo run --quiet --bin espejismo-remote -- \
-  --check-update \
-  --update-url "http://${HTTP_ADDR}:${HTTP_PORT}/release/latest" \
-  | grep -q "update available: 0.0.8 -> v99.0.0"
+assert_update_check "espejismo-local"
+assert_update_check "espejismo-remote"
 
 python3 "${ROOT}/scripts/probe_udp_server.py" --host "${HTTP_ADDR}" --port "${UDP_PORT}" >/tmp/espejismo-udp.log 2>&1 &
 UDP_PID=$!
