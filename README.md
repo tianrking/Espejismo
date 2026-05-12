@@ -31,9 +31,12 @@ The shortest guided install paths are:
 # Linux/macOS guided installer.
 curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh | bash
 
-# Linux remote server, non-interactive.
+# Linux remote server, non-interactive root install.
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh | sudo bash
+
+# Linux local client, explicit non-interactive install.
 curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh \
-  | sudo ESPEJISMO_ROLE=remote ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690 bash
+  | ESPEJISMO_ROLE=local ESPEJISMO_SERVER=203.0.113.10:6690 bash
 ```
 
 ```powershell
@@ -47,6 +50,10 @@ remote role, and print management plus connection commands. After install, run
 `~/.espejismo/espejismoctl connect` to see the SOCKS5/HTTP proxy address,
 generated proxy credentials, curl test commands, or the remote client import
 profile.
+
+In non-interactive mode, root Linux defaults to `remote`; non-root Linux/macOS
+defaults to `local`. Set `ESPEJISMO_ROLE=local` or `ESPEJISMO_ROLE=remote` to be
+explicit.
 
 Configs and client profiles are reversible for the local onboarding path:
 

@@ -298,7 +298,7 @@ switch (`$Command) {
 Set-Content -Path $CtlPath -Value $ctl -Encoding UTF8
 
 if (-not $NoStart) {
-    & powershell -ExecutionPolicy Bypass -File $CtlPath start
+    & powershell -ExecutionPolicy Bypass -File $CtlPath restart
 }
 
 Write-Host ""

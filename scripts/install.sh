@@ -87,7 +87,11 @@ select_role() {
       *) ROLE="local" ;;
     esac
   else
-    ROLE="local"
+    if [[ "${EUID}" -eq 0 && "$(uname -s)" == "Linux" ]]; then
+      ROLE="remote"
+    else
+      ROLE="local"
+    fi
   fi
 }
 
@@ -440,6 +444,10 @@ main() {
     echo "ESPEJISMO_ROLE must be local or remote" >&2
     exit 1
   fi
+  echo "Selected install mode: ${ROLE}"
+  if ! is_tty; then
+    echo "  Override with: ESPEJISMO_ROLE=local|remote bash install.sh"
+  fi
 
   [[ -z "${PSK}" ]] && PSK="$(random_secret)"
   [[ -z "${ADMIN_TOKEN}" ]] && ADMIN_TOKEN="$(random_secret)"
@@ -489,7 +497,7 @@ main() {
   write_systemd_service "${bin_dir}" "${config}" "${manager}"
 
   if [[ "${START_NOW}" == "1" ]]; then
-    "${manager}" start
+    "${manager}" restart
   fi
 
   echo

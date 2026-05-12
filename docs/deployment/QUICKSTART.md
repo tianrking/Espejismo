@@ -26,6 +26,11 @@ the latest release, generates a random PSK/admin token/local proxy password when
 not provided, writes config, starts the selected role, and prints management and
 connection commands.
 
+When the installer is run non-interactively, root Linux defaults to `remote`
+because that is the normal server setup path. Non-root Linux/macOS defaults to
+`local`. Set `ESPEJISMO_ROLE=local` or `ESPEJISMO_ROLE=remote` to make the role
+explicit.
+
 All binary downloads come from GitHub Releases. With the default
 `ESPEJISMO_VERSION=latest`, installers resolve the current platform and fetch
 the matching artifact from:
@@ -53,6 +58,12 @@ curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/in
   | sudo ESPEJISMO_ROLE=remote ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690 bash
 ```
 
+Root Linux server shortcut:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh | sudo bash
+```
+
 Useful shared knobs:
 
 ```bash
@@ -78,6 +89,9 @@ Management after install:
 
 Root Linux remote installs additionally create a systemd service and link
 `/usr/local/bin/espejismoctl-remote`.
+
+Re-running the installer rewrites config and restarts the selected role so the
+printed credentials match the running service immediately.
 
 ## Installed Files
 
