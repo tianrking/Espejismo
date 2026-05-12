@@ -51,15 +51,15 @@ notes, CLI reference, admin guide, egress guide, logging guide, packaging guide,
 profile guide, users guide, update guide, status, test plan, and deployment
 helper scripts.
 
-## Publishing v0.0.6
+## Publishing v0.0.7
 
 After the version bump and verification commit is merged, create or update the
 release tag on the exact commit that should be packaged:
 
 ```bash
-git tag -f -a v0.0.6 -m "v0.0.6"
+git tag -f -a v0.0.7 -m "v0.0.7"
 git push origin main
-git push --force origin v0.0.6
+git push --force origin v0.0.7
 ```
 
 The GitHub release workflow runs on `v*` tags and publishes all platform

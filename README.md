@@ -16,7 +16,7 @@ networks. It provides a local SOCKS5/HTTP proxy, optional native TUN ingress,
 X25519 session establishment, XChaCha20-Poly1305 encrypted frames, TCP-friendly
 pacing, adaptive frame shaping, and selectable logical stream multiplexing.
 
-Current release target: `v0.0.6`.
+Current release target: `v0.0.7`.
 
 ## Quick Start
 

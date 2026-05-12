@@ -77,6 +77,10 @@ Important deployment notes:
   policy route table for ordinary traffic through the TUN device. It does not
   replace the `main` default route. This makes Linux TUN coexist more reliably
   with systems that already have policy routing rules.
+- Before installing Linux route/DNS takeover, `espejismo-local` opens a small
+  warm-up tunnel stream through the existing network path. This confirms that
+  the physical tunnel is alive before DNS and application traffic are routed
+  into TUN, avoiding startup deadlocks during the first DNS burst.
 - Windows route takeover is also opt-in. It protects the remote server route
   through the current default gateway and installs split-default
   `0.0.0.0/1` plus `128.0.0.0/1` routes through the TUN interface, leaving the
@@ -181,3 +185,12 @@ curl --max-time 20 https://ifconfig.me
 
 The first command avoids DNS and checks whether TCP reaches the tunnel. The
 second command also checks DNS takeover and UDP DNS relay.
+
+With `--log-level debug`, a healthy Linux TUN startup should show the warm-up
+before route installation:
+
+```text
+warming up tunnel before TUN route takeover
+TUN warm-up stream opened
+Linux TUN route manager installed
+```

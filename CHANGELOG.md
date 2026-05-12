@@ -2,6 +2,31 @@
 
 ## Unreleased
 
+## v0.0.7
+
+`v0.0.7` focuses on making Linux TUN takeover usable in real desktop routing
+setups while keeping the `v0.0.6` protocol and installer model intact.
+
+### Changed
+
+- Linux TUN takeover now uses a dedicated policy-routing table instead of
+  rewriting the `main` default route.
+- Remote server endpoint traffic is protected with a high-priority direct rule
+  through the existing `main` routing table before ordinary traffic is sent to
+  TUN.
+- `espejismo-local` warms up an interactive tunnel stream before route/DNS
+  takeover, so the physical tunnel is already alive before the first DNS burst
+  enters TUN.
+- TUN stream opening now falls back from bulk lanes to interactive lanes and
+  reports open timeouts clearly.
+
+### Fixed
+
+- Disabled misleading local ICMP echo handling in TUN mode. Use TCP probes such
+  as `curl http://1.1.1.1/cdn-cgi/trace` instead of `ping` for TUN validation.
+- Added clearer TUN TCP/UDP flow diagnostics so route, tunnel-open, and relay
+  failures can be distinguished from DNS issues.
+
 ## v0.0.6
 
 `v0.0.6` completes the protocol-operations upgrade and makes the installer path

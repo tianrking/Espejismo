@@ -1,6 +1,6 @@
 # Implementation Status
 
-Current release target: `v0.0.6`.
+Current release target: `v0.0.7`.
 
 ## Implemented
 
@@ -64,7 +64,8 @@ Current release target: `v0.0.6`.
   shutdown restore, and explicit `--tun-route-cleanup` recovery. Linux uses a
   dedicated policy-routing table and high-priority rules so it can take
   precedence over common existing local TUN policy rules without rewriting the
-  `main` default route.
+  `main` default route. Linux TUN also warms up a tunnel stream before route
+  takeover and falls back from bulk to interactive lanes for TUN stream opens.
 - Client and remote release update checks with configurable metadata URL.
 - Server-side egress policy for host/port allow and block rules.
 - SOCKS5 chained TCP egress and SOCKS5 UDP ASSOCIATE chained UDP egress.

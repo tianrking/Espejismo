@@ -86,7 +86,7 @@ ESPEJISMO_SERVER=203.0.113.10:6690
 ESPEJISMO_SOCKS5_LISTEN=127.0.0.1:6680
 ESPEJISMO_HTTP_LISTEN=127.0.0.1:6681
 ESPEJISMO_LOCAL_AUTH_PASSWORD='optional-local-proxy-password'
-ESPEJISMO_VERSION=v0.0.6
+ESPEJISMO_VERSION=v0.0.7
 ESPEJISMO_INSTALL_DIR=/opt/espejismo
 ```
 
@@ -223,7 +223,7 @@ Pinned release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_VERSION=v0.0.6 bash
+  | sudo ESPEJISMO_VERSION=v0.0.7 bash
 ```
 
 Custom archive URL, useful for private releases or self-hosted packages:
