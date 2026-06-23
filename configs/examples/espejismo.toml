@@ -128,4 +128,14 @@ allow_hosts = []
 block_hosts = []
 allow_ports = [80, 443]
 block_ports = []
+# Optional server-side upstream proxy for egress IP switching.
+# TCP supports socks://, socks4://, socks4a://, socks5://, http://, and https://.
+# UDP requires socks5:// because SOCKS4 and HTTP CONNECT are TCP-only.
+# proxy = "socks://127.0.0.1:1080" # alias for socks5://
+# proxy = "socks4a://127.0.0.1:1080"
+# proxy = "socks5://127.0.0.1:1080"
+# proxy = "socks5://user:pass@127.0.0.1:1080"
+# proxy = "http://user:pass@127.0.0.1:8080"
+# proxy = "https://user:pass@proxy.example.com:8443"
+# Legacy alias, still supported for no-auth SOCKS5:
 # socks5_proxy = "127.0.0.1:1080"

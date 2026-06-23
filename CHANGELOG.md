@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Remote egress can now chain through `remote.egress.proxy` using SOCKS4,
+  SOCKS4a, SOCKS5, HTTP CONNECT, or HTTPS CONNECT upstreams. SOCKS5 supports
+  optional username/password authentication and UDP ASSOCIATE. HTTP/HTTPS
+  CONNECT supports optional Basic auth. The legacy `socks5_proxy` field remains
+  supported.
+
 ## v0.1.0
 
 `v0.1.0` is the first operational release line for the simplified packaging,

@@ -68,7 +68,8 @@ Current release target: `v0.1.0`.
   takeover and falls back from bulk to interactive lanes for TUN stream opens.
 - Client and remote release update checks with configurable metadata URL.
 - Server-side egress policy for host/port allow and block rules.
-- SOCKS5 chained TCP egress and SOCKS5 UDP ASSOCIATE chained UDP egress.
+- Server-side upstream proxy egress: SOCKS4/SOCKS4a/SOCKS5 TCP chaining,
+  SOCKS5 UDP ASSOCIATE chaining, and HTTP/HTTPS CONNECT TCP chaining.
 - Variable-length masked handshake envelope with authenticated payload.
 - Protocol version, mux mode, and capability negotiation in the authenticated
   handshake.

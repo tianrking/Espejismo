@@ -176,8 +176,11 @@ independent PSK and optional quota/bandwidth policy. Metrics are emitted both
 globally and per user.
 
 Remote egress policy supports host and port allow/block lists, private-address
-denial for direct egress, and optional no-auth SOCKS5 chaining. TCP uses SOCKS5
-CONNECT. UDP uses SOCKS5 UDP ASSOCIATE when `remote.egress.socks5_proxy` is set.
+denial for direct egress, optional SOCKS4/SOCKS4a/SOCKS5 chaining, and optional
+HTTP/HTTPS CONNECT chaining. TCP uses direct connect or the configured upstream
+proxy according to `remote.egress.proxy`. UDP uses direct UDP or SOCKS5 UDP
+ASSOCIATE; SOCKS4 and HTTP/HTTPS CONNECT proxies are rejected for UDP because
+they are TCP-only.
 
 ## Source Layout
 

@@ -21,6 +21,7 @@ use tracing::{debug, info};
 
 mod fallback;
 mod handler;
+mod http_chain;
 mod limits;
 mod mux;
 mod relay;
@@ -372,18 +373,22 @@ async fn check_remote_config(config: &EspejismoConfig, args: &Args, doctor: bool
             "egress policy is broad; consider deny_private_ips or explicit allow lists".to_string(),
         );
     }
-    if let Some(proxy) = &config.remote.egress.socks5_proxy {
-        match lookup_host(proxy.as_str()).await {
+    if let Some(proxy) = EgressPolicy::from(config.remote.egress.clone()).upstream_proxy()? {
+        match lookup_host(proxy.endpoint.as_str()).await {
             Ok(addrs) => {
                 if addrs.count() > 0 {
-                    println!("OK egress SOCKS5 proxy resolves: {proxy}");
+                    println!("OK egress proxy resolves: {}", proxy.endpoint);
                 } else {
                     warnings.push(format!(
-                        "egress SOCKS5 proxy resolved no addresses: {proxy}"
+                        "egress proxy resolved no addresses: {}",
+                        proxy.endpoint
                     ));
                 }
             }
-            Err(err) => warnings.push(format!("egress SOCKS5 proxy cannot resolve {proxy}: {err}")),
+            Err(err) => warnings.push(format!(
+                "egress proxy cannot resolve {}: {err}",
+                proxy.endpoint
+            )),
         }
     }
     if doctor {

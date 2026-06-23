@@ -287,7 +287,28 @@ bytes_per_sec = 1048576
 
 `block_ports`: Optional outbound port blocklist.
 
-`socks5_proxy`: Optional no-auth SOCKS5 chain for TCP and UDP egress.
+`proxy`: Optional upstream proxy for server-side egress chaining. Supported
+forms:
+
+```toml
+[remote.egress]
+proxy = "socks5://127.0.0.1:1080"
+# proxy = "socks://127.0.0.1:1080"
+# proxy = "socks4://192.0.2.10:1080"
+# proxy = "socks4a://proxy.example.com:1080"
+# proxy = "socks5://user:pass@127.0.0.1:1080"
+# proxy = "http://127.0.0.1:8080"
+# proxy = "http://user:pass@127.0.0.1:8080"
+# proxy = "https://proxy.example.com:8443"
+# proxy = "https://user:pass@proxy.example.com:8443"
+```
+
+`socks://` is an alias for SOCKS5. SOCKS5 supports TCP CONNECT and UDP
+ASSOCIATE. SOCKS4 and SOCKS4a support TCP only. HTTP and HTTPS support TCP
+CONNECT only; HTTPS means TLS to the upstream proxy before the CONNECT request.
+
+`socks5_proxy`: Legacy alias for a no-auth SOCKS5 chain. Prefer `proxy` for new
+deployments.
 
 ### logging
 
@@ -338,4 +359,3 @@ windows-amd64
 windows-386
 windows-arm64
 ```
-

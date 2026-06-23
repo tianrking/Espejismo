@@ -27,7 +27,7 @@ pub use crypto::{
     accept_handshake, accept_handshake_with_replay, accept_handshake_with_users, connect_handshake,
     parse_psk, AuthenticatedSession, HandshakeConfig, HandshakeUser, SessionKeys,
 };
-pub use egress::{split_authority, EgressPolicy};
+pub use egress::{split_authority, EgressPolicy, EgressProxy, EgressProxyKind};
 pub use extension::{
     AuthDecision, AuthRequest, Authenticator, CommandAuthenticator, EgressRequest,
     HttpJsonAuthenticator, NoopTrafficObserver, OutboundConnector, RequestContext, RequestPolicy,

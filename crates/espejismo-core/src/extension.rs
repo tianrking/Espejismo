@@ -5,7 +5,6 @@ use std::process::Command;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::TcpStream;
 
 use crate::egress::EgressPolicy;
 use crate::protocol::request::StreamPriority;
@@ -113,7 +112,10 @@ pub struct EgressRequest {
 }
 
 pub trait OutboundConnector: Send + Sync {
-    fn connect_tcp<'a>(&'a self, request: EgressRequest) -> BoxFutureResult<'a, TcpStream>;
+    fn connect_tcp<'a>(
+        &'a self,
+        request: EgressRequest,
+    ) -> BoxFutureResult<'a, Box<dyn TransportStream>>;
 
     fn relay_udp<'a>(
         &'a self,

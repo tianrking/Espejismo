@@ -24,6 +24,18 @@ paquetes de release instalables con un solo comando.
 | Rutas | Toma de rutas/DNS IPv4 TUN en Linux, macOS y Windows |
 | Empaquetado | Archivos GitHub Release completos y solo-servidor |
 
+El egress del servidor tambien puede encadenarse por un proxy upstream:
+
+```toml
+[remote.egress]
+proxy = "socks5://user:pass@127.0.0.1:1080"
+# proxy = "http://user:pass@127.0.0.1:8080"
+# proxy = "https://user:pass@proxy.example.com:8443"
+```
+
+SOCKS4/SOCKS4a, SOCKS5, HTTP CONNECT y HTTPS CONNECT soportan encadenamiento
+TCP. El encadenamiento UDP requiere SOCKS5.
+
 `espejismo-remote` corre en el VPS o servidor. `espejismo-local` corre en la
 maquina cliente y expone puertos SOCKS5/HTTP locales o una interfaz TUN nativa
 para captura IPv4 a nivel de sistema.

@@ -350,6 +350,8 @@ pub struct EgressConfig {
     #[serde(default)]
     pub block_ports: Vec<u16>,
     #[serde(default)]
+    pub proxy: Option<String>,
+    #[serde(default)]
     pub socks5_proxy: Option<String>,
 }
 
@@ -361,6 +363,7 @@ impl From<EgressConfig> for EgressPolicy {
             block_hosts: config.block_hosts,
             allow_ports: config.allow_ports,
             block_ports: config.block_ports,
+            proxy: config.proxy,
             socks5_proxy: config.socks5_proxy,
         }
     }

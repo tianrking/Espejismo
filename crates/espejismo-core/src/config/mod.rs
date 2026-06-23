@@ -233,6 +233,11 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
             "remote.fallback_http.upstream must not be empty when provided"
         );
     }
+    if config.remote.egress.proxy.is_some() && config.remote.egress.socks5_proxy.is_some() {
+        anyhow::bail!("use remote.egress.proxy or remote.egress.socks5_proxy, not both");
+    }
+    let egress_policy: crate::egress::EgressPolicy = config.remote.egress.clone().into();
+    egress_policy.upstream_proxy()?;
     Ok(config)
 }
 
@@ -426,6 +431,30 @@ mod tests {
             listen = "127.0.0.1:9090"
         "#;
         parse_config(loopback).unwrap();
+    }
+
+    #[test]
+    fn validates_remote_egress_proxy_url() {
+        let config = r#"
+            [remote.egress]
+            proxy = "socks5://user:pass@127.0.0.1:1080"
+        "#;
+        parse_config(config).unwrap();
+
+        let config = r#"
+            [remote.egress]
+            proxy = "ftp://127.0.0.1:21"
+        "#;
+        let err = parse_config(config).unwrap_err().to_string();
+        assert!(err.contains("remote.egress.proxy must start"), "{err}");
+
+        let config = r#"
+            [remote.egress]
+            proxy = "http://127.0.0.1:8080"
+            socks5_proxy = "127.0.0.1:1080"
+        "#;
+        let err = parse_config(config).unwrap_err().to_string();
+        assert!(err.contains("proxy or remote.egress.socks5_proxy"), "{err}");
     }
 
     #[test]

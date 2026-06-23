@@ -24,6 +24,18 @@ and release archives that can be installed with a single command.
 | Routing | Linux, macOS, and Windows IPv4 TUN route/DNS takeover |
 | Packaging | Cross-platform full and server-only GitHub Release archives |
 
+Server-side egress can also chain through an upstream proxy:
+
+```toml
+[remote.egress]
+proxy = "socks5://user:pass@127.0.0.1:1080"
+# proxy = "http://user:pass@127.0.0.1:8080"
+# proxy = "https://user:pass@proxy.example.com:8443"
+```
+
+SOCKS4/SOCKS4a, SOCKS5, HTTP CONNECT, and HTTPS CONNECT are supported for TCP
+chaining. UDP chaining requires SOCKS5.
+
 `espejismo-remote` runs on the VPS or server. `espejismo-local` runs on the
 client machine and exposes local SOCKS5/HTTP proxy ports or a native TUN
 interface for system-level IPv4 traffic capture.
