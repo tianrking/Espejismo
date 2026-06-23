@@ -1,0 +1,341 @@
+# Configuration
+
+Espejismo uses one TOML shape for both binaries. You may keep one file and pass
+it to both sides:
+
+```bash
+espejismo-remote --config espejismo.toml
+espejismo-local --config espejismo.toml
+```
+
+The remote binary reads `shared`, `remote`, `logging`, and `admin`. The local
+binary reads `shared`, `local`, `logging`, and `admin`. Unknown sections are not
+needed by that role but are harmless.
+
+## Minimal Server And Client
+
+Use this as the shortest real deployment config:
+
+```toml
+[shared]
+psk = "change-me-to-a-long-random-secret"
+
+[shared.mux]
+mode = "yamux"
+
+[local]
+server = "203.0.113.10:6690"
+socks5_listen = "127.0.0.1:6680"
+http_listen = "127.0.0.1:6681"
+
+[remote]
+listen = "0.0.0.0:6690"
+
+[remote.egress]
+deny_private_ips = true
+allow_ports = [80, 443]
+
+[logging]
+level = "info"
+format = "compact"
+
+[admin]
+listen = "127.0.0.1:9090"
+token = "change-me-admin-token"
+```
+
+On the server, set `remote.listen` to the public bind address and open that TCP
+port in your firewall. On the client, set `local.server` to the public address
+clients can dial.
+
+If `remote.users` is empty, the remote authenticates with `shared.psk`. If
+`remote.users` is configured, each user has its own PSK and the client must use
+the matching PSK in `shared.psk`.
+
+## Full Example
+
+The maintained one-file example is:
+
+```text
+configs/examples/espejismo.toml
+```
+
+Generate the same shape from a binary:
+
+```bash
+espejismo-local --print-example-config > espejismo.toml
+```
+
+Validate before running:
+
+```bash
+espejismo-remote --config espejismo.toml --check-config
+espejismo-local --config espejismo.toml --check-config
+```
+
+## Accepted Config Parameters
+
+### shared
+
+`shared.psk`: Shared secret for single-user mode and local client profiles.
+Minimum length is 16 bytes.
+
+`shared.clock_skew_secs`: Accepted handshake timestamp skew.
+
+`shared.puzzle_bits`: SHA-256 client puzzle difficulty.
+
+`shared.max_padding`: Maximum normal-mode random padding bytes.
+
+`shared.jitter_ms`: Optional send jitter ceiling.
+
+`shared.padding_chance_percent`: Chance to send padding before a data frame.
+
+`shared.backpressure_threshold_ms`: Write latency threshold that disables
+padding temporarily.
+
+`shared.backpressure_cooldown_ms`: Padding cooldown after backpressure.
+
+`shared.tunnel_buffer`: In-process frame transport buffer size.
+
+`shared.idle_timeout_secs`: Idle copy timeout for streams.
+
+`shared.max_streams`: Concurrent logical stream limit.
+
+`shared.max_physical_connections`: Remote physical TCP connection cap.
+
+`shared.key_update_frames`: Frame interval for AEAD traffic-key rotation.
+
+### shared.tcp
+
+`nodelay`: Enable TCP_NODELAY.
+
+`keepalive_secs`: TCP keepalive interval.
+
+`heartbeat_secs`: Encrypted heartbeat interval.
+
+`user_timeout_ms`: Linux TCP_USER_TIMEOUT, 0 disables it.
+
+`send_buffer_bytes` / `recv_buffer_bytes`: Socket buffer sizes, 0 leaves OS
+defaults.
+
+`congestion_control`: Optional OS TCP congestion-control algorithm name.
+
+### shared.mux
+
+`mode`: `yamux` for production, `native` for the in-tree beta mux.
+
+`native_initial_window_bytes`: Native mux per-stream flow-control window.
+
+`native_stream_buffer_frames`: Native mux bounded receive queue.
+
+`native_send_queue_frames`: Native mux bounded send queue.
+
+`native_idle_timeout_secs`: Native mux idle GOAWAY timeout.
+
+`native_drain_timeout_secs`: Native mux GOAWAY drain window.
+
+### shared.pacing
+
+`enabled`: Enable application-level pacing.
+
+`max_bytes_per_sec`: Rate cap. `0` means uncapped.
+
+`burst_bytes`: Uncharged burst budget.
+
+`min_write_bytes`: Minimum pacing write charge.
+
+### shared.obfuscation
+
+`profile`: `low_latency`, `balanced`, `high_entropy`, `bulk`, or `stealth`.
+
+`chunk_policy`: `low_latency`, `balanced`, `bulk`, `stealth`, or `custom`.
+
+`randomize_chunks`: Randomize normal-mode data chunk sizes.
+
+`min_chunk` / `max_chunk`: Custom chunk bounds.
+
+### shared.stealth
+
+`frame_size`: Fixed stealth handshake frame size and fallback data frame size.
+
+`frame_size_candidates`: Optional fixed-size candidate list. When set, each
+authenticated session picks one data frame size deterministically.
+
+`tick_ms`: Base stealth pacing tick.
+
+### local
+
+`server`: Remote endpoint in `host:port` form.
+
+`socks5_listen`: Local SOCKS5 listener, usually `127.0.0.1:6680`.
+
+`http_listen`: Local HTTP proxy listener, usually `127.0.0.1:6681`.
+
+`handshake_padding`: Client hello padding cap.
+
+### local.auth
+
+Optional local proxy authentication:
+
+```toml
+[local.auth]
+username = "local-user"
+password = "local-pass"
+```
+
+When local listeners bind only to localhost, leaving this disabled is usually
+fine for single-user desktop use.
+
+### local.tunnel_pool
+
+`min_connections`: Minimum physical lanes.
+
+`max_connections`: Maximum physical lanes.
+
+`interactive_lanes`: Preferred lanes for interactive streams.
+
+`bulk_lanes`: Preferred lanes for bulk streams.
+
+`max_reconnect_attempts`: Per-open reconnect attempts.
+
+`max_connection_age_secs`: Rotate old physical tunnels for new streams.
+
+### local.tun
+
+`enabled`: Enable native TUN ingress.
+
+`name`: TUN interface name.
+
+`address`: Local TUN IPv4 address.
+
+`prefix`: TUN IPv4 prefix length.
+
+`destination`: Peer/gateway IPv4 address for the TUN interface.
+
+`mtu`: Interface MTU.
+
+### local.tun.route
+
+`enabled`: Install route takeover rules.
+
+`protect_server_route`: Keep direct route to `local.server`.
+
+`dns_enabled`: Apply DNS takeover.
+
+`dns_servers`: DNS servers to apply when DNS takeover is enabled.
+
+### remote
+
+`listen`: Public remote listener.
+
+`handshake_timeout_ms`: Handshake timeout for unauthenticated peers.
+
+`reject_delay_ms`: Silent rejection delay. `0` uses the bounded tarpit.
+
+`max_handshake_padding`: Remote accepted client hello padding cap.
+
+`replay_window_secs`: Replay cache window for client ephemeral keys.
+
+`cold_start_delay_ms`: Delay after successful auth before tunnel startup.
+
+`tarpit_max`: Maximum sockets in silent tarpit.
+
+`tarpit_hold_secs`: Tarpit hold duration.
+
+### remote.fallback_http
+
+`mode`: `silent` or `http_fallback`.
+
+`enabled`: Legacy fallback switch.
+
+`upstream`: Optional fallback upstream endpoint.
+
+`probe_timeout_ms`: HTTP probe peek timeout.
+
+`server`: Built-in fallback `Server` header value.
+
+`body`: Built-in fallback response body.
+
+### remote.users
+
+Optional multi-user credentials:
+
+```toml
+[[remote.users]]
+name = "alice"
+psk = "alice-long-random-secret"
+
+[remote.users.quota]
+bytes = 536870912
+window_secs = 86400
+
+[remote.users.bandwidth]
+bytes_per_sec = 1048576
+```
+
+`quota.bytes` and `bandwidth.bytes_per_sec` are optional.
+
+### remote.egress
+
+`deny_private_ips`: Block private, loopback, link-local, and special egress IPs.
+
+`allow_hosts`: Optional host allowlist. Supports `*.example.com`.
+
+`block_hosts`: Optional host blocklist. Supports `*.example.com`.
+
+`allow_ports`: Optional outbound port allowlist.
+
+`block_ports`: Optional outbound port blocklist.
+
+`socks5_proxy`: Optional no-auth SOCKS5 chain for TCP and UDP egress.
+
+### logging
+
+`level`: Tracing filter such as `info`, `debug`, or module filters.
+
+`format`: `compact`, `pretty`, or `json`.
+
+`file`: Optional log file path.
+
+`ansi`: Enable ANSI color when writing to stderr.
+
+### admin
+
+`listen`: Optional admin HTTP listener.
+
+`token`: Admin bearer token. Required when `admin.listen` is not loopback.
+
+Supported endpoints include `/healthz`, `/status`, `/connections`, `/metrics`,
+`/reload`, and `/apply`.
+
+## Installer Parameters
+
+The release download scripts accept these environment variables:
+
+```bash
+ESPEJISMO_REPO=tianrking/Espejismo
+ESPEJISMO_VERSION=latest
+ESPEJISMO_PACKAGE=full
+ESPEJISMO_INSTALL_DIR=$HOME/.espejismo
+ESPEJISMO_ARCHIVE_URL=https://example.com/espejismo-linux-amd64.tar.gz
+ESPEJISMO_OS=linux
+ESPEJISMO_ARCH=amd64
+```
+
+`ESPEJISMO_PACKAGE` can be `full` or `server`. `ESPEJISMO_OS` and
+`ESPEJISMO_ARCH` are normally auto-detected and are mainly for testing or custom
+packaging mirrors.
+
+Supported release artifact suffixes:
+
+```text
+linux-amd64
+linux-386
+linux-arm64
+linux-armv7
+darwin-arm64
+windows-amd64
+windows-386
+windows-arm64
+```
+

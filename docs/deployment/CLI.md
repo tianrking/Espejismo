@@ -229,6 +229,8 @@ Enable admin with `[admin]` in config or CLI overrides:
 espejismo-remote --config espejismo.toml --admin-listen 127.0.0.1:9090 --admin-token "token"
 ```
 
+`admin.token` is required when `admin.listen` is not a loopback address.
+
 Check release metadata:
 
 ```bash

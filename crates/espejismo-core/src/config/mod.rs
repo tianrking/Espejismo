@@ -62,6 +62,12 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     if let Some(token) = &config.admin.token {
         anyhow::ensure!(!token.is_empty(), "admin.token must not be empty");
     }
+    if let Some(listen) = config.admin.listen {
+        anyhow::ensure!(
+            listen.ip().is_loopback() || config.admin.token.is_some(),
+            "admin.token is required when admin.listen is not loopback"
+        );
+    }
     anyhow::ensure!(
         config.shared.clock_skew_secs > 0,
         "shared.clock_skew_secs must be greater than 0"
@@ -403,6 +409,23 @@ mod tests {
 
         let err = parse_config(config).unwrap_err().to_string();
         assert!(err.contains("dns_servers"));
+    }
+
+    #[test]
+    fn rejects_public_admin_listener_without_token() {
+        let config = r#"
+            [admin]
+            listen = "0.0.0.0:9090"
+        "#;
+
+        let err = parse_config(config).unwrap_err().to_string();
+        assert!(err.contains("admin.token"), "{err}");
+
+        let loopback = r#"
+            [admin]
+            listen = "127.0.0.1:9090"
+        "#;
+        parse_config(loopback).unwrap();
     }
 
     #[test]

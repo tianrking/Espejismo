@@ -103,16 +103,16 @@ jobs:
           cp README.md "dist/${pkg}/"
           cp README_ES.md "dist/${pkg}/"
           cp CHANGELOG.md "dist/${pkg}/"
-          cp docs/ARCHITECTURE.md docs/deployment/ADMIN.md docs/deployment/CLI.md docs/deployment/EGRESS.md docs/deployment/LOGGING.md docs/deployment/PACKAGING.md docs/deployment/PROFILES.md docs/deployment/QUICKSTART.md docs/deployment/TUN.md docs/deployment/UPDATES.md docs/deployment/USERS.md docs/development/STATUS.md docs/testing/TEST_PLAN.md "dist/${pkg}/docs/"
-          cp scripts/setup-windows.ps1 scripts/e2e_smoke.ps1 scripts/stress_smoke.ps1 scripts/install.sh scripts/install.ps1 scripts/install-ubuntu-remote.sh "dist/${pkg}/scripts/"
+          cp docs/ARCHITECTURE.md docs/deployment/ADMIN.md docs/deployment/CLI.md docs/deployment/CONFIG.md docs/deployment/EGRESS.md docs/deployment/LOGGING.md docs/deployment/PACKAGING.md docs/deployment/PROFILES.md docs/deployment/QUICKSTART.md docs/deployment/TUN.md docs/deployment/UPDATES.md docs/deployment/USERS.md docs/development/STATUS.md docs/testing/TEST_PLAN.md "dist/${pkg}/docs/"
+          cp scripts/install.sh scripts/install.ps1 "dist/${pkg}/scripts/"
           tar -C dist -czf "dist/${pkg}.tar.gz" "${pkg}"
 
           mkdir -p "dist/${server_pkg}/bin" "dist/${server_pkg}/configs" "dist/${server_pkg}/docs" "dist/${server_pkg}/scripts"
           cp "target/${{ matrix.target }}/release/espejismo-remote" "dist/${server_pkg}/bin/"
           cp configs/examples/espejismo.toml "dist/${server_pkg}/configs/"
           cp README.md CHANGELOG.md "dist/${server_pkg}/"
-          cp docs/deployment/ADMIN.md docs/deployment/EGRESS.md docs/deployment/LOGGING.md docs/deployment/QUICKSTART.md docs/deployment/USERS.md "dist/${server_pkg}/docs/"
-          cp scripts/install-ubuntu-remote.sh "dist/${server_pkg}/scripts/"
+          cp docs/deployment/ADMIN.md docs/deployment/CONFIG.md docs/deployment/EGRESS.md docs/deployment/LOGGING.md docs/deployment/QUICKSTART.md docs/deployment/USERS.md "dist/${server_pkg}/docs/"
+          cp scripts/install.sh scripts/install.ps1 "dist/${server_pkg}/scripts/"
           tar -C dist -czf "dist/${server_pkg}.tar.gz" "${server_pkg}"
       - name: Package Windows
         if: runner.os == 'Windows'
@@ -144,8 +144,8 @@ jobs:
           Copy-Item "README.md" "dist/$pkg/"
           Copy-Item "README_ES.md" "dist/$pkg/"
           Copy-Item "CHANGELOG.md" "dist/$pkg/"
-          Copy-Item "docs/ARCHITECTURE.md", "docs/deployment/ADMIN.md", "docs/deployment/CLI.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/PACKAGING.md", "docs/deployment/PROFILES.md", "docs/deployment/QUICKSTART.md", "docs/deployment/TUN.md", "docs/deployment/UPDATES.md", "docs/deployment/USERS.md", "docs/development/STATUS.md", "docs/testing/TEST_PLAN.md" "dist/$pkg/docs/"
-          Copy-Item "scripts/setup-windows.ps1", "scripts/e2e_smoke.ps1", "scripts/stress_smoke.ps1", "scripts/install.sh", "scripts/install.ps1", "scripts/install-ubuntu-remote.sh" "dist/$pkg/scripts/"
+          Copy-Item "docs/ARCHITECTURE.md", "docs/deployment/ADMIN.md", "docs/deployment/CLI.md", "docs/deployment/CONFIG.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/PACKAGING.md", "docs/deployment/PROFILES.md", "docs/deployment/QUICKSTART.md", "docs/deployment/TUN.md", "docs/deployment/UPDATES.md", "docs/deployment/USERS.md", "docs/development/STATUS.md", "docs/testing/TEST_PLAN.md" "dist/$pkg/docs/"
+          Copy-Item "scripts/install.sh", "scripts/install.ps1" "dist/$pkg/scripts/"
           if (!(Test-Path "dist/$pkg/bin/wintun.dll")) {
             throw "packaging error: dist/$pkg/bin/wintun.dll missing"
           }
@@ -155,8 +155,8 @@ jobs:
           Copy-Item "target/${{ matrix.target }}/release/espejismo-remote.exe" "dist/$serverPkg/bin/"
           Copy-Item "configs/examples/espejismo.toml" "dist/$serverPkg/configs/"
           Copy-Item "README.md", "CHANGELOG.md" "dist/$serverPkg/"
-          Copy-Item "docs/deployment/ADMIN.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/QUICKSTART.md", "docs/deployment/USERS.md" "dist/$serverPkg/docs/"
-          Copy-Item "scripts/install-ubuntu-remote.sh" "dist/$serverPkg/scripts/"
+          Copy-Item "docs/deployment/ADMIN.md", "docs/deployment/CONFIG.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/QUICKSTART.md", "docs/deployment/USERS.md" "dist/$serverPkg/docs/"
+          Copy-Item "scripts/install.sh", "scripts/install.ps1" "dist/$serverPkg/scripts/"
           Compress-Archive -Path "dist/$serverPkg" -DestinationPath "dist/$serverPkg.zip" -Force
       - name: Upload artifact
         uses: actions/upload-artifact@v4

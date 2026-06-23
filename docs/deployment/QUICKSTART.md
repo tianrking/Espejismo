@@ -1,18 +1,15 @@
 # Deployment Quickstart
 
-This guide covers the normal production shape:
+This quickstart uses release packages and one TOML config file. The installer
+downloads and extracts binaries only; it does not create services or edit system
+network settings.
 
-1. Install `espejismo-remote` on an Ubuntu server.
-2. Run `espejismo-local` on your own machine.
-3. Point local applications at `127.0.0.1:6680` for SOCKS5 or
-   `127.0.0.1:6681` for HTTP proxy.
+## Download
 
-## Guided Cross-Platform Install
-
-Linux/macOS:
+Linux/macOS, or Windows Git Bash:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh | sh
 ```
 
 Windows PowerShell:
@@ -21,485 +18,104 @@ Windows PowerShell:
 iwr -useb https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.ps1 | iex
 ```
 
-The guided installer asks whether this machine is `local` or `remote`, downloads
-the latest matching release package, generates a random PSK/admin token when not
-provided, writes config, starts the selected role, and prints management and
-connection commands.
-Local SOCKS5/HTTP proxy authentication is disabled by default for localhost-only
-browser use.
-
-When the installer is run non-interactively, root Linux defaults to `remote`
-because that is the normal server setup path. Non-root Linux/macOS defaults to
-`local`. Set `ESPEJISMO_ROLE=local` or `ESPEJISMO_ROLE=remote` to make the role
-explicit.
-
-All binary downloads come from GitHub Releases. With the default
-`ESPEJISMO_VERSION=latest`, installers resolve the current platform and fetch
-the matching artifact. Remote/server installs prefer the server-only package:
-
-```text
-https://github.com/tianrking/Espejismo/releases/latest/download/espejismo-server-<platform>-<arch>.tar.gz
-https://github.com/tianrking/Espejismo/releases/latest/download/espejismo-<platform>-<arch>.tar.gz
-https://github.com/tianrking/Espejismo/releases/latest/download/espejismo-windows-<arch>.zip
-```
-
-Supported full release artifact names are `linux-amd64`, `linux-386`,
-`linux-arm64`, `linux-armv7`, `darwin-arm64`, `windows-amd64`, `windows-386`,
-and `windows-arm64`. Server-only artifacts add the `espejismo-server-` prefix,
-for example `espejismo-server-linux-amd64.tar.gz`.
-
-Non-interactive local install:
+Server-only package:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh \
-  | ESPEJISMO_ROLE=local ESPEJISMO_SERVER=203.0.113.10:6690 bash
-```
-
-Non-interactive remote install:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh \
-  | sudo ESPEJISMO_ROLE=remote ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690 bash
-```
-
-Root Linux server shortcut:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh | sudo bash
-```
-
-On remote installs, the script builds the client endpoint like this:
-
-1. Use `ESPEJISMO_PUBLIC_ENDPOINT=host:port` when provided.
-2. Otherwise use `ESPEJISMO_PUBLIC_HOST=host` plus the port from
-   `ESPEJISMO_LISTEN`.
-3. Otherwise try to detect the public IP with HTTPS IP-check services.
-
-`ESPEJISMO_LISTEN=0.0.0.0:6690` is the server bind address. Do not use
-`0.0.0.0` as `ESPEJISMO_PUBLIC_ENDPOINT`; the installer rejects it because
-clients cannot dial it.
-
-Useful shared knobs:
-
-```bash
-ESPEJISMO_PSK='use-existing-shared-secret'
-ESPEJISMO_LISTEN=0.0.0.0:6690
-ESPEJISMO_PUBLIC_HOST=203.0.113.10
-ESPEJISMO_SERVER=203.0.113.10:6690
-ESPEJISMO_SOCKS5_LISTEN=127.0.0.1:6680
-ESPEJISMO_HTTP_LISTEN=127.0.0.1:6681
-ESPEJISMO_LOCAL_AUTH_PASSWORD='optional-local-proxy-password'
-ESPEJISMO_VERSION=v0.0.9
-ESPEJISMO_INSTALL_DIR=/opt/espejismo
-```
-
-Management after install:
-
-```bash
-~/.espejismo/espejismoctl status
-~/.espejismo/espejismoctl logs
-~/.espejismo/espejismoctl edit
-~/.espejismo/espejismoctl show-config
-~/.espejismo/espejismoctl reload
-~/.espejismo/espejismoctl restart
-~/.espejismo/espejismoctl connect
-```
-
-Root Linux remote installs additionally create a systemd service and link
-`/usr/local/bin/espejismoctl` and `/usr/local/bin/espejismoctl-remote`, so the
-server can be managed with commands such as `espejismoctl status`,
-`espejismoctl show-config`, `espejismoctl edit`, `espejismoctl start`,
-`espejismoctl stop`, and `espejismoctl restart`.
-
-Re-running the installer rewrites config and restarts the selected role so the
-printed credentials match the running service immediately.
-
-Guided installers write role-specific configs. A remote install writes only
-server-owned sections (`shared`, `logging`, `admin`, `remote`) to the server
-config file; client-only `local` settings are generated only inside the printed
-client import profile. A local install writes only the local client sections.
-
-## Installed Files
-
-Guided Linux/macOS local installs default to `~/.espejismo`:
-
-```text
-~/.espejismo/bin/espejismo-local       Local client binary
-~/.espejismo/config/espejismo.toml     Active config
-~/.espejismo/config/espejismo-*.log    Local log file when not using systemd
-~/.espejismo/espejismoctl              Manager command
-```
-
-Root remote Linux installs default to `/opt/espejismo` and also create:
-
-```text
-/opt/espejismo/bin/espejismo-remote    Remote server binary
-/opt/espejismo/config/espejismo.toml   Active server config
-/opt/espejismo/espejismoctl            Manager command
-/etc/systemd/system/espejismo-remote.service
-/usr/local/bin/espejismoctl
-/usr/local/bin/espejismoctl-remote
-```
-
-Windows guided installs default to:
-
-```text
-%LOCALAPPDATA%\Espejismo\bin\espejismo-local.exe
-%LOCALAPPDATA%\Espejismo\bin\espejismo-remote.exe
-%LOCALAPPDATA%\Espejismo\config\espejismo.toml
-%LOCALAPPDATA%\Espejismo\espejismoctl.ps1
-```
-
-## Manager Commands
-
-The generated manager command wraps daily operations:
-
-```bash
-espejismoctl status    # process state plus admin /status when available
-espejismoctl start     # start the selected local or remote role
-espejismoctl stop      # stop the selected role
-espejismoctl restart   # stop then start
-espejismoctl logs      # follow log output
-espejismoctl edit      # open active TOML config in $EDITOR or vi
-espejismoctl reload    # POST /reload to apply runtime-safe config changes
-espejismoctl apply     # POST the active config to /apply when supported
-espejismoctl check-config # validate the active config
-espejismoctl profile   # print an espejismo://import/... client profile
-espejismoctl connect   # print browser/app proxy settings and test commands
-espejismoctl config    # print the active config path
-espejismoctl show-config # print the active config contents
-```
-
-On Windows:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Espejismo\espejismoctl.ps1" status
-powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Espejismo\espejismoctl.ps1" edit
-powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Espejismo\espejismoctl.ps1" restart
-powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\Espejismo\espejismoctl.ps1" connect
-```
-
-After editing config, use `reload` for runtime-safe changes such as server,
-auth, pacing, mux mode, users, quotas, and egress policy. Use `restart` for
-listener changes, log file changes, TUN ownership, or anything that changes
-process-owned resources.
-
-For a local client install, `connect` prints exactly what to put into a browser
-or app:
-
-```text
-SOCKS5: 127.0.0.1:6680
-HTTP:   127.0.0.1:6681
-Proxy auth: disabled
-```
-
-It also prints ready-to-run curl tests:
-
-```bash
-curl --socks5-hostname 127.0.0.1:6680 https://ifconfig.me
-curl -x http://127.0.0.1:6681 https://ifconfig.me
-```
-
-For a remote install, `connect` prints the `espejismo://import/...` profile and
-the one-line client start command.
-
-To enable optional local proxy authentication, set
-`ESPEJISMO_LOCAL_AUTH_PASSWORD` on guided local installs or
-`ESPEJISMO_CLIENT_AUTH_PASSWORD` on remote installs that generate a client
-profile.
-
-## Ubuntu Remote One-Liner
-
-Install the remote endpoint with one command:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install-ubuntu-remote.sh \
-  | sudo bash
-```
-
-You do not need to clone the repository or save an installer file. The command
-above streams the bootstrap, downloads the latest matching server package, writes
-the server config, starts systemd, and leaves `espejismoctl` on the server for
-daily operations.
-
-The installer prints a single `espejismo://import/...` client profile. Keep it
-private. It contains the remote address, PSK, local proxy listeners, and local
-proxy credentials. By default the installer downloads the latest release from
-`tianrking/Espejismo`, preferring the latest matching
-`espejismo-server-linux-<arch>.tar.gz` package, generates a random PSK, writes a
-production config, and starts the systemd service. If no public endpoint is
-provided, it attempts to detect this server's public IP and uses the port from
-`ESPEJISMO_LISTEN`.
-
-For a ready-to-use client profile, pass the public endpoint that clients should
-connect to:
-
-```bash
-curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690 bash
+  | ESPEJISMO_PACKAGE=server sh
 ```
 
 Pinned release:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_VERSION=v0.0.9 bash
+curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh \
+  | ESPEJISMO_VERSION=v0.0.9 sh
 ```
 
-Custom archive URL, useful for private releases or self-hosted packages:
+## Configure
+
+Edit the extracted example:
 
 ```bash
-curl -fsSL https://example.com/install-ubuntu-remote.sh \
-  | sudo ESPEJISMO_ARCHIVE_URL=https://example.com/espejismo-server-linux-amd64.tar.gz bash
+cp ~/.espejismo/configs/espejismo.toml ./espejismo.toml
 ```
 
-The installer downloads `espejismo-server-linux-amd64.tar.gz` on amd64 servers,
-installs only `espejismo-remote` into `/usr/local/bin`, writes
-`/etc/espejismo/espejismo.toml`, creates an `espejismo` system user, installs a
-systemd unit, creates `/usr/local/bin/espejismoctl`, and starts
-`espejismo-remote`.
+Set at least:
 
-Useful install-time variables:
+```toml
+[shared]
+psk = "change-me-to-a-long-random-secret"
+
+[local]
+server = "YOUR_SERVER_IP_OR_DOMAIN:6690"
+socks5_listen = "127.0.0.1:6680"
+http_listen = "127.0.0.1:6681"
+
+[remote]
+listen = "0.0.0.0:6690"
+```
+
+Recommended remote egress guard:
+
+```toml
+[remote.egress]
+deny_private_ips = true
+allow_ports = [80, 443]
+```
+
+Full parameter reference: [CONFIG.md](CONFIG.md).
+
+## Run Server
 
 ```bash
-ESPEJISMO_LISTEN=0.0.0.0:6690
-ESPEJISMO_PUBLIC_ENDPOINT=203.0.113.10:6690
-ESPEJISMO_PUBLIC_HOST=203.0.113.10
-# PUBLIC_HOST uses the port from ESPEJISMO_LISTEN.
-ESPEJISMO_PSK='use-a-long-random-secret'
-ESPEJISMO_CLIENT_SOCKS5_LISTEN=127.0.0.1:6680
-ESPEJISMO_CLIENT_HTTP_LISTEN=127.0.0.1:6681
-ESPEJISMO_CLIENT_AUTH_USER=local-user
-ESPEJISMO_CLIENT_AUTH_PASSWORD='optional-local-proxy-password'
-ESPEJISMO_ADMIN_LISTEN=127.0.0.1:9090
-ESPEJISMO_ADMIN_TOKEN='use-a-long-random-admin-token'
-ESPEJISMO_DENY_PRIVATE_IPS=true
-ESPEJISMO_ALLOW_PORTS=80,443
-ESPEJISMO_BLOCK_PORTS=25
-ESPEJISMO_MAX_STREAMS=256
-ESPEJISMO_MAX_PHYSICAL_CONNECTIONS=1024
-ESPEJISMO_KEY_UPDATE_FRAMES=16384
-ESPEJISMO_IDLE_TIMEOUT_SECS=300
-ESPEJISMO_TCP_NODELAY=true
-ESPEJISMO_TCP_KEEPALIVE_SECS=30
-ESPEJISMO_TCP_HEARTBEAT_SECS=30
-ESPEJISMO_TCP_USER_TIMEOUT_MS=30000
-ESPEJISMO_MUX_MODE=yamux
-ESPEJISMO_NATIVE_MUX_INITIAL_WINDOW_BYTES=1048576
-ESPEJISMO_NATIVE_MUX_STREAM_BUFFER_FRAMES=128
-ESPEJISMO_NATIVE_MUX_IDLE_TIMEOUT_SECS=300
-ESPEJISMO_PACING_ENABLED=true
-ESPEJISMO_PACING_MAX_BYTES_PER_SEC=0
-ESPEJISMO_PACING_BURST_BYTES=65536
-ESPEJISMO_PACING_MIN_WRITE_BYTES=1024
-ESPEJISMO_OBFUSCATION_PROFILE=balanced
-ESPEJISMO_RANDOMIZE_CHUNKS=true
-ESPEJISMO_MIN_CHUNK=1024
-ESPEJISMO_MAX_CHUNK=16384
-ESPEJISMO_STEALTH_FRAME_SIZE=4096
-ESPEJISMO_STEALTH_TICK_MS=50
-ESPEJISMO_CLIENT_TUNNEL_POOL_MIN_CONNECTIONS=1
-ESPEJISMO_CLIENT_TUNNEL_POOL_MAX_CONNECTIONS=4
-ESPEJISMO_CLIENT_TUNNEL_POOL_INTERACTIVE_LANES=1
-ESPEJISMO_CLIENT_TUNNEL_POOL_BULK_LANES=2
-ESPEJISMO_CLIENT_TUNNEL_POOL_MAX_RECONNECT_ATTEMPTS=3
-ESPEJISMO_OPEN_UFW=1
+~/.espejismo/bin/espejismo-remote --config ./espejismo.toml
 ```
 
-Inspect the service:
-
-```bash
-systemctl status espejismo-remote --no-pager
-journalctl -u espejismo-remote -f
-```
-
-## Direct Binary Start
-
-Downloaded release archives can run without Rust or Cargo.
-
-Remote server, Linux/macOS:
-
-```bash
-ESPEJISMO_PSK='change-me-long-random-secret' \
-./bin/espejismo-remote --listen 0.0.0.0:6690
-```
-
-Local client, Linux/macOS:
-
-```bash
-ESPEJISMO_PSK='change-me-long-random-secret' \
-./bin/espejismo-local \
-  --server remote.example.com:6690 \
-  --socks5-listen 127.0.0.1:6680 \
-  --http-listen 127.0.0.1:6681
-```
-
-Remote server, Windows PowerShell:
+Windows:
 
 ```powershell
-$env:ESPEJISMO_PSK = "change-me-long-random-secret"
-.\bin\espejismo-remote.exe --listen 0.0.0.0:6690
+& "$env:LOCALAPPDATA\Espejismo\bin\espejismo-remote.exe" --config .\espejismo.toml
 ```
 
-Local client, Windows PowerShell:
+## Run Client
+
+```bash
+~/.espejismo/bin/espejismo-local --config ./espejismo.toml
+```
+
+Windows:
 
 ```powershell
-$env:ESPEJISMO_PSK = "change-me-long-random-secret"
-.\bin\espejismo-local.exe --server remote.example.com:6690 --socks5-listen 127.0.0.1:6680 --http-listen 127.0.0.1:6681
+& "$env:LOCALAPPDATA\Espejismo\bin\espejismo-local.exe" --config .\espejismo.toml
 ```
 
-For production deployments, use `--config`, `--config-base64`, or
-`espejismo://import/...` profiles so secrets are not kept in shell history.
-
-## Windows Local Client
-
-Download the Windows release archive, extract it, and run the setup helper from
-PowerShell:
-
-```powershell
-.\scripts\setup-windows.ps1 `
-  -Mode local `
-  -ProfileUrl "espejismo://import/..."
-```
-
-The script writes `configs\espejismo-local.toml` and starts
-`bin\espejismo-local.exe`. Applications can then use:
+Point applications at:
 
 ```text
-SOCKS5:     127.0.0.1:6680
-HTTP proxy: 127.0.0.1:6681
+SOCKS5: 127.0.0.1:6680
+HTTP:   127.0.0.1:6681
 ```
 
-For TUN mode on Windows, run from an elevated PowerShell and ensure the
-Wintun runtime (`wintun.dll`) is available to `bin\espejismo-local.exe`.
-Official release ZIP packages include this DLL under `bin\wintun.dll`.
-If startup fails with `LoadLibraryExW failed ... (os error 126)`, see
-`docs/deployment/TUN.md` -> **Windows TUN Troubleshooting**.
-
-Generate config without starting:
-
-```powershell
-.\scripts\setup-windows.ps1 `
-  -Mode local `
-  -ProfileUrl "espejismo://import/..." `
-  -NoStart `
-  -PrintCommand
-```
-
-Generate and start local TUN mode directly (Administrator PowerShell):
-
-```powershell
-.\scripts\setup-windows.ps1 `
-  -Mode local `
-  -ProfileUrl "espejismo://import/..." `
-  -TunEnabled `
-  -TunAutoRoute `
-  -TunAutoDns `
-  -TunDns "1.1.1.1,8.8.8.8"
-```
-
-If `wintun.dll` is missing, `setup-windows.ps1` now fails early with the exact
-expected paths before trying to start TUN mode.
-
-## Windows Remote Server
-
-Windows can also run the remote endpoint directly:
-
-```powershell
-.\scripts\setup-windows.ps1 `
-  -Mode remote `
-  -RemoteListen "0.0.0.0:6690" `
-  -Psk "use-a-long-random-secret" `
-  -AdminListen "127.0.0.1:9090"
-```
-
-Open the selected TCP listen port in Windows Firewall if the remote endpoint
-must accept connections from other machines.
-
-## Configuration Model
-
-Both binaries read the same TOML shape. The remote uses `[shared]`,
-`[logging]`, `[admin]`, and `[remote]`. The local client uses `[shared]`,
-`[logging]`, `[admin]`, and `[local]`.
-
-The most important knobs are:
-
-- `shared.psk`: shared secret. Keep it private.
-- `shared.max_streams`: concurrent logical stream limit per physical tunnel.
-- `shared.max_physical_connections`: concurrent physical TCP connection cap on
-  the remote before new peers are dropped.
-- `shared.idle_timeout_secs`: idle stream timeout.
-- `shared.mux.mode`: logical stream multiplexer. Keep `yamux` for production
-  stability; use `native` for the in-tree beta mux test path.
-- `shared.mux.native_initial_window_bytes`: native mux send window per stream.
-- `shared.mux.native_stream_buffer_frames`: native mux bounded receive queue per
-  stream.
-- `shared.mux.native_send_queue_frames`: native mux bounded sender queue per
-  stream before local writes apply backpressure.
-- `shared.mux.native_idle_timeout_secs`: idle native mux session timeout before
-  GOAWAY.
-- `shared.mux.native_drain_timeout_secs`: graceful GOAWAY drain window for
-  existing streams.
-- `local.tunnel_pool.max_reconnect_attempts`: per-request reconnect attempts
-  before returning an explicit local proxy error.
-- `local.tunnel_pool.max_connection_age_secs`: maximum physical tunnel age
-  before new streams rotate to a fresh X25519/HKDF session.
-- `shared.obfuscation.profile`: sender-side traffic shape. Use `low_latency`,
-  `balanced`, `high_entropy`, `bulk`, or `stealth`.
-- `shared.obfuscation.chunk_policy`: adaptive data chunk sizing. Use
-  `low_latency` for 2-8 KiB chunks, `balanced` for 4-16 KiB chunks, `bulk` for
-  large chunks capped just below 64 KiB to leave room for frame metadata and the
-  AEAD tag, `stealth` for fixed stealth capacity, or `custom` to honor
-  `min_chunk` / `max_chunk` within that payload cap.
-- `shared.stealth.frame_size` / `shared.stealth.tick_ms`: stealth handshake
-  wrapper size and base pacing when `profile = "stealth"`.
-- `shared.stealth.frame_size_candidates`: optional per-session fixed-size set
-  for stealth data frames. When present, each authenticated session picks one
-  deterministic candidate from this list; when empty, transport uses
-  `shared.stealth.frame_size`.
-- Stealth transport starts with a short random padding warmup, sends data or
-  padding on a paced cadence, and slows idle padding toward heartbeat-like
-  intervals.
-- `local.server`: remote server address.
-- `local.tunnel_pool`: number of physical TCP tunnel lanes and their
-  interactive/bulk split. New streams are assigned by priority and lane health.
-- `local.socks5_listen`: local SOCKS5 listener.
-- `local.http_listen`: local HTTP proxy listener.
-- `remote.listen`: remote public listener.
-- `remote.fallback_http.mode`: use `silent` for quiet handling, or
-  `http_fallback` to route common HTTP probe prefixes to fallback.
-- `remote.fallback_http.upstream`: optional local TCP endpoint (for example
-  `127.0.0.1:8080`) that receives fallback probe traffic.
-- `remote.egress.deny_private_ips`: block private, loopback, link-local, and
-  special egress targets.
-- `remote.egress.allow_ports` / `block_ports`: outbound port policy.
-- `remote.users`: optional multi-user credentials. Each user can have an
-  independent PSK, rolling byte quota, and aggregate bandwidth limit.
-- `remote.egress.socks5_proxy`: optional no-auth SOCKS5 chain for TCP and UDP
-  egress.
-
-Config exchange:
+## Validate
 
 ```bash
-espejismo-local --config espejismo.toml --print-config-base64
-espejismo-local --decode-config-base64 "BASE64_CONFIG"
-espejismo-local --config espejismo.toml --print-client-profile --profile-name laptop
-espejismo-local --import-profile "espejismo://import/..." --print-config > client.toml
-espejismo-local --import-profile "espejismo://import/..." --write-config client.toml
+~/.espejismo/bin/espejismo-remote --config ./espejismo.toml --check-config
+~/.espejismo/bin/espejismo-local --config ./espejismo.toml --check-config
+~/.espejismo/bin/espejismo-local --config ./espejismo.toml --probe-server
 ```
 
-Use `--print-client-profile` for TOML-to-profile and `--print-config` or
-`--write-config` for profile-to-TOML. The same `--print-config` and
-`--write-config` flags also work with normal TOML/base64 configs after CLI
-overrides have been applied.
+## Admin
 
-Remote runtime apply:
+Bind admin to loopback unless you have a strong reason to expose it:
+
+```toml
+[admin]
+listen = "127.0.0.1:9090"
+token = "change-me-admin-token"
+```
+
+Public admin listeners require `admin.token`.
 
 ```bash
-curl -X POST -H "Authorization: Bearer $ESPEJISMO_ADMIN_TOKEN" \
-  --data-binary @/etc/espejismo/espejismo.toml \
-  http://127.0.0.1:9090/apply
+curl -H "Authorization: Bearer change-me-admin-token" http://127.0.0.1:9090/status
 ```
-
-The generated profile/config contains secret material. Do not paste it into
-logs, issue trackers, chat, or shell history on shared systems.

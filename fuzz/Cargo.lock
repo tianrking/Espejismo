@@ -244,7 +244,7 @@ dependencies = [
 
 [[package]]
 name = "espejismo-core"
-version = "0.0.4"
+version = "0.0.9"
 dependencies = [
  "anyhow",
  "base64",
@@ -269,6 +269,7 @@ dependencies = [
  "tracing-subscriber",
  "ureq",
  "x25519-dalek",
+ "zeroize",
 ]
 
 [[package]]

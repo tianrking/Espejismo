@@ -1,148 +1,74 @@
-# Espejismo Test Plan
+# Test Plan
 
-## Goals
+The repository keeps automated checks focused on code and protocol correctness.
+Release artifact construction lives in GitHub Actions.
 
-The test suite must prove that Espejismo works as a real proxy, not merely as a
-set of compiling protocol primitives.
-
-The core end-to-end invariant is:
-
-1. A client application sends a request to `espejismo-local`.
-2. `espejismo-local` opens a mux stream over the encrypted physical tunnel.
-3. `espejismo-remote` receives the logical stream and opens the requested
-   outbound TCP connection.
-4. The outbound service receives the exact request identity.
-5. The service response travels back through `espejismo-remote`,
-   `espejismo-local`, and finally to the client application.
-
-## Automated Checks
-
-Run:
+## Required Checks
 
 ```bash
 cargo fmt --all --check
 cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo check --workspace --all-targets --locked
 cargo test --workspace --all-targets
-cargo check --manifest-path fuzz/Cargo.toml --bins
-./scripts/e2e_smoke.sh
-REQUESTS=200 CONCURRENCY=32 ./scripts/stress_smoke.sh
-MUX_MODE=native ./scripts/e2e_smoke.sh
-OUT=target/mux-benchmark.json ./scripts/benchmark_mux.sh
-./scripts/package-release.sh
+cargo check --manifest-path fuzz/Cargo.toml
 ```
 
-On Windows, use:
+CI runs the Rust checks on Linux, macOS, and Windows, and also builds release
+binaries for native Linux amd64, macOS arm64, and Windows amd64. The release
+workflow builds the complete published artifact matrix.
 
-```powershell
-.\scripts\e2e_smoke.ps1
-.\scripts\stress_smoke.ps1 -Requests 200 -Concurrency 16
-.\scripts\package-release.ps1
+## Manual Smoke Path
+
+Use two terminals and one config file:
+
+```bash
+cargo run --bin espejismo-remote -- --config ./espejismo.toml
+cargo run --bin espejismo-local -- --config ./espejismo.toml
 ```
 
-## End-to-End Probe
+Then test the local proxies:
 
-`scripts/e2e_smoke.sh` starts four processes:
+```bash
+curl --socks5-hostname 127.0.0.1:6680 https://example.com/
+curl -x http://127.0.0.1:6681 https://example.com/
+```
 
-- `scripts/probe_http_server.py`: deterministic HTTP fixture.
-- `espejismo-remote`: remote tunnel endpoint loaded from base64 TOML.
-- `espejismo-local`: local proxy endpoint loaded from file TOML.
-- `curl`: client probe.
+For a remote handshake-only check:
 
-The probe sends a unique token through these paths:
+```bash
+cargo run --bin espejismo-local -- --config ./espejismo.toml --probe-server
+```
 
-- Authenticated SOCKS5 GET
-- Sequential SOCKS5 GET requests with `max_streams = 2`, which proves the
-  remote stream limit is concurrent rather than lifetime-cumulative.
-- Authenticated SOCKS5 POST with body echo
-- Authenticated SOCKS5 UDP ASSOCIATE datagram relay
-- Authenticated HTTP proxy absolute-form GET
-- Authenticated HTTP CONNECT tunnel
-- HTTP proxy authentication rejection
-- Config-to-base64 and base64-to-config CLI conversion for both binaries
-- Update-check CLI path with a deterministic local release metadata fixture
-- Config doctor checks for TUN route/DNS readiness and low-feature profile
-  warnings
-- JSON logging configuration during process startup
-- Admin health/status/metrics endpoint checks
-- Admin `/apply` hot reload, verified by changing remote egress policy at
-  runtime and checking that a new proxy request is rejected
-- Egress allow-port policy in the remote test config
-- Per-user metrics labels in remote metrics
-- Profile URL export/import smoke check
-
-## TCP Stress Probe
-
-`scripts/stress_smoke.sh` and `scripts/stress_smoke.ps1` exercise the TCP-first
-performance path after the basic e2e probe passes:
-
-- One download-like stream through SOCKS5.
-- Many small requests with configurable concurrency.
-- Mixed SOCKS5 and HTTP proxy requests so interactive and bulk lanes are both
-  used.
-- Remote endpoint restart followed by new request recovery.
-- Optional soak loop. On Unix-like hosts, set `SOAK_SECS=1800` for a 30-minute
-  run.
-- Native mux beta coverage. Set `MUX_MODE=native` on the e2e or stress scripts
-  to run the same proxy checks through the in-tree mux instead of yamux.
-  Unit tests also cover native max-stream enforcement, idle session GOAWAY, and
-  byte-window write blocking until the remote reader releases window.
-- `scripts/benchmark_mux.sh` emits fixed JSON for yamux/native one-stream,
-  32-small-request, mixed bulk/interactive, and session-rotation scenarios.
-
-The fixture returns JSON containing method, path, probe header, and request
-body. The script checks that the returned JSON contains the expected token,
-path, and body. This proves both directions of the proxy path are working.
-
-## Security/Protocol Unit Tests
+## Unit Coverage
 
 Current unit tests cover:
 
-- Variable-length authenticated handshake completion.
-- Multi-user plain and stealth handshake selection.
-- Mismatched mux mode/capability rejection during authenticated handshake.
-- Frame-level KEY_UPDATE roundtrip across traffic-key rotation.
-- Stealth handshake completion and fixed-size frame roundtrip behavior.
-- Client puzzle solving and verification.
-- Replay cache duplicate rejection.
-- Replay cache expiry.
-- UDP underlay packet codec.
-- UDP underlay cumulative ACK and retransmission scheduling.
-- UDP underlay congestion growth and loss backoff.
-- Per-user quota and bandwidth limiter behavior.
-- Update metadata version comparison.
-- SOCKS5 UDP ASSOCIATE packet wrapping for chained UDP egress.
-- Admin authorization and request length parsing.
-- Configuration validation for TUN, DNS route, and duplicate users.
-- Local `--probe-server` TCP plus handshake probe path.
-- Doctor diagnostics for TUN IPv4 auto-route constraints and Windows IPv4 DNS
-  inputs.
-- Local SOCKS5 UDP parser boundary cases.
-- Transport idle timeout behavior.
+- Variable and stealth handshake completion.
+- Multi-user handshake selection.
+- Mux capability mismatch rejection.
+- Tunnel request wire format.
+- Frame encryption, stealth frames, and key update rotation.
+- Puzzle verification and replay cache behavior.
+- SOCKS5 UDP packet parsing.
+- Native mux queues, flow control, GOAWAY, PING, and error paths.
+- UDP underlay packet codec and reliability primitives.
+- Config validation, including public admin listener token requirements.
+- Egress policy host, port, and private IP rules.
+- Admin authorization and bounded request parsing.
 
 ## Fuzz Targets
 
-The `fuzz/` crate is intentionally excluded from the main workspace so normal
-CI and release builds stay deterministic. Install `cargo-fuzz`, then run:
+The `fuzz/` crate is outside the main workspace.
 
 ```bash
+cargo install cargo-fuzz
 cargo fuzz run socks5_udp_packet
 cargo fuzz run config_toml
 ```
-
-The current targets cover the SOCKS5 UDP packet parser and TOML configuration
-parser/validator.
-
-## Regression Areas
-
-When changing frame encoding, handshake layout, mux integration, HTTP/SOCKS5
-ingress, or configuration loading, always run the full automated check list.
 
 ## Not Covered Yet
 
 - Multi-hour soak tests.
 - Cross-platform packet-loss simulation.
 - Production UDP physical-underlay socket integration.
-- Multi-packet UDP underlay packet-loss simulation.
 - Live physical tunnel migration.
 - Browser/WASM transport behavior.

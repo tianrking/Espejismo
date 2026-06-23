@@ -40,6 +40,7 @@ retention.
 
 ## Test Real Paths
 
-Every major feature must be backed by an executable check. The main e2e test
-uses unique request tokens so a passing result proves real client-to-remote and
-remote-to-client data flow.
+Every major feature should be backed by an executable check. Unit tests cover
+the protocol pieces today; end-to-end and chaos tests should be rebuilt as
+dedicated CI jobs or external harnesses instead of living as ad hoc release
+scripts.

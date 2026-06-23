@@ -4,12 +4,17 @@
 
 ### Changed
 
-- Linux remote installs now install only the `espejismo-remote` server binary
-  and expose `/usr/local/bin/espejismoctl` for status, config viewing/editing,
-  reload/apply, start, stop, restart, logs, and client profile output.
-- Release packaging now publishes `espejismo-server-<platform>-<arch>` artifacts
-  for one-line server installs, and Linux remote installers prefer those
-  server-only packages.
+- Installer scripts have been reduced to thin release-package downloaders:
+  `scripts/install.sh` for Linux/macOS/Git Bash and `scripts/install.ps1` for
+  Windows PowerShell.
+- Release packages now include only the binaries, example config, docs, and the
+  two download installers.
+- Tunnel request wire format now matches the protocol specification:
+  command, priority, authority, and optional UDP payload.
+
+### Fixed
+
+- Public admin listeners now require `admin.token` at config validation time.
 
 ## v0.0.9
 

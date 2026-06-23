@@ -1,706 +1,127 @@
-#!/usr/bin/env bash
-set -euo pipefail
-trap 'echo "Espejismo installer failed near line ${LINENO}. Re-run with: curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh -o /tmp/espejismo-install.sh && bash -x /tmp/espejismo-install.sh" >&2' ERR
+#!/usr/bin/env sh
+set -eu
 
-REPO="${ESPEJISMO_REPO:-tianrking/Espejismo}"
-VERSION="${ESPEJISMO_VERSION:-latest}"
-ARCHIVE_URL="${ESPEJISMO_ARCHIVE_URL:-}"
-ROLE="${ESPEJISMO_ROLE:-}"
-INSTALL_DIR="${ESPEJISMO_INSTALL_DIR:-}"
-CONFIG_DIR="${ESPEJISMO_CONFIG_DIR:-}"
-SERVICE_NAME="${ESPEJISMO_SERVICE_NAME:-espejismo}"
-START_NOW="${ESPEJISMO_START:-1}"
-INSTALL_TMPDIR=""
-ADMIN_TOKEN="${ESPEJISMO_ADMIN_TOKEN:-}"
-PSK="${ESPEJISMO_PSK:-}"
-SERVER="${ESPEJISMO_SERVER:-}"
-LISTEN="${ESPEJISMO_LISTEN:-0.0.0.0:6690}"
-PUBLIC_ENDPOINT="${ESPEJISMO_PUBLIC_ENDPOINT:-}"
-PUBLIC_HOST="${ESPEJISMO_PUBLIC_HOST:-}"
-SOCKS5_LISTEN="${ESPEJISMO_SOCKS5_LISTEN:-127.0.0.1:6680}"
-HTTP_LISTEN="${ESPEJISMO_HTTP_LISTEN:-127.0.0.1:6681}"
-ADMIN_LISTEN="${ESPEJISMO_ADMIN_LISTEN:-}"
-LOCAL_USER="${ESPEJISMO_LOCAL_AUTH_USER:-local-user}"
-LOCAL_PASSWORD="${ESPEJISMO_LOCAL_AUTH_PASSWORD:-}"
-PROFILE="${ESPEJISMO_PROFILE:-balanced}"
+repo="${ESPEJISMO_REPO:-tianrking/Espejismo}"
+version="${ESPEJISMO_VERSION:-latest}"
+package="${ESPEJISMO_PACKAGE:-full}"
+install_dir="${ESPEJISMO_INSTALL_DIR:-$HOME/.espejismo}"
 
-is_tty() {
-  [[ -t 0 && -t 1 ]]
-}
-
-need_cmd() {
+need() {
   command -v "$1" >/dev/null 2>&1 || {
     echo "missing required command: $1" >&2
     exit 1
   }
 }
 
-random_secret() {
-  if command -v openssl >/dev/null 2>&1; then
-    openssl rand -base64 32
-  elif command -v python3 >/dev/null 2>&1; then
-    python3 - <<'PY'
-import base64
-import os
-
-print(base64.b64encode(os.urandom(32)).decode())
-PY
-  elif command -v base64 >/dev/null 2>&1; then
-    dd if=/dev/urandom bs=32 count=1 2>/dev/null | base64 | tr -d '\n'
-    echo
-  else
-    echo "cannot generate a random secret: install openssl or python3, or set ESPEJISMO_PSK" >&2
-    exit 1
-  fi
-}
-
-prompt_default() {
-  local var_name="$1"
-  local label="$2"
-  local default="$3"
-  local secret="${4:-0}"
-  local current="${!var_name:-}"
-  if [[ -n "${current}" ]] || ! is_tty; then
-    printf -v "${var_name}" '%s' "${current:-$default}"
-    return
-  fi
-  local value
-  if [[ "${secret}" == "1" ]]; then
-    read -r -s -p "${label} [auto-random]: " value
-    echo
-  else
-    read -r -p "${label} [${default}]: " value
-  fi
-  printf -v "${var_name}" '%s' "${value:-$default}"
-}
-
-select_role() {
-  if [[ -n "${ROLE}" ]]; then
-    return
-  fi
-  if is_tty; then
-    echo "Choose install mode:"
-    echo "  1) local  - run SOCKS5/HTTP client on this machine"
-    echo "  2) remote - run server endpoint on this machine"
-    read -r -p "Mode [local]: " choice
-    case "${choice:-local}" in
-      2|remote|server) ROLE="remote" ;;
-      *) ROLE="local" ;;
-    esac
-  else
-    if [[ "${EUID}" -eq 0 && "$(uname -s)" == "Linux" ]]; then
-      ROLE="remote"
-    else
-      ROLE="local"
-    fi
-  fi
-}
-
-detect_package() {
-  local os arch
-  case "$(uname -s)" in
-    Linux) os="linux" ;;
-    Darwin) os="darwin" ;;
-    *) echo "unsupported OS: $(uname -s)" >&2; exit 1 ;;
-  esac
-  case "$(uname -m)" in
-    x86_64|amd64) arch="amd64" ;;
-    i386|i486|i586|i686) arch="386" ;;
-    aarch64|arm64) arch="arm64" ;;
-    armv7l|armv7*) arch="armv7" ;;
-    *) echo "unsupported architecture: $(uname -m)" >&2; exit 1 ;;
-  esac
-  if [[ "${os}" == "darwin" && "${arch}" != "arm64" ]]; then
-    echo "darwin-amd64 release artifact is not currently published" >&2
-    exit 1
-  fi
-  printf 'espejismo-%s-%s' "${os}" "${arch}"
-}
-
-download_archive() {
-  local dest="$1"
-  local pkg="$2"
-  if [[ -n "${ARCHIVE_URL}" ]]; then
-    curl -fsSL "${ARCHIVE_URL}" -o "${dest}"
-    return
-  fi
-  local release_pkg="${pkg}"
-  if [[ "${ROLE:-}" == "remote" ]]; then
-    release_pkg="espejismo-server-${pkg#espejismo-}"
-  fi
-  if [[ "${VERSION}" == "latest" ]]; then
-    if curl -fsSL "https://github.com/${REPO}/releases/latest/download/${release_pkg}.tar.gz" -o "${dest}"; then
-      return
-    fi
-    if [[ "${release_pkg}" != "${pkg}" ]]; then
-      echo "WARN server-only package ${release_pkg}.tar.gz was not found; falling back to legacy ${pkg}.tar.gz" >&2
-    fi
-    curl -fsSL "https://github.com/${REPO}/releases/latest/download/${pkg}.tar.gz" -o "${dest}"
-  else
-    if curl -fsSL "https://github.com/${REPO}/releases/download/${VERSION}/${release_pkg}.tar.gz" -o "${dest}"; then
-      return
-    fi
-    if [[ "${release_pkg}" != "${pkg}" ]]; then
-      echo "WARN server-only package ${release_pkg}.tar.gz was not found; falling back to legacy ${pkg}.tar.gz" >&2
-    fi
-    curl -fsSL "https://github.com/${REPO}/releases/download/${VERSION}/${pkg}.tar.gz" -o "${dest}"
-  fi
-}
-
-toml_escape() {
-  printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
-}
-
-local_auth_toml() {
-  if [[ -z "${LOCAL_PASSWORD}" ]]; then
-    return
-  fi
-  cat <<EOF
-
-[local.auth]
-username = "$(toml_escape "${LOCAL_USER}")"
-password = "$(toml_escape "${LOCAL_PASSWORD}")"
-EOF
-}
-
-local_config_toml() {
-  cat <<EOF
-
-[local]
-server = "$(toml_escape "${SERVER}")"
-socks5_listen = "${SOCKS5_LISTEN}"
-http_listen = "${HTTP_LISTEN}"
-handshake_padding = 256
-$(local_auth_toml)
-
-[local.tunnel_pool]
-min_connections = 1
-max_connections = 4
-interactive_lanes = 1
-bulk_lanes = 2
-max_reconnect_attempts = 3
-max_connection_age_secs = 3600
-EOF
-}
-
-remote_config_toml() {
-  cat <<EOF
-
-[remote]
-listen = "${LISTEN}"
-handshake_timeout_ms = 3000
-reject_delay_ms = 0
-max_handshake_padding = 1024
-replay_window_secs = 60
-cold_start_delay_ms = 35
-tarpit_max = 1024
-tarpit_hold_secs = 300
-
-[remote.egress]
-deny_private_ips = true
-allow_ports = [80, 443]
-block_ports = [25]
-block_hosts = ["169.254.169.254", "metadata.google.internal"]
-EOF
-}
-
-role_config_toml() {
-  if [[ "${ROLE}" == "remote" ]]; then
-    remote_config_toml
-  else
-    local_config_toml
-  fi
-}
-
-public_endpoint() {
-  if [[ -n "${PUBLIC_ENDPOINT}" ]]; then
-    validate_public_endpoint "${PUBLIC_ENDPOINT}"
-    printf '%s' "${PUBLIC_ENDPOINT}"
-    return
-  fi
-  local host port endpoint
-  port="$(listen_port "${LISTEN}")"
-  host="$(detect_public_host)"
-  endpoint="$(format_endpoint "${host}" "${port}")"
-  validate_public_endpoint "${endpoint}"
-  printf '%s' "${endpoint}"
-}
-
-listen_port() {
-  local value="$1"
-  printf '%s' "${value##*:}"
-}
-
-format_endpoint() {
-  local host="$1"
-  local port="$2"
-  if [[ "${host}" == *:* && "${host}" != \[*\] ]]; then
-    printf '[%s]:%s' "${host}" "${port}"
-  else
-    printf '%s:%s' "${host}" "${port}"
-  fi
-}
-
-endpoint_host() {
-  local endpoint="$1"
-  if [[ "${endpoint}" == \[*\]:* ]]; then
-    endpoint="${endpoint#\[}"
-    printf '%s' "${endpoint%%\]*}"
-  else
-    printf '%s' "${endpoint%:*}"
-  fi
-}
-
-detect_public_host() {
-  if [[ -n "${PUBLIC_HOST}" ]]; then
-    printf '%s' "${PUBLIC_HOST}"
-    return
-  fi
-
-  local url candidate
-  for url in \
-    "https://api.ipify.org" \
-    "https://ifconfig.me/ip" \
-    "https://checkip.amazonaws.com"; do
-    candidate="$(curl -fsSL --max-time 4 "${url}" 2>/dev/null | tr -d '[:space:]' || true)"
-    if [[ "${candidate}" =~ ^[0-9A-Fa-f:.]+$ && "${candidate}" != "0.0.0.0" && "${candidate}" != "::" ]]; then
-      printf '%s' "${candidate}"
-      return
-    fi
-  done
-
-  candidate="$(hostname -I 2>/dev/null | awk '{print $1}')"
-  if [[ -n "${candidate}" ]]; then
-    echo "WARN could not detect public IP from external services; falling back to local address ${candidate}" >&2
-    printf '%s' "${candidate}"
-    return
-  fi
-
-  echo "cannot determine public endpoint; set ESPEJISMO_PUBLIC_ENDPOINT=host:port or ESPEJISMO_PUBLIC_HOST=host" >&2
-  exit 1
-}
-
-validate_public_endpoint() {
-  local endpoint="$1"
-  local host port
-  host="$(endpoint_host "${endpoint}")"
-  port="${endpoint##*:}"
-  if [[ -z "${host}" || "${host}" == "0.0.0.0" || "${host}" == "::" || "${host}" == "*" ]]; then
-    echo "invalid ESPEJISMO_PUBLIC_ENDPOINT '${endpoint}': use a client-reachable public IP or domain, not a listen address" >&2
-    exit 1
-  fi
-  if [[ "${port}" == "${endpoint}" || ! "${port}" =~ ^[0-9]+$ || "${port}" -lt 1 || "${port}" -gt 65535 ]]; then
-    echo "invalid ESPEJISMO_PUBLIC_ENDPOINT '${endpoint}': expected host:port, for example proxy.example.com:6690" >&2
-    exit 1
-  fi
-  case "${host}" in
-    127.*|localhost|10.*|192.168.*|172.1[6-9].*|172.2[0-9].*|172.3[0-1].*)
-      echo "WARN public endpoint '${endpoint}' looks private/local; this is fine for local tests but remote clients may not reach it" >&2
-      ;;
+detect_os() {
+  case "$(uname -s 2>/dev/null | tr '[:upper:]' '[:lower:]')" in
+    linux*) echo "linux" ;;
+    darwin*) echo "darwin" ;;
+    mingw*|msys*|cygwin*) echo "windows" ;;
+    *) echo "unsupported" ;;
   esac
 }
 
-write_config() {
-  local config="$1"
-  local admin_default
-  if [[ "${ROLE}" == "remote" ]]; then
-    admin_default="127.0.0.1:9090"
-  else
-    admin_default="127.0.0.1:9091"
-  fi
-  ADMIN_LISTEN="${ADMIN_LISTEN:-$admin_default}"
-  cat >"${config}" <<EOF
-[shared]
-psk = "$(toml_escape "${PSK}")"
-clock_skew_secs = 30
-puzzle_bits = 12
-max_padding = 64
-jitter_ms = 0
-padding_chance_percent = 35
-tunnel_buffer = 1048576
-idle_timeout_secs = 300
-max_streams = 256
-max_physical_connections = 1024
-key_update_frames = 16384
-
-[shared.tcp]
-nodelay = true
-keepalive_secs = 30
-heartbeat_secs = 30
-user_timeout_ms = 30000
-send_buffer_bytes = 1048576
-recv_buffer_bytes = 1048576
-
-[shared.mux]
-mode = "yamux"
-native_initial_window_bytes = 1048576
-native_stream_buffer_frames = 128
-native_send_queue_frames = 64
-native_idle_timeout_secs = 300
-native_drain_timeout_secs = 30
-
-[shared.pacing]
-enabled = true
-max_bytes_per_sec = 0
-burst_bytes = 65536
-min_write_bytes = 1024
-
-[shared.obfuscation]
-profile = "$(toml_escape "${PROFILE}")"
-chunk_policy = "$(toml_escape "${PROFILE}")"
-randomize_chunks = true
-min_chunk = 4096
-max_chunk = 16384
-
-[shared.stealth]
-frame_size = 4096
-tick_ms = 50
-
-[logging]
-level = "info"
-format = "compact"
-ansi = true
-file = "${CONFIG_DIR}/espejismo-${ROLE}.log"
-
-[admin]
-listen = "${ADMIN_LISTEN}"
-token = "$(toml_escape "${ADMIN_TOKEN}")"
-$(role_config_toml)
-EOF
+detect_arch() {
+  case "$(uname -m 2>/dev/null | tr '[:upper:]' '[:lower:]')" in
+    x86_64|amd64) echo "amd64" ;;
+    i386|i686) echo "386" ;;
+    aarch64|arm64) echo "arm64" ;;
+    armv7l|armv7*) echo "armv7" ;;
+    *) echo "unsupported" ;;
+  esac
 }
 
-write_manager() {
-  local manager="$1"
-  local bin_dir="$2"
-  local config="$3"
-  local log_file="${CONFIG_DIR}/espejismo-${ROLE}.log"
-  local pid_file="${CONFIG_DIR}/espejismo-${ROLE}.pid"
-  local binary="espejismo-local"
-  [[ "${ROLE}" == "remote" ]] && binary="espejismo-remote"
-  cat >"${manager}" <<EOF
-#!/usr/bin/env bash
-set -euo pipefail
-ROLE="${ROLE}"
-BIN="${bin_dir}/${binary}"
-CONFIG="${config}"
-PID_FILE="${pid_file}"
-LOG_FILE="${log_file}"
-ADMIN="http://${ADMIN_LISTEN}"
-TOKEN="$(toml_escape "${ADMIN_TOKEN}")"
-SERVICE="${SERVICE_NAME}-${ROLE}.service"
-SERVER_ENDPOINT="$(toml_escape "${SERVER}")"
-SOCKS5_ADDR="$(toml_escape "${SOCKS5_LISTEN}")"
-HTTP_ADDR="$(toml_escape "${HTTP_LISTEN}")"
-LOCAL_AUTH_USER="$(toml_escape "${LOCAL_USER}")"
-LOCAL_AUTH_PASSWORD="$(toml_escape "${LOCAL_PASSWORD}")"
-
-has_systemd_service() {
-  command -v systemctl >/dev/null 2>&1 && systemctl list-unit-files "\${SERVICE}" >/dev/null 2>&1
-}
-
-cmd_start() {
-  if has_systemd_service; then
-    sudo systemctl start "\${SERVICE}"
-    return
-  fi
-  if [[ -f "\${PID_FILE}" ]] && kill -0 "\$(cat "\${PID_FILE}")" 2>/dev/null; then
-    echo "\${ROLE} already running: \$(cat "\${PID_FILE}")"
-    return
-  fi
-  nohup "\${BIN}" --config "\${CONFIG}" >>"\${LOG_FILE}" 2>&1 &
-  echo \$! >"\${PID_FILE}"
-  echo "started \${ROLE}: \$(cat "\${PID_FILE}")"
-}
-
-cmd_stop() {
-  if has_systemd_service; then
-    sudo systemctl stop "\${SERVICE}"
-    return
-  fi
-  if [[ -f "\${PID_FILE}" ]]; then
-    kill "\$(cat "\${PID_FILE}")" 2>/dev/null || true
-    rm -f "\${PID_FILE}"
-  fi
-  echo "stopped \${ROLE}"
-}
-
-cmd_status() {
-  if has_systemd_service; then
-    systemctl status "\${SERVICE}" --no-pager || true
-  elif [[ -f "\${PID_FILE}" ]] && kill -0 "\$(cat "\${PID_FILE}")" 2>/dev/null; then
-    echo "\${ROLE} running: \$(cat "\${PID_FILE}")"
-  else
-    echo "\${ROLE} stopped"
-  fi
+download() {
+  url="$1"
+  out="$2"
   if command -v curl >/dev/null 2>&1; then
-    curl -fsS -H "Authorization: Bearer \${TOKEN}" "\${ADMIN}/status" 2>/dev/null || true
-    echo
-  fi
-}
-
-cmd_restart() {
-  cmd_stop
-  sleep 1
-  cmd_start
-}
-
-cmd_reload() {
-  curl -fsS -X POST -H "Authorization: Bearer \${TOKEN}" "\${ADMIN}/reload"
-  echo
-}
-
-cmd_apply() {
-  curl -fsS -X POST -H "Authorization: Bearer \${TOKEN}" --data-binary @"\${CONFIG}" "\${ADMIN}/apply"
-  echo
-}
-
-cmd_logs() {
-  if has_systemd_service; then
-    journalctl -u "\${SERVICE}" -f
+    curl -fL "$url" -o "$out"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -O "$out" "$url"
   else
-    touch "\${LOG_FILE}"
-    tail -f "\${LOG_FILE}"
-  fi
-}
-
-cmd_edit() {
-  "\${EDITOR:-vi}" "\${CONFIG}"
-}
-
-json_escape() {
-  printf '%s' "\$1" | sed 's/\\\\/\\\\\\\\/g; s/"/\\\\"/g'
-}
-
-encode_client_profile() {
-  local name="\${1:-default}"
-  local psk
-  psk="\$(awk '
-    /^\[shared\]/ { in_shared = 1; next }
-    /^\[/ { in_shared = 0 }
-    in_shared && /^[[:space:]]*psk[[:space:]]*=/ {
-      sub(/^[[:space:]]*psk[[:space:]]*=[[:space:]]*/, "")
-      sub(/[[:space:]]*(#.*)?$/, "")
-      gsub(/^"|"$/, "")
-      print
-      exit
-    }
-  ' "\${CONFIG}")"
-  if [[ -z "\${psk}" ]]; then
-    echo "shared.psk is required to generate a client profile" >&2
-    return 1
-  fi
-
-  local json auth encoded
-  if [[ -n "\${LOCAL_AUTH_PASSWORD}" ]]; then
-    auth=",\"auth\":{\"username\":\"\$(json_escape "\${LOCAL_AUTH_USER}")\",\"password\":\"\$(json_escape "\${LOCAL_AUTH_PASSWORD}")\"}"
-  else
-    auth=",\"auth\":null"
-  fi
-  json="{\"name\":\"\$(json_escape "\${name}")\",\"server\":\"\$(json_escape "\${SERVER_ENDPOINT}")\",\"psk\":\"\$(json_escape "\${psk}")\",\"socks5_listen\":\"\$(json_escape "\${SOCKS5_ADDR}")\",\"http_listen\":\"\$(json_escape "\${HTTP_ADDR}")\"\${auth}}"
-  encoded="\$(printf '%s' "\${json}" | base64 | tr '+/' '-_' | tr -d '=\n')"
-  printf 'espejismo://import/%s\n' "\${encoded}"
-}
-
-cmd_profile() {
-  if [[ "\${ROLE}" == "remote" ]]; then
-    encode_client_profile default
-    return
-  fi
-  "${bin_dir}/espejismo-local" --config "\${CONFIG}" --print-client-profile --profile-name default
-}
-
-shell_quote() {
-  printf '%q' "\$1"
-}
-
-cmd_connect() {
-  if [[ "\${ROLE}" == "local" ]]; then
-    local socks http
-    socks="\$(shell_quote "\${SOCKS5_ADDR}")"
-    http="\$(shell_quote "http://\${HTTP_ADDR}")"
-    echo "Local proxy is ready."
-    echo "  SOCKS5: \${SOCKS5_ADDR}"
-    echo "  HTTP:   \${HTTP_ADDR}"
-    echo
-    echo "Test commands:"
-    if [[ -n "\${LOCAL_AUTH_PASSWORD}" ]]; then
-      local auth
-      auth="\$(shell_quote "\${LOCAL_AUTH_USER}:\${LOCAL_AUTH_PASSWORD}")"
-      echo "  curl --proxy-user \${auth} --socks5-hostname \${socks} https://ifconfig.me"
-      echo "  curl --proxy-user \${auth} -x \${http} https://ifconfig.me"
-    else
-      echo "  curl --socks5-hostname \${socks} https://ifconfig.me"
-      echo "  curl -x \${http} https://ifconfig.me"
-    fi
-    echo
-    echo "Browser/app settings:"
-    echo "  SOCKS5 host/port: \${SOCKS5_ADDR}"
-    echo "  HTTP proxy:       \${HTTP_ADDR}"
-    if [[ -n "\${LOCAL_AUTH_PASSWORD}" ]]; then
-      echo "  Proxy auth:       \${LOCAL_AUTH_USER} / \${LOCAL_AUTH_PASSWORD}"
-    else
-      echo "  Proxy auth:       disabled"
-    fi
-    return
-  fi
-
-  local profile_url
-  profile_url="\$(cmd_profile)"
-  echo "Remote endpoint is ready."
-  echo "  Public endpoint: \${SERVER_ENDPOINT}"
-  echo
-  echo "Client import profile:"
-  echo "  \${profile_url}"
-  echo
-  echo "Client one-line start:"
-  echo "  espejismo-local --import-profile '\${profile_url}'"
-}
-
-case "\${1:-status}" in
-  start) cmd_start ;;
-  stop) cmd_stop ;;
-  restart) cmd_restart ;;
-  status) cmd_status ;;
-  reload) cmd_reload ;;
-  apply) cmd_apply ;;
-  logs) cmd_logs ;;
-  edit) cmd_edit ;;
-  profile) cmd_profile ;;
-  connect) cmd_connect ;;
-  config) echo "\${CONFIG}" ;;
-  show-config) cat "\${CONFIG}" ;;
-  check-config) "\${BIN}" --config "\${CONFIG}" --check-config ;;
-  *) echo "usage: \$0 {start|stop|restart|status|reload|apply|logs|edit|profile|connect|config|show-config|check-config}" >&2; exit 2 ;;
-esac
-EOF
-  chmod 0755 "${manager}"
-}
-
-write_systemd_service() {
-  local bin_dir="$1"
-  local config="$2"
-  local manager="$3"
-  local binary="espejismo-remote"
-  [[ "${ROLE}" == "local" ]] && binary="espejismo-local"
-  if [[ "$(uname -s)" != "Linux" || "${EUID}" -ne 0 || ! -d /etc/systemd/system ]]; then
-    return
-  fi
-  cat >"/etc/systemd/system/${SERVICE_NAME}-${ROLE}.service" <<EOF
-[Unit]
-Description=Espejismo ${ROLE}
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-ExecStart=${bin_dir}/${binary} --config ${config}
-Restart=on-failure
-RestartSec=3
-NoNewPrivileges=true
-ReadWritePaths=${CONFIG_DIR}
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload
-  systemctl enable "${SERVICE_NAME}-${ROLE}.service" >/dev/null
-  ln -sf "${manager}" "/usr/local/bin/espejismoctl-${ROLE}" 2>/dev/null || true
-  if [[ "${ROLE}" == "remote" ]]; then
-    ln -sf "${manager}" "/usr/local/bin/espejismoctl" 2>/dev/null || true
-  fi
-}
-
-main() {
-  echo "Espejismo installer starting..."
-  need_cmd curl
-  need_cmd tar
-  select_role
-
-  if [[ "${ROLE}" != "local" && "${ROLE}" != "remote" ]]; then
-    echo "ESPEJISMO_ROLE must be local or remote" >&2
+    echo "missing required command: curl or wget" >&2
     exit 1
   fi
-  if [[ "${ROLE}" == "remote" ]]; then
-    need_cmd base64
-  fi
-  echo "Selected install mode: ${ROLE}"
-  if ! is_tty; then
-    echo "  Override with: ESPEJISMO_ROLE=local|remote bash install.sh"
-  fi
-
-  [[ -z "${PSK}" ]] && PSK="$(random_secret)"
-  [[ -z "${ADMIN_TOKEN}" ]] && ADMIN_TOKEN="$(random_secret)"
-
-  if [[ "${ROLE}" == "remote" ]]; then
-    prompt_default LISTEN "Remote listen address" "${LISTEN}"
-    detected_endpoint="$(public_endpoint)"
-    prompt_default PUBLIC_ENDPOINT "Public client endpoint" "${detected_endpoint}"
-    validate_public_endpoint "${PUBLIC_ENDPOINT}"
-    SERVER="${PUBLIC_ENDPOINT}"
-    echo "Public client endpoint: ${SERVER}"
-  else
-    prompt_default SERVER "Remote server endpoint host:port" "${SERVER:-127.0.0.1:6690}"
-    prompt_default SOCKS5_LISTEN "Local SOCKS5 listen" "${SOCKS5_LISTEN}"
-    prompt_default HTTP_LISTEN "Local HTTP proxy listen" "${HTTP_LISTEN}"
-  fi
-  prompt_default PSK "PSK" "${PSK}" 1
-
-  if [[ -z "${INSTALL_DIR}" ]]; then
-    if [[ "${EUID}" -eq 0 && "${ROLE}" == "remote" ]]; then
-      INSTALL_DIR="/opt/espejismo"
-    else
-      INSTALL_DIR="${HOME}/.espejismo"
-    fi
-  fi
-  CONFIG_DIR="${CONFIG_DIR:-${INSTALL_DIR}/config}"
-  local bin_dir="${INSTALL_DIR}/bin"
-  local manager="${INSTALL_DIR}/espejismoctl"
-  local config="${CONFIG_DIR}/espejismo.toml"
-  local archive pkg pkgdir
-  INSTALL_TMPDIR="$(mktemp -d)"
-  trap 'rm -rf "${INSTALL_TMPDIR}"' EXIT
-  archive="${INSTALL_TMPDIR}/espejismo.tar.gz"
-  pkg="$(detect_package)"
-
-  echo "Downloading ${pkg} from ${REPO} (${VERSION})..."
-  download_archive "${archive}" "${pkg}"
-  tar -xzf "${archive}" -C "${INSTALL_TMPDIR}"
-  pkgdir="$(find "${INSTALL_TMPDIR}" -maxdepth 1 -type d -name 'espejismo-*' | head -n 1)"
-  [[ -n "${pkgdir}" ]] || { echo "invalid release archive" >&2; exit 1; }
-
-  mkdir -p "${bin_dir}" "${CONFIG_DIR}"
-  if [[ "${ROLE}" == "remote" ]]; then
-    install -m 0755 "${pkgdir}/bin/espejismo-remote" "${bin_dir}/espejismo-remote"
-    rm -f "${bin_dir}/espejismo-local"
-  else
-    install -m 0755 "${pkgdir}/bin/espejismo-local" "${bin_dir}/espejismo-local"
-  fi
-  write_config "${config}"
-  chmod 0600 "${config}"
-  write_manager "${manager}" "${bin_dir}" "${config}"
-  write_systemd_service "${bin_dir}" "${config}" "${manager}"
-
-  if [[ "${START_NOW}" == "1" ]]; then
-    "${manager}" restart
-  fi
-
-  echo
-  echo "Espejismo ${ROLE} installed."
-  echo "  Install dir: ${INSTALL_DIR}"
-  echo "  Config:      ${config}"
-  echo "  Manager:     ${manager}"
-  echo
-  echo "Management:"
-  echo "  ${manager} status"
-  echo "  ${manager} logs"
-  echo "  ${manager} edit"
-  echo "  ${manager} reload"
-  echo "  ${manager} apply"
-  echo "  ${manager} restart"
-  echo "  ${manager} connect"
-  echo
-  echo "Connection:"
-  "${manager}" connect
 }
 
-main "$@"
+os="${ESPEJISMO_OS:-$(detect_os)}"
+arch="${ESPEJISMO_ARCH:-$(detect_arch)}"
+if [ "$os" = "unsupported" ] || [ "$arch" = "unsupported" ]; then
+  echo "unsupported platform: os=$os arch=$arch" >&2
+  exit 1
+fi
+
+case "$package" in
+  full) prefix="espejismo" ;;
+  server) prefix="espejismo-server" ;;
+  *) echo "ESPEJISMO_PACKAGE must be full or server" >&2; exit 1 ;;
+esac
+
+case "$os" in
+  windows) ext="zip" ;;
+  *) ext="tar.gz" ;;
+esac
+
+artifact="${prefix}-${os}-${arch}.${ext}"
+if [ -n "${ESPEJISMO_ARCHIVE_URL:-}" ]; then
+  url="$ESPEJISMO_ARCHIVE_URL"
+else
+  if [ "$version" = "latest" ]; then
+    url="https://github.com/${repo}/releases/latest/download/${artifact}"
+  else
+    url="https://github.com/${repo}/releases/download/${version}/${artifact}"
+  fi
+fi
+
+tmp_dir="${TMPDIR:-/tmp}/espejismo-install-$$"
+mkdir -p "$tmp_dir" "$install_dir"
+archive="$tmp_dir/$artifact"
+
+echo "Downloading $url"
+download "$url" "$archive"
+
+echo "Extracting to $install_dir"
+if [ "$ext" = "zip" ]; then
+  if command -v unzip >/dev/null 2>&1; then
+    unzip -oq "$archive" -d "$tmp_dir/out"
+  elif command -v powershell.exe >/dev/null 2>&1; then
+    powershell.exe -NoProfile -Command "Expand-Archive -Force -LiteralPath '$archive' -DestinationPath '$tmp_dir/out'"
+  else
+    echo "missing unzip or powershell.exe for zip extraction" >&2
+    exit 1
+  fi
+else
+  need tar
+  tar -xzf "$archive" -C "$tmp_dir"
+  mkdir -p "$tmp_dir/out"
+  top="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d ! -name out | head -n 1)"
+  cp -R "$top"/. "$tmp_dir/out/"
+fi
+
+if [ "$ext" = "zip" ]; then
+  top="$(find "$tmp_dir/out" -mindepth 1 -maxdepth 1 -type d | head -n 1 || true)"
+  if [ -n "$top" ]; then
+    cp -R "$top"/. "$install_dir/"
+  else
+    cp -R "$tmp_dir/out"/. "$install_dir/"
+  fi
+else
+  cp -R "$tmp_dir/out"/. "$install_dir/"
+fi
+
+rm -rf "$tmp_dir"
+
+echo "Installed Espejismo package: $artifact"
+echo "Install directory: $install_dir"
+echo "Binaries:"
+find "$install_dir/bin" -maxdepth 1 -type f 2>/dev/null | sed 's/^/  /' || true
+echo
+echo "Next:"
+if [ "$os" = "windows" ]; then
+  echo "  Server: $install_dir/bin/espejismo-remote.exe --config $install_dir/configs/espejismo.toml"
+  echo "  Client: $install_dir/bin/espejismo-local.exe --config $install_dir/configs/espejismo.toml"
+else
+  echo "  Server: $install_dir/bin/espejismo-remote --config $install_dir/configs/espejismo.toml"
+  echo "  Client: $install_dir/bin/espejismo-local --config $install_dir/configs/espejismo.toml"
+fi

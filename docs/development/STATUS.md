@@ -88,13 +88,9 @@ Current release target: `v0.0.9`.
 - Local reconnecting tunnel manager for opening new streams after tunnel failure.
 - Tunnel lane reconnects are serialized per lane without holding the mux-control
   lock across TCP dial and handshake work.
-- End-to-end smoke test covering authenticated SOCKS5, authenticated HTTP proxy,
-  file config, and base64 config.
-- TCP stress smoke test covering single-stream download-like traffic, many small
-  requests, mixed interactive/bulk requests, remote restart recovery, and
-  optional soak loops.
-- JSON mux benchmark script comparing yamux/native for one-stream throughput,
-  32 small requests, mixed bulk/interactive traffic, and session rotation.
+- Unit and manual smoke coverage for authenticated SOCKS5/HTTP proxy paths,
+  file config, base64 config, handshake probes, native mux behavior, and
+  bounded transport primitives.
 - CI for Linux, macOS, and Windows.
 - Release artifact workflow for Linux x86_64/i686/aarch64/armv7, macOS
   aarch64, and Windows x86_64/i686/aarch64.

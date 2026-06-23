@@ -42,8 +42,9 @@ Current status: transport connector abstraction exists; production remains TCP
 underlay only.
 
 5. Real-world scale/chaos test matrix:
-Current status: e2e/stress/mux benchmarks exist; still missing standardized
-loss/jitter/MTU scenario automation across OSes.
+Current status: unit and manual smoke coverage exist; standardized e2e,
+stress, loss/jitter/MTU, and benchmark automation still need to be rebuilt
+around the simplified script policy.
 
 ## Implementation Backlog
 
