@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.1.0
+
+`v0.1.0` is the first operational release line for the simplified packaging,
+aligned tunnel request wire format, release installer flow, and documented
+cross-platform TUN deployment path.
 
 ### Changed
 

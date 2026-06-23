@@ -1,19 +1,36 @@
 # Espejismo
 
-Espejismo is a native Rust encrypted tunnel for public and untrusted networks.
-It ships two binaries:
+[Español](README_ES.md) | [Configuration](docs/deployment/CONFIG.md) | [TUN Mode](docs/deployment/TUN.md) | [Protocol](docs/PROTOCOL.md)
 
-- `espejismo-remote`: remote authenticated egress endpoint.
-- `espejismo-local`: local SOCKS5, HTTP proxy, and optional TUN ingress.
+![Release](https://img.shields.io/badge/release-v0.1.0-0b7285)
+![Rust](https://img.shields.io/badge/rust-native-9a3412)
+![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20windows-1f6feb)
+![Ingress](https://img.shields.io/badge/ingress-socks5%20%7C%20http%20%7C%20tun-2f9e44)
+![License](https://img.shields.io/badge/license-MIT-495057)
 
-The stable production path is TCP underlay, X25519 session establishment,
-XChaCha20-Poly1305 encrypted frames, and `yamux` logical stream multiplexing.
-The in-tree native mux and UDP physical underlay primitives remain experimental
-or beta paths.
+Espejismo is a native Rust encrypted tunnel for running private client traffic
+through an authenticated remote egress server. It keeps the operational model
+small: one server binary, one local client binary, one TOML configuration file,
+and release archives that can be installed with a single command.
+
+## Technical Profile
+
+| Layer | What ships in `v0.1.0` |
+| --- | --- |
+| Client ingress | SOCKS5, HTTP proxy, and native TUN capture |
+| Remote egress | Authenticated TCP listener with configurable outbound policy |
+| Transport | TCP underlay with encrypted framed streams and `yamux` multiplexing |
+| Cryptography | X25519 session setup and XChaCha20-Poly1305 protected frames |
+| Routing | Linux, macOS, and Windows IPv4 TUN route/DNS takeover |
+| Packaging | Cross-platform full and server-only GitHub Release archives |
+
+`espejismo-remote` runs on the VPS or server. `espejismo-local` runs on the
+client machine and exposes local SOCKS5/HTTP proxy ports or a native TUN
+interface for system-level IPv4 traffic capture.
 
 ## Install From Release
 
-Linux/macOS, or Windows Git Bash:
+Linux, macOS, or Windows Git Bash:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh | sh
@@ -25,24 +42,26 @@ Windows PowerShell:
 iwr -useb https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.ps1 | iex
 ```
 
-Useful installer variables:
+Installer inputs:
 
-```bash
-ESPEJISMO_VERSION=latest          # or v0.0.9
-ESPEJISMO_PACKAGE=full            # full or server
-ESPEJISMO_INSTALL_DIR=$HOME/.espejismo
-ESPEJISMO_REPO=tianrking/Espejismo
-ESPEJISMO_ARCHIVE_URL=https://example.com/espejismo-linux-amd64.tar.gz
-```
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `ESPEJISMO_VERSION` | `latest` | Release tag such as `v0.1.0` |
+| `ESPEJISMO_PACKAGE` | `full` | `full` for client+server, `server` for remote only |
+| `ESPEJISMO_INSTALL_DIR` | `$HOME/.espejismo` | Extraction directory |
+| `ESPEJISMO_REPO` | `tianrking/Espejismo` | GitHub repository |
+| `ESPEJISMO_ARCHIVE_URL` | empty | Direct archive override |
 
 The installer only downloads and extracts the matching GitHub Release package.
-It does not create services, firewall rules, or hidden background processes.
+It does not create services, firewall rules, route changes, or hidden background
+processes.
 
 ## One Config File
 
-Use `configs/examples/espejismo.toml` as the single config shape for both sides.
-The server reads `[shared]`, `[remote]`, `[logging]`, and `[admin]`. The client
-reads `[shared]`, `[local]`, `[logging]`, and `[admin]`.
+Use [configs/examples/espejismo.toml](configs/examples/espejismo.toml) as the
+single configuration shape for both sides. The server reads `[shared]`,
+`[remote]`, `[logging]`, and `[admin]`. The client reads `[shared]`, `[local]`,
+`[logging]`, and `[admin]`.
 
 Minimum server/client edit:
 
@@ -59,13 +78,13 @@ http_listen = "127.0.0.1:6681"
 listen = "0.0.0.0:6690"
 ```
 
-Run server:
+Run the remote side on the server:
 
 ```bash
 ~/.espejismo/bin/espejismo-remote --config ~/.espejismo/configs/espejismo.toml
 ```
 
-Run client:
+Run the local side on the client:
 
 ```bash
 ~/.espejismo/bin/espejismo-local --config ~/.espejismo/configs/espejismo.toml
@@ -78,8 +97,29 @@ SOCKS5: 127.0.0.1:6680
 HTTP:   127.0.0.1:6681
 ```
 
-Full parameter documentation lives in
-[`docs/deployment/CONFIG.md`](docs/deployment/CONFIG.md).
+For system-level capture, start the client with TUN enabled:
+
+```bash
+sudo ~/.espejismo/bin/espejismo-local \
+  --config ~/.espejismo/configs/espejismo.toml \
+  --tun-enabled \
+  --tun-auto-route \
+  --tun-auto-dns
+```
+
+On Windows, run the terminal as Administrator. Official Windows release archives
+include `bin/wintun.dll` beside `espejismo-local.exe`.
+
+## Operations Docs
+
+| Topic | Link |
+| --- | --- |
+| Complete configuration reference | [docs/deployment/CONFIG.md](docs/deployment/CONFIG.md) |
+| Quick deployment path | [docs/deployment/QUICKSTART.md](docs/deployment/QUICKSTART.md) |
+| Native TUN mode | [docs/deployment/TUN.md](docs/deployment/TUN.md) |
+| CLI flags | [docs/deployment/CLI.md](docs/deployment/CLI.md) |
+| Packaging and release artifacts | [docs/deployment/PACKAGING.md](docs/deployment/PACKAGING.md) |
+| Protocol contract | [docs/PROTOCOL.md](docs/PROTOCOL.md) |
 
 ## Build From Source
 

@@ -1,6 +1,6 @@
 # Espejismo Protocol Specification
 
-This document describes the Espejismo wire protocol for the `v0.0.9` line. It
+This document describes the Espejismo wire protocol for the `v0.1.0` line. It
 is written as an implementation contract for compatible clients, servers, test
 fixtures, and future transports.
 
