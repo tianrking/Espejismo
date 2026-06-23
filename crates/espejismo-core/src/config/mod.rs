@@ -72,6 +72,26 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
         config.shared.clock_skew_secs > 0,
         "shared.clock_skew_secs must be greater than 0"
     );
+    if config.shared.handshake_window.enabled {
+        anyhow::ensure!(
+            config.shared.handshake_window.step_secs > 0,
+            "shared.handshake_window.step_secs must be greater than 0"
+        );
+        anyhow::ensure!(
+            config.shared.handshake_window.previous_windows <= 4,
+            "shared.handshake_window.previous_windows must be <= 4"
+        );
+        anyhow::ensure!(
+            config.shared.handshake_window.future_windows <= 2,
+            "shared.handshake_window.future_windows must be <= 2"
+        );
+        anyhow::ensure!(
+            u16::from(config.shared.handshake_window.previous_windows)
+                + u16::from(config.shared.handshake_window.future_windows)
+                <= 4,
+            "shared.handshake_window previous_windows + future_windows must be <= 4"
+        );
+    }
     anyhow::ensure!(
         config.remote.replay_window_secs > 0,
         "remote.replay_window_secs must be greater than 0"

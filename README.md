@@ -81,14 +81,42 @@ Minimum server/client edit:
 [shared]
 psk = "change-me-to-a-long-random-secret"
 
+[shared.handshake_window]
+enabled = true
+step_secs = 30
+previous_windows = 1
+future_windows = 0
+
+[shared.obfuscation]
+profile = "stealth"
+chunk_policy = "stealth"
+randomize_chunks = false
+
+[shared.stealth]
+frame_size = 4096
+frame_size_candidates = [3328, 3584, 4096, 4608]
+tick_ms = 20
+
 [local]
 server = "YOUR_SERVER_IP_OR_DOMAIN:6690"
 socks5_listen = "127.0.0.1:6680"
 http_listen = "127.0.0.1:6681"
 
+[local.tunnel_pool]
+min_connections = 1
+max_connections = 4
+interactive_lanes = 2
+bulk_lanes = 2
+
 [remote]
 listen = "0.0.0.0:6690"
 ```
+
+`shared.handshake_window` derives the first-packet handshake key from the PSK
+and a short time slot, so recorded handshakes expire quickly. `stealth` frames
+hide stable payload lengths with fixed-size encrypted blocks. The tunnel pool
+spreads new logical streams across independent TCP lanes to reduce single-lane
+head-of-line blocking.
 
 Run the remote side on the server:
 

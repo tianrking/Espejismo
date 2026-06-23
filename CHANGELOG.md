@@ -4,6 +4,10 @@
 
 ### Changed
 
+- Handshake authentication now supports dynamic time-window HKDF keys through
+  `[shared.handshake_window]`. Clients send with the current window; servers
+  accept the configured adjacent windows and otherwise fall back to the existing
+  silent reject/tarpit path for invalid first packets.
 - Remote egress can now chain through `remote.egress.proxy` using SOCKS4,
   SOCKS4a, SOCKS5, HTTP CONNECT, or HTTPS CONNECT upstreams. SOCKS5 supports
   optional username/password authentication and UDP ASSOCIATE. HTTP/HTTPS

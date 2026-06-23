@@ -80,14 +80,42 @@ Edicion minima:
 [shared]
 psk = "cambie-esto-por-un-secreto-largo"
 
+[shared.handshake_window]
+enabled = true
+step_secs = 30
+previous_windows = 1
+future_windows = 0
+
+[shared.obfuscation]
+profile = "stealth"
+chunk_policy = "stealth"
+randomize_chunks = false
+
+[shared.stealth]
+frame_size = 4096
+frame_size_candidates = [3328, 3584, 4096, 4608]
+tick_ms = 20
+
 [local]
 server = "IP_O_DOMINIO_DEL_SERVIDOR:6690"
 socks5_listen = "127.0.0.1:6680"
 http_listen = "127.0.0.1:6681"
 
+[local.tunnel_pool]
+min_connections = 1
+max_connections = 4
+interactive_lanes = 2
+bulk_lanes = 2
+
 [remote]
 listen = "0.0.0.0:6690"
 ```
+
+`shared.handshake_window` deriva la clave del primer paquete desde el PSK y una
+ventana corta de tiempo, asi que los handshakes grabados expiran rapido. Los
+frames `stealth` ocultan longitudes estables con bloques cifrados de tamano
+fijo. El pool de tuneles reparte nuevos streams logicos entre lanes TCP
+independientes para reducir el head-of-line blocking de una sola conexion.
 
 Ejecute el lado remoto en el servidor:
 

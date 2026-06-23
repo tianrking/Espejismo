@@ -66,9 +66,21 @@ Plain mode starts with a variable-length masked client envelope:
 ```
 
 The payload length and payload are XOR-masked with HMAC-derived streams keyed by
-the PSK authentication key. The random nonce makes the first packet non-static,
-and the mask moves fixed offsets out of the clear wire image while preserving a
-bounded async parser.
+the handshake authentication key. When `shared.handshake_window.enabled = true`,
+that key is derived from the PSK and the current time slot:
+
+```text
+slot = floor(unix_time / shared.handshake_window.step_secs)
+handshake_auth_key = HKDF(PSK, "espejismo v1 handshake-window-auth-key:" || slot)
+```
+
+The client sends with the current slot. The server tries the current slot plus
+the configured previous/future slot tolerance before treating the first packet
+as invalid. This means an active probe that replays a recorded first packet
+after the accepted window expires does not decrypt as a valid hello and receives
+no Espejismo application response. The random nonce makes every first packet
+non-static, and the mask moves fixed offsets out of the clear wire image while
+preserving a bounded async parser.
 
 The masked payload contains:
 
@@ -94,8 +106,9 @@ The server MUST reject a client hello when:
 - The masked length exceeds configured bounds.
 - The padding length exceeds `remote.max_handshake_padding`.
 - The puzzle is invalid.
-- No configured user PSK authenticates the HMAC.
-- More than one configured user could match the masked hello shape.
+- No configured user/window key authenticates the HMAC.
+- More than one configured user/window candidate could match the masked hello
+  shape.
 - The protocol version is unsupported.
 - Required capabilities are absent.
 - The timestamp is outside `shared.clock_skew_secs`.

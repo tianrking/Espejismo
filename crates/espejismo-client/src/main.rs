@@ -663,6 +663,7 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
             args.puzzle_bits.unwrap_or(config.shared.puzzle_bits),
         )
         .with_stealth_frame_size(stealth_handshake)
+        .with_handshake_window(config.shared.handshake_window.into())
         .with_mux_mode(config.shared.mux.mode),
         frames: config.shared.frame_options(&FrameOptionOverrides {
             max_padding: args.max_padding,

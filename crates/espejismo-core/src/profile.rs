@@ -3,7 +3,7 @@ use base64::Engine;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
-use crate::config::EspejismoConfig;
+use crate::config::{EspejismoConfig, HandshakeWindowConfig};
 use crate::ingress::ProxyAuth;
 
 const PROFILE_PREFIX: &str = "espejismo://import/";
@@ -13,6 +13,8 @@ pub struct ClientProfile {
     pub name: String,
     pub server: String,
     pub psk: String,
+    #[serde(default)]
+    pub handshake_window: HandshakeWindowConfig,
     #[serde(default)]
     pub socks5_listen: Option<SocketAddr>,
     #[serde(default)]
@@ -35,6 +37,7 @@ impl ClientProfile {
                 .psk
                 .clone()
                 .context("shared.psk is required for a client profile")?,
+            handshake_window: config.shared.handshake_window,
             socks5_listen: config.local.socks5_listen,
             http_listen: config.local.http_listen,
             auth: config.local.auth.clone(),
@@ -43,6 +46,7 @@ impl ClientProfile {
 
     pub fn apply_to_config(self, config: &mut EspejismoConfig) {
         config.shared.psk = Some(self.psk);
+        config.shared.handshake_window = self.handshake_window;
         config.local.server = Some(self.server);
         config.local.socks5_listen = self.socks5_listen;
         config.local.http_listen = self.http_listen;
@@ -77,6 +81,7 @@ mod tests {
             name: "default".to_string(),
             server: "example.com:6690".to_string(),
             psk: "change-me-long-random-secret".to_string(),
+            handshake_window: HandshakeWindowConfig::default(),
             socks5_listen: Some("127.0.0.1:6680".parse().unwrap()),
             http_listen: None,
             auth: None,

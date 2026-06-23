@@ -35,16 +35,21 @@ masked payload:
 ```
 
 The 4-byte envelope length and the payload are XOR-masked with HMAC-derived
-streams keyed by the PSK auth key. This keeps robust async parsing while moving
-the fixed HMAC/timestamp/public-key offsets and fixed server reply out of the
-clear wire image. Inside the envelope, the client solves a bounded SHA-256
-leading-zero puzzle over the body before it computes the HMAC. The remote
-verifies the puzzle before the HMAC, checks timestamp skew, and records the
-ephemeral public key in a bounded replay cache. The current protocol version is
-`1`; capability bit 0 enables TCP CONNECT, bit 1 enables SOCKS5 UDP ASSOCIATE
-datagram relay, bit 8 enables `yamux`, and bit 9 enables the in-tree native mux.
-The configured mux mode must be present in the peer capability set. Mismatches
-fail during the authenticated handshake with an explicit mux capability error.
+streams keyed by the handshake authentication key. By default that key is a
+dynamic HKDF output bound to `floor(unix_time /
+shared.handshake_window.step_secs)`. The client sends with the current slot;
+the server tries the current slot and the configured adjacent tolerance. This
+keeps robust async parsing while moving the fixed HMAC/timestamp/public-key
+offsets and fixed server reply out of the clear wire image, and it prevents an
+old recorded first packet from authenticating after the accepted windows expire.
+Inside the envelope, the client solves a bounded SHA-256 leading-zero puzzle
+over the body before it computes the HMAC. The remote verifies the puzzle before
+the HMAC, checks timestamp skew, and records the ephemeral public key in a
+bounded replay cache. The current protocol version is `1`; capability bit 0
+enables TCP CONNECT, bit 1 enables SOCKS5 UDP ASSOCIATE datagram relay, bit 8
+enables `yamux`, and bit 9 enables the in-tree native mux. The configured mux
+mode must be present in the peer capability set. Mismatches fail during the
+authenticated handshake with an explicit mux capability error.
 
 ## Frame Pipeline
 
@@ -98,24 +103,25 @@ the same global deployment-wide size.
 
 Plain mode uses the variable-length masked envelope described above. Stealth
 mode wraps the client hello and server hello in fixed-size blocks that match the
-configured `shared.stealth.frame_size`. Each block starts with a random 24-byte nonce and
-masks the hello plus random padding with an HMAC-derived XOR stream keyed by the
-PSK auth key. This replaces the variable-length envelope with fixed-size
-handshake blocks without changing the underlying X25519/HMAC/puzzle handshake
-semantics.
+configured `shared.stealth.frame_size`. Each block starts with a random 24-byte
+nonce and masks the hello plus random padding with an HMAC-derived XOR stream
+keyed by the same dynamic handshake authentication key. This replaces the
+variable-length envelope with fixed-size handshake blocks without changing the
+underlying X25519/HMAC/puzzle handshake semantics.
 
 ## Multiplexing Pipeline
 
-`espejismo-local` maintains a reconnecting authenticated physical TCP tunnel to
-`espejismo-remote`, wraps it in the encrypted frame transport, and runs the
-configured logical stream mux over it. Each accepted SOCKS5 or HTTP proxy
-connection opens a logical stream and sends an internal command preface. HTTP
-CONNECT is accepted directly; absolute-form `http://` requests are rewritten to
-origin-form before entering the tunnel. SOCKS5 UDP ASSOCIATE datagrams are
-relayed as UDP command streams. Optional native TUN ingress creates a local
-virtual network interface and uses a userspace netstack to convert captured TCP
-flows and UDP datagrams into the same internal tunnel commands. The remote side
-does not need a separate TUN-specific listener.
+`espejismo-local` maintains a reconnecting pool of authenticated physical TCP
+tunnels to `espejismo-remote`, wraps each lane in the encrypted frame transport,
+and runs the configured logical stream mux over it. Each accepted SOCKS5 or HTTP
+proxy connection opens a logical stream on a health-scored lane and sends an
+internal command preface. HTTP CONNECT is accepted directly; absolute-form
+`http://` requests are rewritten to origin-form before entering the tunnel.
+SOCKS5 UDP ASSOCIATE datagrams are relayed as UDP command streams. Optional
+native TUN ingress creates a local virtual network interface and uses a
+userspace netstack to convert captured TCP flows and UDP datagrams into the same
+internal tunnel commands. The remote side does not need a separate TUN-specific
+listener.
 
 `espejismo-remote` accepts mux streams over the same physical tunnel. Each
 logical stream is handled independently: read the command preface, validate

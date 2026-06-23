@@ -43,11 +43,31 @@ pub const DEFAULT_CAPABILITIES: u64 = CAP_TCP_CONNECT | CAP_UDP_ASSOCIATE | CAP_
 pub struct HandshakeConfig {
     pub psk: Vec<u8>,
     pub auth_key: [u8; 32],
+    pub window: HandshakeWindow,
     pub clock_skew_secs: i64,
     pub max_handshake_padding: usize,
     pub puzzle_difficulty_bits: u8,
     pub stealth_frame_size: Option<usize>,
     pub mux_mode: MuxMode,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct HandshakeWindow {
+    pub enabled: bool,
+    pub step_secs: u64,
+    pub previous_windows: u8,
+    pub future_windows: u8,
+}
+
+impl Default for HandshakeWindow {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            step_secs: 30,
+            previous_windows: 1,
+            future_windows: 0,
+        }
+    }
 }
 
 impl HandshakeConfig {
@@ -61,6 +81,7 @@ impl HandshakeConfig {
         Self {
             psk,
             auth_key,
+            window: HandshakeWindow::default(),
             clock_skew_secs,
             max_handshake_padding,
             puzzle_difficulty_bits,
@@ -78,6 +99,42 @@ impl HandshakeConfig {
         self.mux_mode = mux_mode;
         self
     }
+
+    pub fn with_handshake_window(mut self, window: HandshakeWindow) -> Self {
+        self.window = window;
+        self
+    }
+
+    fn client_auth_key(&self) -> Result<[u8; 32]> {
+        if !self.window.enabled {
+            return Ok(self.auth_key);
+        }
+        let slot = window_slot(unix_now()?, self.window.step_secs)?;
+        derive_window_auth_key(&self.psk, slot)
+    }
+
+    fn accepted_auth_keys(&self, now: i64) -> Result<Vec<[u8; 32]>> {
+        if !self.window.enabled {
+            return Ok(vec![self.auth_key]);
+        }
+        let current = window_slot(now, self.window.step_secs)?;
+        let mut keys = Vec::with_capacity(
+            self.window.previous_windows as usize + self.window.future_windows as usize + 1,
+        );
+        keys.push(derive_window_auth_key(&self.psk, current)?);
+        for offset in 1..=self.window.previous_windows {
+            if let Some(slot) = current.checked_sub(u64::from(offset)) {
+                keys.push(derive_window_auth_key(&self.psk, slot)?);
+            }
+        }
+        for offset in 1..=self.window.future_windows {
+            let slot = current
+                .checked_add(u64::from(offset))
+                .context("handshake window slot overflow")?;
+            keys.push(derive_window_auth_key(&self.psk, slot)?);
+        }
+        Ok(keys)
+    }
 }
 
 impl fmt::Debug for HandshakeConfig {
@@ -85,6 +142,7 @@ impl fmt::Debug for HandshakeConfig {
         f.debug_struct("HandshakeConfig")
             .field("psk", &"<redacted>")
             .field("auth_key", &"<redacted>")
+            .field("window", &self.window)
             .field("clock_skew_secs", &self.clock_skew_secs)
             .field("max_handshake_padding", &self.max_handshake_padding)
             .field("puzzle_difficulty_bits", &self.puzzle_difficulty_bits)
@@ -195,9 +253,10 @@ where
     S: AsyncRead + AsyncWrite + Unpin,
 {
     let secret = StaticSecret::random_from_rng(OsRng);
-    let client_hello = build_client_hello(cfg, &secret, cfg.max_handshake_padding)?;
+    let auth_key = cfg.client_auth_key()?;
+    let client_hello = build_client_hello(cfg, &secret, cfg.max_handshake_padding, &auth_key)?;
     let envelope = mask_variable_handshake_envelope(
-        &cfg.auth_key,
+        &auth_key,
         b"plain-client",
         &[],
         &client_hello.wire,
@@ -207,7 +266,7 @@ where
 
     let reply_payload = read_variable_handshake_envelope(
         stream,
-        &cfg.auth_key,
+        &auth_key,
         b"plain-server",
         &client_hello.tag,
         SERVER_HELLO_LEN,
@@ -220,6 +279,7 @@ where
     }
     finish_client_handshake(
         cfg,
+        &auth_key,
         &secret,
         &client_hello.body,
         &client_hello.nonce,
@@ -238,9 +298,10 @@ where
     validate_stealth_handshake_frame(frame_size)?;
     let secret = StaticSecret::random_from_rng(OsRng);
     let max_padding = stealth_client_padding_cap(cfg, frame_size)?;
-    let client_hello = build_client_hello(cfg, &secret, max_padding)?;
+    let auth_key = cfg.client_auth_key()?;
+    let client_hello = build_client_hello(cfg, &secret, max_padding, &auth_key)?;
     let block = mask_stealth_handshake_block(
-        &cfg.auth_key,
+        &auth_key,
         b"client-hello",
         &[],
         &client_hello.wire,
@@ -254,13 +315,14 @@ where
         .await
         .context("stealth server handshake failed")?;
     let reply_plain = unmask_stealth_handshake_block(
-        &cfg.auth_key,
+        &auth_key,
         b"server-hello",
         &client_hello.tag,
         &reply_block,
     )?;
     finish_client_handshake(
         cfg,
+        &auth_key,
         &secret,
         &client_hello.body,
         &client_hello.nonce,
@@ -360,7 +422,7 @@ where
     let client_capabilities = u64::from_be_bytes(client_hello.fixed_body[66..74].try_into()?);
     let server_capabilities = negotiated_capabilities(cfg, client_capabilities)?;
     let tag = server_hmac(
-        &cfg.auth_key,
+        &client_hello.auth_key,
         &client_hello.body,
         public.as_bytes(),
         PROTOCOL_VERSION,
@@ -374,7 +436,7 @@ where
 
     if let Some(frame_size) = cfg.stealth_frame_size {
         let block = mask_stealth_handshake_block(
-            &cfg.auth_key,
+            &client_hello.auth_key,
             b"server-hello",
             &client_hello.tag,
             &reply,
@@ -383,7 +445,7 @@ where
         stream.write_all(&block).await?;
     } else {
         let envelope = mask_variable_handshake_envelope(
-            &cfg.auth_key,
+            &client_hello.auth_key,
             b"plain-server",
             &client_hello.tag,
             &reply,
@@ -409,6 +471,7 @@ struct ClientHelloMaterial {
 
 struct ParsedClientHello {
     tag: [u8; CLIENT_HELLO_TAG_LEN],
+    auth_key: [u8; 32],
     fixed_body: [u8; CLIENT_HELLO_FIXED_BODY_LEN],
     body: Vec<u8>,
 }
@@ -417,6 +480,7 @@ fn build_client_hello(
     cfg: &HandshakeConfig,
     secret: &StaticSecret,
     max_padding: usize,
+    auth_key: &[u8; 32],
 ) -> Result<ClientHelloMaterial> {
     let public = PublicKey::from(secret);
     let now = unix_now()?;
@@ -437,7 +501,7 @@ fn build_client_hello(
     body.extend_from_slice(&(padding_len as u16).to_be_bytes());
     body.extend_from_slice(&padding);
     let body = puzzle::solve(body, PUZZLE_NONCE_RANGE, cfg.puzzle_difficulty_bits);
-    let tag = hmac(&cfg.auth_key, &body)?;
+    let tag = hmac(auth_key, &body)?;
     let mut wire = Vec::with_capacity(CLIENT_HELLO_TAG_LEN + body.len());
     wire.extend_from_slice(&tag);
     wire.extend_from_slice(&body);
@@ -451,6 +515,7 @@ fn build_client_hello(
 
 fn finish_client_handshake(
     cfg: &HandshakeConfig,
+    auth_key: &[u8; 32],
     secret: &StaticSecret,
     body: &[u8],
     nonce: &[u8; 24],
@@ -467,7 +532,7 @@ fn finish_client_handshake(
     }
     ensure_mux_capability(cfg, server_capabilities, "server")?;
     let expected = server_hmac(
-        &cfg.auth_key,
+        auth_key,
         body,
         server_public.as_bytes(),
         server_version,
@@ -519,19 +584,13 @@ async fn read_plain_client_hello<S>(
 where
     S: AsyncRead + Unpin,
 {
-    let min_len = plain_client_hello_min_len();
-    let max_len = plain_client_hello_max_len(cfg.max_handshake_padding);
-    let payload = read_variable_handshake_envelope(
-        stream,
-        &cfg.auth_key,
-        b"plain-client",
-        &[],
-        min_len,
-        max_len,
-    )
-    .await
-    .context("client handshake failed")?;
-    parse_plain_client_hello(cfg, &payload)
+    let users = [HandshakeUser {
+        name: "default".to_string(),
+        config: cfg.clone(),
+    }];
+    read_plain_client_hello_for_users(stream, &users)
+        .await
+        .map(|(hello, _)| hello)
 }
 
 async fn read_plain_client_hello_for_users<S>(
@@ -552,48 +611,69 @@ where
         .await
         .context("client handshake length failed")?;
 
+    let now = unix_now()?;
     let mut candidates = Vec::new();
     for (index, user) in users.iter().enumerate() {
-        let len = unmask_variable_handshake_len(
-            &user.config.auth_key,
-            b"plain-client",
-            &[],
-            &nonce,
-            masked_len,
-        )?;
-        if (plain_client_hello_min_len()
-            ..=plain_client_hello_max_len(user.config.max_handshake_padding))
-            .contains(&len)
-        {
-            candidates.push((index, len));
+        for auth_key in user.config.accepted_auth_keys(now)? {
+            let len =
+                unmask_variable_handshake_len(&auth_key, b"plain-client", &[], &nonce, masked_len)?;
+            if (plain_client_hello_min_len()
+                ..=plain_client_hello_max_len(user.config.max_handshake_padding))
+                .contains(&len)
+            {
+                candidates.push((index, auth_key, len));
+            }
         }
     }
 
-    let (index, payload_len) = match candidates.as_slice() {
-        [(index, payload_len)] => (*index, *payload_len),
-        [] => bail!("client handshake did not match any configured user"),
-        _ => bail!("client handshake length matched multiple users"),
-    };
+    let payload_len = unique_candidate_payload_len(&candidates).ok_or_else(|| {
+        if candidates.is_empty() {
+            anyhow!("client handshake did not match any configured user")
+        } else {
+            anyhow!("client handshake length matched multiple user/window candidates")
+        }
+    })?;
 
     let mut payload = vec![0_u8; payload_len];
     stream
         .read_exact(&mut payload)
         .await
         .context("client handshake payload failed")?;
-    xor_variable_handshake_payload(
-        &users[index].config.auth_key,
-        b"plain-client",
-        &[],
-        &nonce,
-        &mut payload,
-    )?;
-    Ok((
-        parse_plain_client_hello(&users[index].config, &payload)?,
-        index,
-    ))
+    let mut authenticated = Vec::new();
+    for (index, auth_key, _) in candidates {
+        let mut plain = payload.clone();
+        xor_variable_handshake_payload(&auth_key, b"plain-client", &[], &nonce, &mut plain)?;
+        let Ok(parsed) = parse_plain_client_hello(&users[index].config, &plain, auth_key) else {
+            continue;
+        };
+        if client_hello_authenticates(&parsed) {
+            authenticated.push((parsed, index));
+        }
+    }
+    match authenticated.len() {
+        1 => Ok(authenticated.remove(0)),
+        0 => bail!("client handshake did not authenticate any configured user/window"),
+        _ => bail!("client handshake authenticated multiple user/window candidates"),
+    }
 }
 
-fn parse_plain_client_hello(cfg: &HandshakeConfig, plain: &[u8]) -> Result<ParsedClientHello> {
+fn unique_candidate_payload_len(candidates: &[(usize, [u8; 32], usize)]) -> Option<usize> {
+    let mut len = None;
+    for (_, _, candidate_len) in candidates {
+        match len {
+            Some(existing) if existing != *candidate_len => return None,
+            Some(_) => {}
+            None => len = Some(*candidate_len),
+        }
+    }
+    len
+}
+
+fn parse_plain_client_hello(
+    cfg: &HandshakeConfig,
+    plain: &[u8],
+    auth_key: [u8; 32],
+) -> Result<ParsedClientHello> {
     if plain.len() < plain_client_hello_min_len() {
         bail!("short client handshake");
     }
@@ -615,6 +695,7 @@ fn parse_plain_client_hello(cfg: &HandshakeConfig, plain: &[u8]) -> Result<Parse
     body.extend_from_slice(&plain[CLIENT_HELLO_TAG_LEN + CLIENT_HELLO_FIXED_BODY_LEN..total]);
     Ok(ParsedClientHello {
         tag,
+        auth_key,
         fixed_body,
         body,
     })
@@ -634,8 +715,25 @@ where
         .read_exact(&mut block)
         .await
         .context("stealth client handshake failed")?;
-    let plain = unmask_stealth_handshake_block(&cfg.auth_key, b"client-hello", &[], &block)?;
-    parse_stealth_client_hello(cfg, &plain, frame_size)
+    let now = unix_now()?;
+    let mut authenticated = Vec::new();
+    for auth_key in cfg.accepted_auth_keys(now)? {
+        let Ok(plain) = unmask_stealth_handshake_block(&auth_key, b"client-hello", &[], &block)
+        else {
+            continue;
+        };
+        let Ok(parsed) = parse_stealth_client_hello(cfg, &plain, frame_size, auth_key) else {
+            continue;
+        };
+        if client_hello_authenticates(&parsed) {
+            authenticated.push(parsed);
+        }
+    }
+    match authenticated.len() {
+        1 => Ok(authenticated.remove(0)),
+        0 => bail!("stealth client handshake did not authenticate configured user"),
+        _ => bail!("stealth client handshake authenticated multiple window candidates"),
+    }
 }
 
 async fn read_stealth_client_hello_for_users<S>(
@@ -654,19 +752,26 @@ where
         .context("stealth client handshake failed")?;
     let mut matched = None;
     let mut matches = 0_usize;
+    let now = unix_now()?;
     for (index, user) in users.iter().enumerate() {
         if user.config.stealth_frame_size != Some(frame_size) {
             continue;
         }
-        let Ok(plain) =
-            unmask_stealth_handshake_block(&user.config.auth_key, b"client-hello", &[], &block)
-        else {
-            continue;
-        };
-        if let Ok(parsed) = parse_stealth_client_hello(&user.config, &plain, frame_size) {
-            matches += 1;
-            if matched.is_none() {
-                matched = Some((parsed, index));
+        for auth_key in user.config.accepted_auth_keys(now)? {
+            let Ok(plain) = unmask_stealth_handshake_block(&auth_key, b"client-hello", &[], &block)
+            else {
+                continue;
+            };
+            if let Ok(parsed) =
+                parse_stealth_client_hello(&user.config, &plain, frame_size, auth_key)
+            {
+                if !client_hello_authenticates(&parsed) {
+                    continue;
+                }
+                matches += 1;
+                if matched.is_none() {
+                    matched = Some((parsed, index));
+                }
             }
         }
     }
@@ -691,6 +796,7 @@ fn parse_stealth_client_hello(
     cfg: &HandshakeConfig,
     plain: &[u8],
     frame_size: usize,
+    auth_key: [u8; 32],
 ) -> Result<ParsedClientHello> {
     let min_len = CLIENT_HELLO_TAG_LEN + CLIENT_HELLO_FIXED_BODY_LEN;
     if plain.len() < min_len {
@@ -715,9 +821,16 @@ fn parse_stealth_client_hello(
     body.extend_from_slice(&plain[CLIENT_HELLO_TAG_LEN + CLIENT_HELLO_FIXED_BODY_LEN..total]);
     Ok(ParsedClientHello {
         tag,
+        auth_key,
         fixed_body,
         body,
     })
+}
+
+fn client_hello_authenticates(client_hello: &ParsedClientHello) -> bool {
+    hmac(&client_hello.auth_key, &client_hello.body)
+        .map(|expected| expected.ct_eq(&client_hello.tag).unwrap_u8() == 1)
+        .unwrap_or(false)
 }
 
 async fn verify_client_hello(
@@ -728,7 +841,7 @@ async fn verify_client_hello(
     if !puzzle::verify(&client_hello.body, cfg.puzzle_difficulty_bits) {
         bail!("client puzzle verification failed");
     }
-    let expected = hmac(&cfg.auth_key, &client_hello.body)?;
+    let expected = hmac(&client_hello.auth_key, &client_hello.body)?;
     if expected.ct_eq(&client_hello.tag).unwrap_u8() != 1 {
         bail!("client authentication failed");
     }
@@ -1101,6 +1214,25 @@ fn derive_auth_key(psk: &[u8]) -> [u8; 32] {
     key
 }
 
+fn derive_window_auth_key(psk: &[u8], slot: u64) -> Result<[u8; 32]> {
+    let hk = Hkdf::<Sha256>::new(None, psk);
+    let mut key = [0_u8; 32];
+    let mut info = Vec::with_capacity(43);
+    info.extend_from_slice(b"espejismo v1 handshake-window-auth-key:");
+    info.extend_from_slice(&slot.to_be_bytes());
+    hk.expand(&info, &mut key)
+        .map_err(|_| anyhow!("hkdf handshake window expansion failed"))?;
+    Ok(key)
+}
+
+fn window_slot(now: i64, step_secs: u64) -> Result<u64> {
+    if step_secs == 0 {
+        bail!("handshake window step must be greater than 0");
+    }
+    let now = u64::try_from(now).context("system time is before Unix epoch")?;
+    Ok(now / step_secs)
+}
+
 fn hmac(key: &[u8], input: &[u8]) -> Result<[u8; 32]> {
     let mut mac =
         <HmacSha256 as Mac>::new_from_slice(key).map_err(|_| anyhow!("invalid HMAC key"))?;
@@ -1148,12 +1280,13 @@ fn unix_now() -> Result<i64> {
 mod tests {
     use super::{
         accept_handshake, accept_handshake_with_users, connect_handshake, parse_plain_client_hello,
-        HandshakeConfig, HandshakeUser, VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+        HandshakeConfig, HandshakeUser, HandshakeWindow, SERVER_HELLO_LEN,
+        VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
     };
     use crate::config::MuxMode;
     use crate::protocol::replay::ReplayCache;
     use std::sync::Arc;
-    use tokio::io::duplex;
+    use tokio::io::{duplex, AsyncWriteExt};
     use tokio::sync::Mutex;
 
     #[tokio::test]
@@ -1199,10 +1332,12 @@ mod tests {
     fn variable_plain_envelope_masks_inner_hello_and_varies_length() {
         let cfg = HandshakeConfig::new(b"test-secret-that-is-long-enough".to_vec(), 30, 128, 0);
         let secret = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
-        let hello = super::build_client_hello(&cfg, &secret, cfg.max_handshake_padding).unwrap();
+        let auth_key = cfg.client_auth_key().unwrap();
+        let hello =
+            super::build_client_hello(&cfg, &secret, cfg.max_handshake_padding, &auth_key).unwrap();
 
         let envelope_a = super::mask_variable_handshake_envelope(
-            &cfg.auth_key,
+            &auth_key,
             b"plain-client",
             &[],
             &hello.wire,
@@ -1210,7 +1345,7 @@ mod tests {
         )
         .unwrap();
         let envelope_b = super::mask_variable_handshake_envelope(
-            &cfg.auth_key,
+            &auth_key,
             b"plain-client",
             &[],
             &hello.wire,
@@ -1224,7 +1359,7 @@ mod tests {
         let nonce: [u8; 24] = envelope_a[..24].try_into().unwrap();
         let masked_len: [u8; 4] = envelope_a[24..28].try_into().unwrap();
         let len = super::unmask_variable_handshake_len(
-            &cfg.auth_key,
+            &auth_key,
             b"plain-client",
             &[],
             &nonce,
@@ -1233,14 +1368,98 @@ mod tests {
         .unwrap();
         let mut payload = envelope_a[28..28 + len].to_vec();
         super::xor_variable_handshake_payload(
-            &cfg.auth_key,
+            &auth_key,
             b"plain-client",
             &[],
             &nonce,
             &mut payload,
         )
         .unwrap();
-        parse_plain_client_hello(&cfg, &payload).unwrap();
+        parse_plain_client_hello(&cfg, &payload, auth_key).unwrap();
+    }
+
+    #[tokio::test]
+    async fn server_accepts_previous_handshake_window() {
+        let cfg = HandshakeConfig::new(b"window-secret-that-is-long-enough".to_vec(), 30, 128, 0)
+            .with_handshake_window(HandshakeWindow {
+                enabled: true,
+                step_secs: 30,
+                previous_windows: 1,
+                future_windows: 0,
+            });
+        let current = super::window_slot(super::unix_now().unwrap(), cfg.window.step_secs).unwrap();
+        let previous_key = super::derive_window_auth_key(&cfg.psk, current - 1).unwrap();
+        let (mut client, mut server) = duplex(4096);
+        let server_cfg = cfg.clone();
+        let server_task =
+            tokio::spawn(async move { accept_handshake(&mut server, &server_cfg).await });
+
+        let secret = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let hello =
+            super::build_client_hello(&cfg, &secret, cfg.max_handshake_padding, &previous_key)
+                .unwrap();
+        let envelope = super::mask_variable_handshake_envelope(
+            &previous_key,
+            b"plain-client",
+            &[],
+            &hello.wire,
+            VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+        )
+        .unwrap();
+        client.write_all(&envelope).await.unwrap();
+        let reply = super::read_variable_handshake_envelope(
+            &mut client,
+            &previous_key,
+            b"plain-server",
+            &hello.tag,
+            SERVER_HELLO_LEN,
+            SERVER_HELLO_LEN + VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+        )
+        .await
+        .unwrap();
+        super::finish_client_handshake(
+            &cfg,
+            &previous_key,
+            &secret,
+            &hello.body,
+            &hello.nonce,
+            &reply[..SERVER_HELLO_LEN],
+        )
+        .unwrap();
+        server_task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn server_rejects_expired_handshake_window() {
+        let cfg = HandshakeConfig::new(b"expired-window-secret-long-enough".to_vec(), 30, 128, 0)
+            .with_handshake_window(HandshakeWindow {
+                enabled: true,
+                step_secs: 30,
+                previous_windows: 1,
+                future_windows: 0,
+            });
+        let current = super::window_slot(super::unix_now().unwrap(), cfg.window.step_secs).unwrap();
+        let expired_key = super::derive_window_auth_key(&cfg.psk, current - 2).unwrap();
+        let (mut client, mut server) = duplex(4096);
+        let server_cfg = cfg.clone();
+        let server_task =
+            tokio::spawn(async move { accept_handshake(&mut server, &server_cfg).await });
+
+        let secret = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let hello =
+            super::build_client_hello(&cfg, &secret, cfg.max_handshake_padding, &expired_key)
+                .unwrap();
+        let envelope = super::mask_variable_handshake_envelope(
+            &expired_key,
+            b"plain-client",
+            &[],
+            &hello.wire,
+            VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+        )
+        .unwrap();
+        client.write_all(&envelope).await.unwrap();
+        drop(client);
+        assert!(server_task.await.unwrap().is_err());
     }
 
     #[tokio::test]

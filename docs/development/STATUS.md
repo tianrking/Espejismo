@@ -70,6 +70,9 @@ Current release target: `v0.1.0`.
 - Server-side egress policy for host/port allow and block rules.
 - Server-side upstream proxy egress: SOCKS4/SOCKS4a/SOCKS5 TCP chaining,
   SOCKS5 UDP ASSOCIATE chaining, and HTTP/HTTPS CONNECT TCP chaining.
+- Dynamic time-window handshake authentication keys configured through
+  `[shared.handshake_window]`, with current/adjacent-window server matching and
+  silent reject/tarpit behavior for expired replays.
 - Variable-length masked handshake envelope with authenticated payload.
 - Protocol version, mux mode, and capability negotiation in the authenticated
   handshake.

@@ -65,9 +65,9 @@ espejismo-local \
 ```
 
 Profiles currently carry the local client essentials: profile name, remote
-server address, PSK, local proxy listeners, and optional local proxy auth.
-Obfuscation settings, including `profile = "stealth"` and `[shared.stealth]`
-(`frame_size`, `frame_size_candidates`, `tick_ms`),
-remain in TOML/CLI config and are not embedded in the import URL. Server
-egress/admin/logging policy also remains in TOML because those are
-deployment-side operator settings.
+server address, PSK, dynamic handshake-window settings, local proxy listeners,
+and optional local proxy auth. Obfuscation settings, including
+`profile = "stealth"` and `[shared.stealth]` (`frame_size`,
+`frame_size_candidates`, `tick_ms`), remain in TOML/CLI config and are not
+embedded in the import URL. Server egress/admin/logging policy also remains in
+TOML because those are deployment-side operator settings.

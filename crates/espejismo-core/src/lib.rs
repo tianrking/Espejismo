@@ -20,12 +20,12 @@ pub use cli_support::{apply_log_overrides, print_update_check, report_config_che
 pub use config::{
     apply_named_profile, config_to_toml, encode_config_base64, load_config, load_config_base64,
     parse_config, AdminConfig, ConfigInput, EgressConfig, EspejismoConfig, FrameOptionOverrides,
-    LogConfig, LogFormat, MuxConfig, MuxMode, ObfuscationConfig, PacingConfig, ProbeDefenseMode,
-    TcpConfig, TunnelPoolConfig,
+    HandshakeWindowConfig, LogConfig, LogFormat, MuxConfig, MuxMode, ObfuscationConfig,
+    PacingConfig, ProbeDefenseMode, TcpConfig, TunnelPoolConfig,
 };
 pub use crypto::{
     accept_handshake, accept_handshake_with_replay, accept_handshake_with_users, connect_handshake,
-    parse_psk, AuthenticatedSession, HandshakeConfig, HandshakeUser, SessionKeys,
+    parse_psk, AuthenticatedSession, HandshakeConfig, HandshakeUser, HandshakeWindow, SessionKeys,
 };
 pub use egress::{split_authority, EgressPolicy, EgressProxy, EgressProxyKind};
 pub use extension::{

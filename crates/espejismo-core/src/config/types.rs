@@ -44,6 +44,8 @@ pub struct SharedConfig {
     pub clock_skew_secs: i64,
     #[serde(default = "default_puzzle_bits")]
     pub puzzle_bits: u8,
+    #[serde(default)]
+    pub handshake_window: HandshakeWindowConfig,
     #[serde(default = "default_max_padding")]
     pub max_padding: usize,
     #[serde(default)]
@@ -74,6 +76,29 @@ pub struct SharedConfig {
     pub obfuscation: ObfuscationConfig,
     #[serde(default)]
     pub stealth: StealthConfig,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+pub struct HandshakeWindowConfig {
+    #[serde(default = "default_handshake_window_enabled")]
+    pub enabled: bool,
+    #[serde(default = "default_handshake_window_step_secs")]
+    pub step_secs: u64,
+    #[serde(default = "default_handshake_window_previous_windows")]
+    pub previous_windows: u8,
+    #[serde(default)]
+    pub future_windows: u8,
+}
+
+impl From<HandshakeWindowConfig> for crate::crypto::HandshakeWindow {
+    fn from(value: HandshakeWindowConfig) -> Self {
+        Self {
+            enabled: value.enabled,
+            step_secs: value.step_secs,
+            previous_windows: value.previous_windows,
+            future_windows: value.future_windows,
+        }
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -404,6 +429,7 @@ impl Default for SharedConfig {
             psk: None,
             clock_skew_secs: default_clock_skew_secs(),
             puzzle_bits: default_puzzle_bits(),
+            handshake_window: HandshakeWindowConfig::default(),
             max_padding: default_max_padding(),
             jitter_ms: 0,
             padding_chance_percent: default_padding_chance_percent(),
@@ -419,6 +445,17 @@ impl Default for SharedConfig {
             pacing: PacingConfig::default(),
             obfuscation: ObfuscationConfig::default(),
             stealth: StealthConfig::default(),
+        }
+    }
+}
+
+impl Default for HandshakeWindowConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_handshake_window_enabled(),
+            step_secs: default_handshake_window_step_secs(),
+            previous_windows: default_handshake_window_previous_windows(),
+            future_windows: 0,
         }
     }
 }

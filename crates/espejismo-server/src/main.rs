@@ -488,6 +488,7 @@ fn build_handshake_users(
                     args.puzzle_bits.unwrap_or(config.shared.puzzle_bits),
                 )
                 .with_stealth_frame_size(stealth_handshake)
+                .with_handshake_window(config.shared.handshake_window.into())
                 .with_mux_mode(config.shared.mux.mode),
             });
         }
@@ -510,6 +511,7 @@ fn build_handshake_users(
             args.puzzle_bits.unwrap_or(config.shared.puzzle_bits),
         )
         .with_stealth_frame_size(stealth_handshake)
+        .with_handshake_window(config.shared.handshake_window.into())
         .with_mux_mode(config.shared.mux.mode),
     });
     Ok(users)

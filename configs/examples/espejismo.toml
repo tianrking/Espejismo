@@ -13,6 +13,15 @@ max_streams = 256
 max_physical_connections = 1024
 key_update_frames = 16384
 
+[shared.handshake_window]
+# Dynamic handshake authentication keys. The client derives the first-packet
+# handshake key from PSK + floor(unix_time / step_secs). The server accepts the
+# current window plus previous_windows/future_windows to tolerate clock skew.
+enabled = true
+step_secs = 30
+previous_windows = 1
+future_windows = 0
+
 [shared.tcp]
 nodelay = true
 keepalive_secs = 30

@@ -10,6 +10,18 @@ pub(super) fn default_puzzle_bits() -> u8 {
     12
 }
 
+pub(super) fn default_handshake_window_enabled() -> bool {
+    true
+}
+
+pub(super) fn default_handshake_window_step_secs() -> u64 {
+    30
+}
+
+pub(super) fn default_handshake_window_previous_windows() -> u8 {
+    1
+}
+
 pub(super) fn default_max_padding() -> usize {
     64
 }

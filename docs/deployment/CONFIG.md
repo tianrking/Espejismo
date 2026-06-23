@@ -84,6 +84,42 @@ Minimum length is 16 bytes.
 
 `shared.puzzle_bits`: SHA-256 client puzzle difficulty.
 
+### shared.handshake_window
+
+Dynamic handshake windows bind the first packet authentication key to time:
+
+```text
+handshake_auth_key = HKDF(PSK, "espejismo v1 handshake-window-auth-key" || floor(unix_time / step_secs))
+```
+
+The client sends with the current window. The server tries the current window
+plus the configured previous/future tolerance. A recorded first packet replayed
+after the accepted window set expires no longer decrypts as a valid hello and
+falls into the normal silent reject/tarpit path.
+
+Recommended production baseline:
+
+```toml
+[shared.handshake_window]
+enabled = true
+step_secs = 30
+previous_windows = 1
+future_windows = 0
+```
+
+`enabled`: Enable dynamic first-packet handshake authentication keys. Keep this
+the same on client and server.
+
+`step_secs`: Window size in seconds. `30` is the default. Smaller values reduce
+replay lifetime but require tighter client/server clocks.
+
+`previous_windows`: Number of older windows accepted by the server. `1` allows
+roughly one extra step for latency and small clock skew.
+
+`future_windows`: Number of future windows accepted by the server. Keep `0`
+unless client clocks are known to run ahead. Increasing this widens the replay
+tolerance.
+
 `shared.max_padding`: Maximum normal-mode random padding bytes.
 
 `shared.jitter_ms`: Optional send jitter ceiling.
@@ -199,6 +235,23 @@ fine for single-user desktop use.
 `max_reconnect_attempts`: Per-open reconnect attempts.
 
 `max_connection_age_secs`: Rotate old physical tunnels for new streams.
+
+Suggested desktop/browser baseline:
+
+```toml
+[local.tunnel_pool]
+min_connections = 1
+max_connections = 4
+interactive_lanes = 2
+bulk_lanes = 2
+max_reconnect_attempts = 3
+max_connection_age_secs = 3600
+```
+
+Use more `interactive_lanes` for browser SOCKS5/HTTP proxy workloads. Use more
+`bulk_lanes` for TUN-heavy or transfer-heavy workloads. Each lane is an
+independent TCP physical tunnel, so packet loss on one lane does not block
+logical streams placed on other lanes.
 
 ### local.tun
 
