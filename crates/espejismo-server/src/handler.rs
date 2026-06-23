@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use espejismo_core::{
@@ -38,6 +38,7 @@ pub(crate) async fn handle_peer(
 
     metrics.inc_active_physical();
     runtime.runtime_state.set_tunnel_state("authenticating");
+    let handshake_started = Instant::now();
     let keys = match timeout(
         settings.handshake_timeout,
         accept_handshake_with_users(&mut inbound, &settings.users, replay),
@@ -80,14 +81,22 @@ pub(crate) async fn handle_peer(
             return Err(err.into());
         }
     };
+    let handshake_elapsed = handshake_started.elapsed();
 
+    let cold_start_started = Instant::now();
     if !settings.cold_start_delay.is_zero() {
         sleep(settings.cold_start_delay).await;
     }
+    let cold_start_elapsed = cold_start_started.elapsed();
 
     let user = keys.user;
     runtime.runtime_state.record_connect_success();
-    info!(user = %user, "authenticated tunnel accepted");
+    info!(
+        user = %user,
+        handshake_ms = handshake_elapsed.as_millis(),
+        cold_start_ms = cold_start_elapsed.as_millis(),
+        "authenticated tunnel accepted"
+    );
     let mut frames = settings.frames.clone();
     if frames.is_stealth() {
         frames.stealth_frame_size = frames.select_stealth_frame_size(keys.keys.stealth_selector());
@@ -201,20 +210,46 @@ async fn handle_mux_stream_inner(
     idle: Duration,
     user: &str,
 ) -> Result<()> {
-    match timeout(REQUEST_READ_TIMEOUT, read_tunnel_request(stream))
+    let stream_started = Instant::now();
+    let request_started = Instant::now();
+    let request = timeout(REQUEST_READ_TIMEOUT, read_tunnel_request(stream))
         .await
-        .map_err(|_| anyhow::anyhow!("tunnel request read timed out"))??
-    {
+        .map_err(|_| anyhow::anyhow!("tunnel request read timed out"))??;
+    let request_elapsed = request_started.elapsed();
+    match request {
         TunnelRequest::TcpConnect {
             authority,
             priority,
         } => {
+            let egress_started = Instant::now();
             let mut remote = connect_egress_tcp(&authority, &egress).await?;
-            info!(target = %authority, priority = ?priority, "mux TCP relay opened");
+            let egress_elapsed = egress_started.elapsed();
+            info!(
+                target = %authority,
+                priority = ?priority,
+                request_ms = request_elapsed.as_millis(),
+                egress_connect_ms = egress_elapsed.as_millis(),
+                "mux TCP relay opened"
+            );
+            let copy_started = Instant::now();
             let (client_to_remote, remote_to_client) =
                 limited_copy_bidirectional(stream, &mut remote, idle, &limits, user).await?;
+            let copy_elapsed = copy_started.elapsed();
             metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
             metrics.add_user_tunnel_bytes(user, client_to_remote, remote_to_client);
+            debug!(
+                target = %authority,
+                user,
+                priority = ?priority,
+                request_ms = request_elapsed.as_millis(),
+                egress_connect_ms = egress_elapsed.as_millis(),
+                copy_ms = copy_elapsed.as_millis(),
+                total_ms = stream_started.elapsed().as_millis(),
+                client_to_remote,
+                remote_to_client,
+                remote_to_client_bps = throughput_bps(remote_to_client, copy_elapsed),
+                "perf remote TCP stream completed"
+            );
             traffic.observe(TrafficEvent {
                 event: "tcp_stream_closed",
                 user: user.to_string(),
@@ -257,6 +292,17 @@ async fn handle_mux_stream_inner(
         }
     }
     Ok(())
+}
+
+fn throughput_bps(bytes: u64, elapsed: Duration) -> u64 {
+    let nanos = elapsed.as_nanos();
+    if nanos == 0 {
+        return 0;
+    }
+    ((bytes as u128)
+        .saturating_mul(8)
+        .saturating_mul(1_000_000_000)
+        / nanos) as u64
 }
 
 fn classify_stream_failure(err: &anyhow::Error) -> &'static str {

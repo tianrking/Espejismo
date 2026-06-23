@@ -430,8 +430,10 @@ where
     pace_before_write(options, encrypted.len() + 4, next_pace_at).await;
     let started = Instant::now();
     let masked_len = (encrypted.len() as u32) ^ length_mask(&keys.tx_len_mask, seq)?;
-    stream.write_all(&masked_len.to_be_bytes()).await?;
-    stream.write_all(&encrypted).await?;
+    let mut wire = Vec::with_capacity(encrypted.len() + 4);
+    wire.extend_from_slice(&masked_len.to_be_bytes());
+    wire.extend_from_slice(&encrypted);
+    stream.write_all(&wire).await?;
     Ok(started.elapsed())
 }
 

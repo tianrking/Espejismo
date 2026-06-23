@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use rand::Rng;
@@ -15,7 +15,7 @@ use crate::protocol::framing::{Frame, FrameOptions, FrameReader, FrameType, Fram
 const STEALTH_WARMUP_MIN_FRAMES: usize = 2;
 const STEALTH_WARMUP_MAX_FRAMES: usize = 5;
 const STEALTH_IDLE_DECAY_FRAMES: u64 = 8;
-const COPY_BUFFER_SIZE: usize = 32 * 1024;
+const COPY_BUFFER_SIZE: usize = 128 * 1024;
 
 pub fn spawn_frame_transport<S>(
     stream: S,
@@ -184,6 +184,10 @@ where
     let mut buf = vec![0_u8; options.normalized_chunk_bounds().1];
     let mut frame_writer = FrameWriter::new(net_writer, keys, options);
     let heartbeat = frame_writer.options().heartbeat_secs;
+    let started = Instant::now();
+    let mut data_frames = 0_u64;
+    let mut padding_frames = 0_u64;
+    let mut bytes = 0_u64;
     loop {
         let chunk_size = frame_writer.options().next_chunk_size();
         let n = if heartbeat == 0 {
@@ -198,6 +202,7 @@ where
                             payload: Vec::new(),
                         })
                         .await?;
+                    padding_frames = padding_frames.saturating_add(1);
                     continue;
                 }
             }
@@ -209,8 +214,18 @@ where
                     payload: Vec::new(),
                 })
                 .await?;
+            debug!(
+                elapsed_ms = started.elapsed().as_millis(),
+                data_frames,
+                padding_frames,
+                bytes,
+                bps = throughput_bps(bytes, started.elapsed()),
+                "perf encrypted upload pump completed"
+            );
             return Ok(());
         }
+        data_frames = data_frames.saturating_add(1);
+        bytes = bytes.saturating_add(n as u64);
         frame_writer
             .send(Frame {
                 ty: FrameType::Data,
@@ -237,6 +252,10 @@ where
     let mut frame_writer = FrameWriter::new(net_writer, keys, options.clone());
     let mut app_closed = false;
     let mut idle_frames = 0_u64;
+    let started = Instant::now();
+    let mut data_frames = 0_u64;
+    let mut padding_frames = 0_u64;
+    let mut bytes = 0_u64;
 
     let warmup_frames =
         rand::thread_rng().gen_range(STEALTH_WARMUP_MIN_FRAMES..=STEALTH_WARMUP_MAX_FRAMES);
@@ -248,6 +267,7 @@ where
                 payload: Vec::new(),
             })
             .await?;
+        padding_frames = padding_frames.saturating_add(1);
         sleep(stealth_tick_delay(&options, idle_frames)).await;
         idle_frames += 1;
     }
@@ -271,22 +291,33 @@ where
                             payload,
                         })
                         .await?;
+                    data_frames = data_frames.saturating_add(1);
+                    bytes = bytes.saturating_add(len as u64);
                     idle_frames = 0;
                 } else if app_closed {
                     frame_writer
                         .send(Frame {
                             ty: FrameType::Close,
-                            payload: Vec::new(),
-                        })
-                        .await?;
+                        payload: Vec::new(),
+                    })
+                    .await?;
+                    debug!(
+                        elapsed_ms = started.elapsed().as_millis(),
+                        data_frames,
+                        padding_frames,
+                        bytes,
+                        bps = throughput_bps(bytes, started.elapsed()),
+                        "perf encrypted stealth upload pump completed"
+                    );
                     return Ok(());
                 } else {
                     frame_writer
                         .send(Frame {
                             ty: FrameType::Padding,
-                            payload: Vec::new(),
-                        })
-                        .await?;
+                        payload: Vec::new(),
+                    })
+                    .await?;
+                    padding_frames = padding_frames.saturating_add(1);
                     idle_frames = idle_frames.saturating_add(1);
                 }
             }
@@ -327,22 +358,47 @@ where
     W: AsyncWrite + Unpin,
 {
     let mut frame_reader = FrameReader::new(net_reader, keys, options);
+    let started = Instant::now();
+    let mut data_frames = 0_u64;
+    let mut bytes = 0_u64;
     loop {
         match frame_reader.recv().await? {
             Frame {
                 ty: FrameType::Data,
                 payload,
-            } => app_writer.write_all(&payload).await?,
+            } => {
+                data_frames = data_frames.saturating_add(1);
+                bytes = bytes.saturating_add(payload.len() as u64);
+                app_writer.write_all(&payload).await?
+            }
             Frame {
                 ty: FrameType::Close,
                 ..
             } => {
                 app_writer.shutdown().await?;
+                debug!(
+                    elapsed_ms = started.elapsed().as_millis(),
+                    data_frames,
+                    bytes,
+                    bps = throughput_bps(bytes, started.elapsed()),
+                    "perf encrypted download pump completed"
+                );
                 return Ok(());
             }
             _ => {}
         }
     }
+}
+
+fn throughput_bps(bytes: u64, elapsed: Duration) -> u64 {
+    let nanos = elapsed.as_nanos();
+    if nanos == 0 {
+        return 0;
+    }
+    ((bytes as u128)
+        .saturating_mul(8)
+        .saturating_mul(1_000_000_000)
+        / nanos) as u64
 }
 
 #[cfg(test)]

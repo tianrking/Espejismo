@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use espejismo_core::{
@@ -9,6 +9,7 @@ use espejismo_core::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::timeout;
+use tracing::debug;
 
 use crate::tunnel::TunnelService;
 
@@ -39,14 +40,23 @@ async fn handle_socks5_client_inner(
     match socks5::accept_request_with_auth(local, auth.as_ref()).await? {
         socks5::SocksRequest::Connect(target) => {
             let priority = StreamPriority::Interactive;
+            let flow_started = Instant::now();
+            let open_started = Instant::now();
             let mut stream = tunnel.open_stream(priority).await?;
+            let open_elapsed = open_started.elapsed();
             let lane_id = stream.lane_id();
             let mut client_to_remote = 0;
             let mut remote_to_client = 0;
+            let mut request_elapsed = Duration::ZERO;
+            let mut copy_elapsed = Duration::ZERO;
             let result = async {
+                let request_started = Instant::now();
                 write_tcp_connect_with_priority(&mut stream, &target.authority(), priority).await?;
+                request_elapsed = request_started.elapsed();
+                let copy_started = Instant::now();
                 (client_to_remote, remote_to_client) =
                     idle_copy_bidirectional(local, &mut stream, idle).await?;
+                copy_elapsed = copy_started.elapsed();
                 anyhow::Ok(())
             }
             .await;
@@ -54,6 +64,20 @@ async fn handle_socks5_client_inner(
             tunnel
                 .record_stream_bytes(lane_id, client_to_remote, remote_to_client)
                 .await;
+            debug!(
+                ingress = "socks5",
+                target = %target.authority(),
+                lane_id,
+                priority = ?priority,
+                open_ms = open_elapsed.as_millis(),
+                request_ms = request_elapsed.as_millis(),
+                copy_ms = copy_elapsed.as_millis(),
+                total_ms = flow_started.elapsed().as_millis(),
+                client_to_remote,
+                remote_to_client,
+                remote_to_client_bps = throughput_bps(remote_to_client, copy_elapsed),
+                "perf local stream completed"
+            );
             result
         }
         socks5::SocksRequest::UdpAssociate => {
@@ -86,19 +110,33 @@ async fn handle_http_client_inner(
     metrics: Metrics,
     idle: Duration,
 ) -> Result<()> {
+    let flow_started = Instant::now();
+    let accept_started = Instant::now();
     let target = http_proxy::accept_http_proxy_with_auth(local, auth.as_ref()).await?;
+    let accept_elapsed = accept_started.elapsed();
     let priority = StreamPriority::Interactive;
+    let open_started = Instant::now();
     let mut stream = tunnel.open_stream(priority).await?;
+    let open_elapsed = open_started.elapsed();
     let lane_id = stream.lane_id();
     let mut client_to_remote = 0;
     let mut remote_to_client = 0;
+    let mut request_elapsed = Duration::ZERO;
+    let mut prebuffer_elapsed = Duration::ZERO;
+    let mut copy_elapsed = Duration::ZERO;
     let result = async {
+        let request_started = Instant::now();
         write_tcp_connect_with_priority(&mut stream, &target.authority, priority).await?;
+        request_elapsed = request_started.elapsed();
         if !target.prebuffer.is_empty() {
+            let prebuffer_started = Instant::now();
             stream.write_all(&target.prebuffer).await?;
+            prebuffer_elapsed = prebuffer_started.elapsed();
         }
+        let copy_started = Instant::now();
         (client_to_remote, remote_to_client) =
             idle_copy_bidirectional(local, &mut stream, idle).await?;
+        copy_elapsed = copy_started.elapsed();
         anyhow::Ok(())
     }
     .await;
@@ -106,7 +144,34 @@ async fn handle_http_client_inner(
     tunnel
         .record_stream_bytes(lane_id, client_to_remote, remote_to_client)
         .await;
+    debug!(
+        ingress = "http",
+        target = %target.authority,
+        lane_id,
+        priority = ?priority,
+        accept_ms = accept_elapsed.as_millis(),
+        open_ms = open_elapsed.as_millis(),
+        request_ms = request_elapsed.as_millis(),
+        prebuffer_ms = prebuffer_elapsed.as_millis(),
+        copy_ms = copy_elapsed.as_millis(),
+        total_ms = flow_started.elapsed().as_millis(),
+        client_to_remote,
+        remote_to_client,
+        remote_to_client_bps = throughput_bps(remote_to_client, copy_elapsed),
+        "perf local stream completed"
+    );
     result
+}
+
+fn throughput_bps(bytes: u64, elapsed: Duration) -> u64 {
+    let nanos = elapsed.as_nanos();
+    if nanos == 0 {
+        return 0;
+    }
+    ((bytes as u128)
+        .saturating_mul(8)
+        .saturating_mul(1_000_000_000)
+        / nanos) as u64
 }
 
 async fn handle_udp_associate(
