@@ -267,6 +267,14 @@ logical streams placed on other lanes.
 
 `mtu`: Interface MTU.
 
+`udp_enabled`: Enable UDP datagram relay from TUN. Set to `false` for the most
+stable TCP-only global TUN mode.
+
+`udp_timeout_secs`: Per-datagram response timeout for UDP relay.
+
+`udp_block_ports`: UDP destination ports dropped locally before relay. Defaults
+to `[443]` so QUIC falls back to TCP HTTPS; use `[]` to allow UDP/443.
+
 ### local.tun.route
 
 `enabled`: Install route takeover rules.

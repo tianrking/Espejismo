@@ -122,6 +122,18 @@ pub(super) fn default_tun_mtu() -> u16 {
     1500
 }
 
+pub(super) fn default_tun_udp_enabled() -> bool {
+    true
+}
+
+pub(super) fn default_tun_udp_timeout_secs() -> u64 {
+    3
+}
+
+pub(super) fn default_tun_udp_block_ports() -> Vec<u16> {
+    vec![443]
+}
+
 pub(super) fn default_tun_protect_server_route() -> bool {
     true
 }

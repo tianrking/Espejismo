@@ -2,6 +2,18 @@
 
 ## Unreleased
 
+## v0.1.1
+
+`v0.1.1` is a TUN stability and operations release for the `v0.1.x` line.
+
+### Added
+
+- Local TUN UDP controls:
+  `local.tun.udp_enabled`, `local.tun.udp_timeout_secs`, and
+  `local.tun.udp_block_ports`.
+- CLI overrides for TUN UDP behavior: `--tun-disable-udp`,
+  `--tun-udp-timeout-secs`, and `--tun-udp-block-ports`.
+
 ### Changed
 
 - Handshake authentication now supports dynamic time-window HKDF keys through
@@ -13,6 +25,17 @@
   optional username/password authentication and UDP ASSOCIATE. HTTP/HTTPS
   CONNECT supports optional Basic auth. The legacy `socks5_proxy` field remains
   supported.
+- TUN TCP and UDP relay streams now use interactive lanes directly instead of
+  trying bulk lanes first, avoiding bulk-lane open timeout bursts during global
+  desktop route takeover.
+- TUN UDP relay defaults to a shorter response timeout and blocks UDP/443 by
+  default so browsers fall back from QUIC to TCP HTTPS.
+
+### Fixed
+
+- Reduced TUN UDP/QUIC timeout storms seen with global macOS TUN mode.
+- Reduced local TUN startup pressure that could cascade into broken pipes and
+  unstable relay behavior under many simultaneous system flows.
 
 ## v0.1.0
 

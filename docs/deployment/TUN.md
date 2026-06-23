@@ -17,7 +17,7 @@ the client a global-forwarding mode without changing the remote server.
 | TUN ingress (local capture) | Yes | Yes | Yes | Requires elevated privileges or platform entitlement. |
 | Global IPv4 TCP forwarding via TUN | Yes | Yes | Yes | Split-default route takeover plus remote route protection. |
 | Global IPv4 UDP forwarding via TUN | Yes | Yes | Yes | Application-level UDP relay over encrypted TCP mux tunnel. |
-| Global IPv6 route takeover via TUN | No | No | No | Not advertised as complete in `v0.1.0`. |
+| Global IPv6 route takeover via TUN | No | No | No | Not advertised as complete in `v0.1.1`. |
 | ICMP forwarding (`ping`) | No | No | No | Use TCP/HTTP probes for validation. |
 | Physical UDP underlay takeover | No | No | No | UDP underlay remains reserved/experimental. |
 | Auto DNS takeover | Yes | Yes | Yes (IPv4 DNS only) | Windows uses `netsh interface ipv4` DNS APIs. |
@@ -31,6 +31,9 @@ address = "10.255.0.2"
 prefix = 24
 destination = "10.255.0.1"
 mtu = 1500
+udp_enabled = true
+udp_timeout_secs = 3
+udp_block_ports = [443]
 
 [local.tun.route]
 enabled = true
@@ -48,7 +51,8 @@ sudo espejismo-local \
   --tun-name esptun0 \
   --tun-auto-route \
   --tun-auto-dns \
-  --tun-dns 1.1.1.1,8.8.8.8
+  --tun-dns 1.1.1.1,8.8.8.8 \
+  --tun-udp-block-ports 443
 ```
 
 Windows PowerShell equivalent:
@@ -81,6 +85,10 @@ How it works:
 - A userspace netstack converts TUN TCP flows into existing tunnel TCP CONNECT
   streams.
 - UDP datagrams are converted into existing tunnel UDP relay requests.
+- UDP relay is request/response oriented. UDP/443 is blocked by default to make
+  browsers fall back from QUIC to TCP HTTPS, which avoids long-lived QUIC
+  timeout bursts in global TUN mode. Set `udp_block_ports = []` if you need
+  UDP/443 relay and accept the additional timeout risk.
 - `espejismo-remote` is unchanged; existing users, quota, bandwidth, egress,
   logging, and admin status still apply.
 - The current automatic route takeover is IPv4 split-default routing. IPv6
@@ -129,6 +137,9 @@ Important deployment notes:
   `--tun-route-cleanup` to replay that state and remove the saved file.
 - The current TUN implementation is intended for TCP-first deployments. UDP is
   supported as application-level datagram relay over the encrypted TCP mux tunnel.
+- `local.tun.udp_timeout_secs` controls how long a single UDP relay waits for a
+  response. Keep it short for desktop global TUN use so unanswered UDP probes do
+  not occupy relay tasks for too long.
 - Use `espejismo-local --doctor --tun-enabled --tun-auto-route --tun-auto-dns`
   before route takeover when possible. Doctor checks listener conflicts,
   server resolution/reachability, IPv4 server-route requirements, DNS inputs,

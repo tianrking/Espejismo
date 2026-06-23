@@ -2,7 +2,7 @@
 
 [English](README.md) | [Configuracion](docs/deployment/CONFIG.md) | [Modo TUN](docs/deployment/TUN.md) | [Protocolo](docs/PROTOCOL.md)
 
-![Release](https://img.shields.io/badge/release-v0.1.0-0b7285)
+![Release](https://img.shields.io/badge/release-v0.1.1-0b7285)
 ![Rust](https://img.shields.io/badge/rust-native-9a3412)
 ![Plataformas](https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20windows-1f6feb)
 ![Entrada](https://img.shields.io/badge/ingress-socks5%20%7C%20http%20%7C%20tun-2f9e44)
@@ -15,9 +15,9 @@ paquetes de release instalables con un solo comando.
 
 ## Perfil Tecnico
 
-| Capa | Que incluye `v0.1.0` |
+| Capa | Que incluye `v0.1.1` |
 | --- | --- |
-| Entrada local | SOCKS5, proxy HTTP y captura TUN nativa |
+| Entrada local | SOCKS5, proxy HTTP y captura TUN nativa con controles UDP configurables |
 | Salida remota | Listener TCP autenticado con politica de egress configurable |
 | Transporte | TCP como underlay, tramas cifradas y multiplexacion `yamux` |
 | Criptografia | Sesion X25519 y tramas protegidas con XChaCha20-Poly1305 |
@@ -40,6 +40,11 @@ TCP. El encadenamiento UDP requiere SOCKS5.
 maquina cliente y expone puertos SOCKS5/HTTP locales o una interfaz TUN nativa
 para captura IPv4 a nivel de sistema.
 
+En `v0.1.1`, el modo TUN envia los flujos TCP/UDP de escritorio por lanes
+interactivas por defecto y bloquea UDP/443 localmente salvo que se configure lo
+contrario, haciendo que los navegadores vuelvan de QUIC a HTTPS sobre TCP en
+lugar de acumular timeouts UDP largos.
+
 ## Instalacion Desde Release
 
 Linux, macOS o Windows Git Bash:
@@ -58,7 +63,7 @@ Variables del instalador:
 
 | Variable | Valor por defecto | Uso |
 | --- | --- | --- |
-| `ESPEJISMO_VERSION` | `latest` | Tag de release, por ejemplo `v0.1.0` |
+| `ESPEJISMO_VERSION` | `latest` | Tag de release, por ejemplo `v0.1.1` |
 | `ESPEJISMO_PACKAGE` | `full` | `full` para cliente+servidor, `server` solo remoto |
 | `ESPEJISMO_INSTALL_DIR` | `$HOME/.espejismo` | Directorio de extraccion |
 | `ESPEJISMO_REPO` | `tianrking/Espejismo` | Repositorio GitHub |

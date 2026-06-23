@@ -1,8 +1,8 @@
 # Espejismo Protocol Specification
 
-This document describes the Espejismo wire protocol for the `v0.1.0` line. It
-is written as an implementation contract for compatible clients, servers, test
-fixtures, and future transports.
+This document describes the Espejismo wire protocol for the `v0.1.x` line
+through `v0.1.1`. It is written as an implementation contract for compatible
+clients, servers, test fixtures, and future transports.
 
 ## Requirements Language
 

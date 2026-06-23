@@ -2,7 +2,7 @@
 
 [Español](README_ES.md) | [Configuration](docs/deployment/CONFIG.md) | [TUN Mode](docs/deployment/TUN.md) | [Protocol](docs/PROTOCOL.md)
 
-![Release](https://img.shields.io/badge/release-v0.1.0-0b7285)
+![Release](https://img.shields.io/badge/release-v0.1.1-0b7285)
 ![Rust](https://img.shields.io/badge/rust-native-9a3412)
 ![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20windows-1f6feb)
 ![Ingress](https://img.shields.io/badge/ingress-socks5%20%7C%20http%20%7C%20tun-2f9e44)
@@ -15,9 +15,9 @@ and release archives that can be installed with a single command.
 
 ## Technical Profile
 
-| Layer | What ships in `v0.1.0` |
+| Layer | What ships in `v0.1.1` |
 | --- | --- |
-| Client ingress | SOCKS5, HTTP proxy, and native TUN capture |
+| Client ingress | SOCKS5, HTTP proxy, and native TUN capture with configurable UDP controls |
 | Remote egress | Authenticated TCP listener with configurable outbound policy |
 | Transport | TCP underlay with encrypted framed streams and `yamux` multiplexing |
 | Cryptography | X25519 session setup and XChaCha20-Poly1305 protected frames |
@@ -40,6 +40,11 @@ chaining. UDP chaining requires SOCKS5.
 client machine and exposes local SOCKS5/HTTP proxy ports or a native TUN
 interface for system-level IPv4 traffic capture.
 
+In `v0.1.1`, TUN mode routes desktop TCP/UDP flows through interactive tunnel
+lanes by default and blocks UDP/443 locally unless configured otherwise, so
+browsers fall back from QUIC to TCP HTTPS instead of accumulating long UDP
+timeouts.
+
 ## Install From Release
 
 Linux, macOS, or Windows Git Bash:
@@ -58,7 +63,7 @@ Installer inputs:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `ESPEJISMO_VERSION` | `latest` | Release tag such as `v0.1.0` |
+| `ESPEJISMO_VERSION` | `latest` | Release tag such as `v0.1.1` |
 | `ESPEJISMO_PACKAGE` | `full` | `full` for client+server, `server` for remote only |
 | `ESPEJISMO_INSTALL_DIR` | `$HOME/.espejismo` | Extraction directory |
 | `ESPEJISMO_REPO` | `tianrking/Espejismo` | GitHub repository |

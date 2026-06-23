@@ -200,6 +200,8 @@ Optional native TUN ingress:
 ```bash
 sudo espejismo-local --config espejismo.toml --tun-enabled --tun-name esptun0
 sudo espejismo-local --config espejismo.toml --tun-enabled --tun-auto-route --tun-auto-dns
+sudo espejismo-local --config espejismo.toml --tun-enabled --tun-udp-block-ports 443
+sudo espejismo-local --config espejismo.toml --tun-enabled --tun-disable-udp
 ```
 
 Recover TUN routes/DNS after a crash or service-manager stop hook:

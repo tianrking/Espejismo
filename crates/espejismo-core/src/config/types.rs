@@ -272,6 +272,12 @@ pub struct LocalTunConfig {
     pub destination: Ipv4Addr,
     #[serde(default = "default_tun_mtu")]
     pub mtu: u16,
+    #[serde(default = "default_tun_udp_enabled")]
+    pub udp_enabled: bool,
+    #[serde(default = "default_tun_udp_timeout_secs")]
+    pub udp_timeout_secs: u64,
+    #[serde(default = "default_tun_udp_block_ports")]
+    pub udp_block_ports: Vec<u16>,
     #[serde(default)]
     pub route: LocalTunRouteConfig,
 }
@@ -543,6 +549,9 @@ impl Default for LocalTunConfig {
             prefix: default_tun_prefix(),
             destination: default_tun_destination(),
             mtu: default_tun_mtu(),
+            udp_enabled: default_tun_udp_enabled(),
+            udp_timeout_secs: default_tun_udp_timeout_secs(),
+            udp_block_ports: default_tun_udp_block_ports(),
             route: LocalTunRouteConfig::default(),
         }
     }

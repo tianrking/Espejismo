@@ -20,8 +20,8 @@ Compatible JSON fields:
 
 ```json
 {
-  "tag_name": "v0.1.0",
-  "html_url": "https://example/releases/v0.1.0"
+  "tag_name": "v0.1.1",
+  "html_url": "https://example/releases/v0.1.1"
 }
 ```
 

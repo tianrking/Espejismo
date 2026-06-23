@@ -53,6 +53,10 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
         "local.tun.prefix must be <= 32"
     );
     anyhow::ensure!(config.local.tun.mtu >= 576, "local.tun.mtu must be >= 576");
+    anyhow::ensure!(
+        config.local.tun.udp_timeout_secs > 0,
+        "local.tun.udp_timeout_secs must be greater than 0"
+    );
     if config.local.tun.route.dns_enabled {
         anyhow::ensure!(
             !config.local.tun.route.dns_servers.is_empty(),
@@ -406,6 +410,32 @@ mod tests {
             mtu = 500
         "#;
         assert!(parse_config(bad_mtu).is_err());
+    }
+
+    #[test]
+    fn parses_tun_udp_controls() {
+        let config = r#"
+            [local.tun]
+            udp_enabled = true
+            udp_timeout_secs = 2
+            udp_block_ports = [443, 853]
+        "#;
+
+        let config = parse_config(config).unwrap();
+        assert!(config.local.tun.udp_enabled);
+        assert_eq!(config.local.tun.udp_timeout_secs, 2);
+        assert_eq!(config.local.tun.udp_block_ports, vec![443, 853]);
+    }
+
+    #[test]
+    fn rejects_zero_tun_udp_timeout() {
+        let config = r#"
+            [local.tun]
+            udp_timeout_secs = 0
+        "#;
+
+        let err = parse_config(config).unwrap_err().to_string();
+        assert!(err.contains("udp_timeout_secs"));
     }
 
     #[test]

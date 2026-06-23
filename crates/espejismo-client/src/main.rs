@@ -91,6 +91,12 @@ struct Args {
     #[arg(long, value_delimiter = ',')]
     tun_dns: Vec<IpAddr>,
     #[arg(long)]
+    tun_disable_udp: bool,
+    #[arg(long)]
+    tun_udp_timeout_secs: Option<u64>,
+    #[arg(long, value_delimiter = ',')]
+    tun_udp_block_ports: Vec<u16>,
+    #[arg(long)]
     server: Option<String>,
     #[arg(long, env = "ESPEJISMO_PSK")]
     psk: Option<String>,
@@ -519,6 +525,15 @@ fn apply_tun_cli_overrides(config: &mut EspejismoConfig, args: &Args) {
     if !args.tun_dns.is_empty() {
         config.local.tun.route.dns_servers = args.tun_dns.clone();
     }
+    if args.tun_disable_udp {
+        config.local.tun.udp_enabled = false;
+    }
+    if let Some(value) = args.tun_udp_timeout_secs {
+        config.local.tun.udp_timeout_secs = value;
+    }
+    if !args.tun_udp_block_ports.is_empty() {
+        config.local.tun.udp_block_ports = args.tun_udp_block_ports.clone();
+    }
 }
 
 fn apply_cli_overrides_to_config(config: &mut EspejismoConfig, args: &Args) -> Result<()> {
@@ -644,6 +659,15 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
     if !args.tun_dns.is_empty() {
         tun.route.dns_servers = args.tun_dns.clone();
     }
+    if args.tun_disable_udp {
+        tun.udp_enabled = false;
+    }
+    if let Some(value) = args.tun_udp_timeout_secs {
+        tun.udp_timeout_secs = value;
+    }
+    if !args.tun_udp_block_ports.is_empty() {
+        tun.udp_block_ports = args.tun_udp_block_ports.clone();
+    }
 
     let mux = espejismo_core::mux::MuxRuntimeConfig::from_config(
         config.shared.max_streams,
@@ -693,6 +717,15 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args, doctor: bool)
     let tun_enabled = args.tun_enabled || config.local.tun.enabled;
     let tun_prefix = args.tun_prefix.unwrap_or(config.local.tun.prefix);
     let tun_mtu = args.tun_mtu.unwrap_or(config.local.tun.mtu);
+    let tun_udp_enabled = !args.tun_disable_udp && config.local.tun.udp_enabled;
+    let tun_udp_timeout_secs = args
+        .tun_udp_timeout_secs
+        .unwrap_or(config.local.tun.udp_timeout_secs);
+    let tun_udp_block_ports = if args.tun_udp_block_ports.is_empty() {
+        &config.local.tun.udp_block_ports
+    } else {
+        &args.tun_udp_block_ports
+    };
     let tun_route_enabled = args.tun_auto_route || config.local.tun.route.enabled;
     let tun_dns_enabled = args.tun_auto_dns || config.local.tun.route.dns_enabled;
     let dns_servers = if args.tun_dns.is_empty() {
@@ -838,6 +871,9 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args, doctor: bool)
         if tun_mtu < 576 {
             errors.push("local.tun.mtu must be >= 576".to_string());
         }
+        if tun_udp_timeout_secs == 0 {
+            errors.push("local.tun.udp_timeout_secs must be greater than 0".to_string());
+        }
         warnings.push(
             "TUN mode requires OS privileges; --tun-auto-route changes system routes".to_string(),
         );
@@ -848,6 +884,16 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args, doctor: bool)
             );
         }
         println!("OK TUN ingress requested");
+        if tun_udp_enabled {
+            println!(
+                "OK TUN UDP relay enabled: timeout={tun_udp_timeout_secs}s, blocked_ports={tun_udp_block_ports:?}"
+            );
+        } else {
+            warnings.push(
+                "TUN UDP relay is disabled; UDP applications will not traverse the tunnel"
+                    .to_string(),
+            );
+        }
     }
     if tun_route_enabled {
         #[cfg(target_os = "linux")]

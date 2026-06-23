@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -113,7 +114,16 @@ pub async fn run_tun_ingress(
         metrics.clone(),
         idle,
     ));
-    tokio::spawn(handle_tun_udp(udp_socket, tunnel, metrics));
+    if config.udp_enabled {
+        tokio::spawn(handle_tun_udp(
+            udp_socket,
+            tunnel,
+            metrics,
+            UdpTunPolicy::from(&config),
+        ));
+    } else {
+        info!("TUN UDP relay disabled");
+    }
 
     futures::future::pending::<Result<()>>().await
 }
@@ -133,7 +143,8 @@ async fn handle_tun_tcp(
             let result = async {
                 let authority = authority_from_socket(remote);
                 info!(%local, %remote, authority = %authority, "TUN TCP flow accepted");
-                let (mut tunnel_stream, priority) = open_tun_stream(tunnel.clone()).await?;
+                let (mut tunnel_stream, priority) =
+                    open_tun_stream(tunnel.clone(), StreamPriority::Interactive).await?;
                 let lane_id = tunnel_stream.lane_id();
                 debug!(lane_id, %local, %remote, priority = ?priority, "TUN TCP flow opened tunnel stream");
                 let mut client_to_remote = 0;
@@ -163,7 +174,31 @@ async fn handle_tun_tcp(
     }
 }
 
-async fn handle_tun_udp(udp_socket: UdpSocket, tunnel: Arc<TunnelService>, metrics: Metrics) {
+#[derive(Clone, Debug)]
+struct UdpTunPolicy {
+    timeout: Duration,
+    blocked_ports: BTreeSet<u16>,
+}
+
+impl UdpTunPolicy {
+    fn from(config: &LocalTunConfig) -> Self {
+        Self {
+            timeout: Duration::from_secs(config.udp_timeout_secs.max(1)),
+            blocked_ports: config.udp_block_ports.iter().copied().collect(),
+        }
+    }
+
+    fn blocks(&self, remote: SocketAddr) -> bool {
+        self.blocked_ports.contains(&remote.port())
+    }
+}
+
+async fn handle_tun_udp(
+    udp_socket: UdpSocket,
+    tunnel: Arc<TunnelService>,
+    metrics: Metrics,
+    policy: UdpTunPolicy,
+) {
     let task_limit = Arc::new(Semaphore::new(MAX_TUN_UDP_TASKS));
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let (mut read_half, mut write_half) = udp_socket.split();
@@ -176,6 +211,14 @@ async fn handle_tun_udp(udp_socket: UdpSocket, tunnel: Arc<TunnelService>, metri
     });
 
     while let Some((payload, local, remote)) = read_half.next().await {
+        if policy.blocks(remote) {
+            debug!(
+                %local,
+                %remote,
+                "TUN UDP datagram dropped by local UDP port policy"
+            );
+            continue;
+        }
         let Ok(permit) = task_limit.clone().try_acquire_owned() else {
             metrics.inc_stream_failed();
             debug!(
@@ -189,6 +232,7 @@ async fn handle_tun_udp(udp_socket: UdpSocket, tunnel: Arc<TunnelService>, metri
         let tx = tx.clone();
         let tunnel = tunnel.clone();
         let metrics = metrics.clone();
+        let policy = policy.clone();
         tokio::spawn(async move {
             let _permit = permit;
             let authority = authority_from_socket(remote);
@@ -199,7 +243,7 @@ async fn handle_tun_udp(udp_socket: UdpSocket, tunnel: Arc<TunnelService>, metri
                 bytes = payload.len(),
                 "TUN UDP datagram accepted"
             );
-            match relay_udp_authority(tunnel, &authority, &payload).await {
+            match relay_udp_authority(tunnel, &authority, &payload, policy.timeout).await {
                 Ok(response) => {
                     metrics.add_tunnel_bytes(payload.len() as u64, response.len() as u64);
                     let _ = tx.send((response, local, remote));
@@ -217,15 +261,17 @@ async fn relay_udp_authority(
     tunnel: Arc<TunnelService>,
     authority: &str,
     payload: &[u8],
+    response_timeout: Duration,
 ) -> Result<Vec<u8>> {
-    let (mut stream, priority) = open_tun_stream(tunnel.clone()).await?;
+    let (mut stream, priority) =
+        open_tun_stream(tunnel.clone(), StreamPriority::Interactive).await?;
     let lane_id = stream.lane_id();
     let mut response = Vec::new();
     let result = async {
         write_udp_datagram_with_priority(&mut stream, authority, priority, payload).await?;
-        let len = timeout(Duration::from_secs(15), stream.read_u16()).await?? as usize;
+        let len = timeout(response_timeout, stream.read_u16()).await?? as usize;
         response = vec![0_u8; len];
-        timeout(Duration::from_secs(15), stream.read_exact(&mut response)).await??;
+        timeout(response_timeout, stream.read_exact(&mut response)).await??;
         anyhow::Ok(())
     }
     .await;
@@ -236,16 +282,17 @@ async fn relay_udp_authority(
     Ok(response)
 }
 
-async fn open_tun_stream(tunnel: Arc<TunnelService>) -> Result<(TunnelStream, StreamPriority)> {
-    match timeout(
-        TUN_STREAM_OPEN_TIMEOUT,
-        tunnel.open_stream(StreamPriority::Bulk),
-    )
-    .await
-    {
-        Ok(Ok(stream)) => Ok((stream, StreamPriority::Bulk)),
+async fn open_tun_stream(
+    tunnel: Arc<TunnelService>,
+    priority: StreamPriority,
+) -> Result<(TunnelStream, StreamPriority)> {
+    match timeout(TUN_STREAM_OPEN_TIMEOUT, tunnel.open_stream(priority)).await {
+        Ok(Ok(stream)) => Ok((stream, priority)),
         Ok(Err(err)) => {
-            warn!(error = %err, "TUN bulk lane open failed; falling back to interactive lane");
+            warn!(error = %err, ?priority, "TUN lane open failed");
+            if priority == StreamPriority::Interactive {
+                return Err(err);
+            }
             let stream = timeout(
                 TUN_STREAM_OPEN_TIMEOUT,
                 tunnel.open_stream(StreamPriority::Interactive),
@@ -255,7 +302,10 @@ async fn open_tun_stream(tunnel: Arc<TunnelService>) -> Result<(TunnelStream, St
             Ok((stream, StreamPriority::Interactive))
         }
         Err(_) => {
-            warn!("TUN bulk lane open timed out; falling back to interactive lane");
+            warn!(?priority, "TUN lane open timed out");
+            if priority == StreamPriority::Interactive {
+                anyhow::bail!("TUN interactive lane open timed out");
+            }
             let stream = timeout(
                 TUN_STREAM_OPEN_TIMEOUT,
                 tunnel.open_stream(StreamPriority::Interactive),

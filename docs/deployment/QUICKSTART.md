@@ -29,7 +29,7 @@ Pinned release:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh \
-  | ESPEJISMO_VERSION=v0.1.0 sh
+  | ESPEJISMO_VERSION=v0.1.1 sh
 ```
 
 ## Configure
