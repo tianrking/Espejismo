@@ -151,6 +151,7 @@ struct LocalRuntime {
     mux: espejismo_core::mux::MuxRuntimeConfig,
     tunnel_buffer: usize,
     tunnel_pool: TunnelPoolConfig,
+    http_bulk_threshold_bytes: u64,
     auth: Option<ProxyAuth>,
     tun: espejismo_core::config::LocalTunConfig,
     admin_listen: Option<SocketAddr>,
@@ -326,10 +327,19 @@ async fn main() -> Result<()> {
                 let tunnel = service.tunnel.clone();
                 let auth = current.auth.clone();
                 let idle = current.idle_timeout;
+                let http_bulk_threshold_bytes = current.http_bulk_threshold_bytes;
                 let metrics = metrics.clone();
                 metrics.inc_accepted();
                 tokio::spawn(async move {
-                    if let Err(err) = handle_http_client(socket, tunnel, auth, metrics, idle).await
+                    if let Err(err) = handle_http_client(
+                        socket,
+                        tunnel,
+                        auth,
+                        metrics,
+                        idle,
+                        http_bulk_threshold_bytes,
+                    )
+                    .await
                     {
                         debug!(%peer, error = %err, "HTTP proxy connection ended");
                     }
@@ -700,6 +710,7 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
         mux,
         tunnel_buffer: args.tunnel_buffer.unwrap_or(config.shared.tunnel_buffer),
         tunnel_pool,
+        http_bulk_threshold_bytes: config.local.http_bulk_threshold_bytes,
         auth: config.local.auth,
         tun,
         admin_listen: args.admin_listen.or(config.admin.listen),

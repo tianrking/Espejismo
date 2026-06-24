@@ -11,6 +11,7 @@ const HTTP_PROXY_HEADER_TIMEOUT: Duration = Duration::from_secs(15);
 pub struct HttpTarget {
     pub authority: String,
     pub prebuffer: Vec<u8>,
+    pub content_length: Option<u64>,
 }
 
 pub async fn accept_http_proxy<S>(stream: &mut S) -> Result<HttpTarget>
@@ -93,9 +94,11 @@ where
         return Ok(HttpTarget {
             authority: target.to_string(),
             prebuffer: overflow.unwrap_or_default(),
+            content_length: None,
         });
     }
 
+    let content_length = parse_content_length(&header_lines);
     let (authority, path) = parse_absolute_http_target(target)?;
     let rewritten = rewrite_absolute_request(method, &path, version, &header_lines);
     let mut prebuffer = rewritten.into_bytes();
@@ -106,6 +109,16 @@ where
     Ok(HttpTarget {
         authority,
         prebuffer,
+        content_length,
+    })
+}
+
+fn parse_content_length(lines: &[&str]) -> Option<u64> {
+    lines.iter().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.eq_ignore_ascii_case("content-length")
+            .then(|| value.trim().parse::<u64>().ok())
+            .flatten()
     })
 }
 
@@ -179,4 +192,21 @@ fn find_header_end(data: &[u8], search_from: usize) -> Option<usize> {
     }
     let start = search_from.min(data.len().saturating_sub(4));
     (start..=data.len() - 4).find(|&i| &data[i..i + 4] == b"\r\n\r\n")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_content_length;
+
+    #[test]
+    fn parses_content_length_case_insensitively() {
+        let lines = ["Host: example.test", "content-length: 1048576"];
+        assert_eq!(parse_content_length(&lines), Some(1_048_576));
+    }
+
+    #[test]
+    fn ignores_invalid_content_length() {
+        let lines = ["Content-Length: nope"];
+        assert_eq!(parse_content_length(&lines), None);
+    }
 }

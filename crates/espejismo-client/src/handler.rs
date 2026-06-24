@@ -92,10 +92,19 @@ pub(crate) async fn handle_http_client(
     auth: Option<ProxyAuth>,
     metrics: Metrics,
     idle: Duration,
+    bulk_threshold_bytes: u64,
 ) -> Result<()> {
     metrics.inc_active_stream();
     metrics.inc_stream_opened();
-    let result = handle_http_client_inner(&mut local, tunnel, auth, metrics.clone(), idle).await;
+    let result = handle_http_client_inner(
+        &mut local,
+        tunnel,
+        auth,
+        metrics.clone(),
+        idle,
+        bulk_threshold_bytes,
+    )
+    .await;
     if result.is_err() {
         metrics.inc_stream_failed();
     }
@@ -109,12 +118,13 @@ async fn handle_http_client_inner(
     auth: Option<ProxyAuth>,
     metrics: Metrics,
     idle: Duration,
+    bulk_threshold_bytes: u64,
 ) -> Result<()> {
     let flow_started = Instant::now();
     let accept_started = Instant::now();
     let target = http_proxy::accept_http_proxy_with_auth(local, auth.as_ref()).await?;
     let accept_elapsed = accept_started.elapsed();
-    let priority = StreamPriority::Interactive;
+    let priority = http_stream_priority(target.content_length, bulk_threshold_bytes);
     let open_started = Instant::now();
     let mut stream = tunnel.open_stream(priority).await?;
     let open_elapsed = open_started.elapsed();
@@ -161,6 +171,46 @@ async fn handle_http_client_inner(
         "perf local stream completed"
     );
     result
+}
+
+fn http_stream_priority(content_length: Option<u64>, bulk_threshold_bytes: u64) -> StreamPriority {
+    if bulk_threshold_bytes > 0
+        && content_length.is_some_and(|length| length >= bulk_threshold_bytes)
+    {
+        StreamPriority::Bulk
+    } else {
+        StreamPriority::Interactive
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::http_stream_priority;
+    use espejismo_core::StreamPriority;
+
+    #[test]
+    fn large_http_request_uses_bulk_priority() {
+        assert_eq!(
+            http_stream_priority(Some(1_048_576), 1_048_576),
+            StreamPriority::Bulk
+        );
+    }
+
+    #[test]
+    fn missing_or_small_http_length_stays_interactive() {
+        assert_eq!(
+            http_stream_priority(None, 1_048_576),
+            StreamPriority::Interactive
+        );
+        assert_eq!(
+            http_stream_priority(Some(1024), 1_048_576),
+            StreamPriority::Interactive
+        );
+        assert_eq!(
+            http_stream_priority(Some(1024), 0),
+            StreamPriority::Interactive
+        );
+    }
 }
 
 fn throughput_bps(bytes: u64, elapsed: Duration) -> u64 {

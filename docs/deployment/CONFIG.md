@@ -188,7 +188,13 @@ defaults.
 
 `randomize_chunks`: Randomize normal-mode data chunk sizes.
 
-`min_chunk` / `max_chunk`: Custom chunk bounds.
+`min_chunk` / `max_chunk`: Chunk bounds for `custom`, and the operator-selected
+ceiling for `bulk`. Normal non-stealth frames can carry up to 262127 bytes of
+payload. Bulk mode defaults to at least 64 KiB chunks; for high-BDP links, set
+`chunk_policy = "bulk"`, `randomize_chunks = false`, and raise `max_chunk`
+to `131072` or `262127` on both peers to reduce per-frame overhead. Stealth
+frames remain controlled by `[shared.stealth]` and should stay small for cover
+traffic.
 
 ### shared.stealth
 
@@ -208,6 +214,10 @@ authenticated session picks one data frame size deterministically.
 `http_listen`: Local HTTP proxy listener, usually `127.0.0.1:6681`.
 
 `handshake_padding`: Client hello padding cap.
+
+`http_bulk_threshold_bytes`: HTTP proxy requests with `Content-Length` greater
+than or equal to this value are opened on bulk lanes. The default is `1048576`
+(1 MiB). Set `0` to keep all HTTP proxy streams on interactive lanes.
 
 ### local.auth
 
@@ -252,6 +262,31 @@ Use more `interactive_lanes` for browser SOCKS5/HTTP proxy workloads. Use more
 `bulk_lanes` for TUN-heavy or transfer-heavy workloads. Each lane is an
 independent TCP physical tunnel, so packet loss on one lane does not block
 logical streams placed on other lanes.
+
+High-throughput TCP baseline:
+
+```toml
+[shared.obfuscation]
+profile = "bulk"
+chunk_policy = "bulk"
+randomize_chunks = false
+min_chunk = 65536
+max_chunk = 262127
+
+[shared.pacing]
+enabled = true
+burst_bytes = 524288
+min_write_bytes = 65536
+
+[shared.mux]
+native_initial_window_bytes = 8388608
+
+[local.tunnel_pool]
+min_connections = 1
+max_connections = 8
+interactive_lanes = 1
+bulk_lanes = 4
+```
 
 ### local.tun
 

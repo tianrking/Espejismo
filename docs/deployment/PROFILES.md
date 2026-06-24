@@ -12,8 +12,8 @@ espejismo-remote --profile server-safe --config espejismo.toml
 
 Available profiles:
 
-- `fast`: minimal padding/jitter, bulk chunks, larger buffers, and a wider
-  tunnel pool for throughput-oriented TCP proxying.
+- `fast`: minimal padding/jitter, 256 KiB-capable bulk chunks, larger buffers,
+  and a wider tunnel pool for throughput-oriented TCP proxying.
 - `balanced`: production default for general proxy use.
 - `low-latency`: smaller chunks, TCP_NODELAY, tighter pacing, and fewer lanes
   for interactive requests.

@@ -275,14 +275,18 @@ pub fn apply_named_profile(config: &mut EspejismoConfig, name: &str) -> Result<(
             config.shared.obfuscation.profile = ObfuscationProfile::Bulk;
             config.shared.obfuscation.chunk_policy = ChunkPolicy::Bulk;
             config.shared.obfuscation.randomize_chunks = false;
+            config.shared.obfuscation.min_chunk = 64 * 1024;
+            config.shared.obfuscation.max_chunk = 256 * 1024;
             config.shared.pacing.enabled = true;
-            config.shared.pacing.burst_bytes = 128 * 1024;
-            config.shared.pacing.min_write_bytes = 4096;
-            config.shared.tunnel_buffer = 256 * 1024;
+            config.shared.pacing.burst_bytes = 512 * 1024;
+            config.shared.pacing.min_write_bytes = 64 * 1024;
+            config.shared.tunnel_buffer = 8 * 1024 * 1024;
+            config.shared.mux.native_initial_window_bytes =
+                config.shared.mux.native_initial_window_bytes.max(8 * 1024 * 1024);
             config.local.tunnel_pool.min_connections = 1;
-            config.local.tunnel_pool.max_connections = 4;
+            config.local.tunnel_pool.max_connections = 8;
             config.local.tunnel_pool.interactive_lanes = 1;
-            config.local.tunnel_pool.bulk_lanes = 2;
+            config.local.tunnel_pool.bulk_lanes = 4;
         }
         "balanced" => {
             config.shared.obfuscation.profile = ObfuscationProfile::Balanced;

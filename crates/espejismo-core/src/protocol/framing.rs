@@ -11,11 +11,12 @@ use tokio::time::{sleep, Instant};
 
 use crate::crypto::{decrypt, encrypt, length_mask, SessionKeys};
 
-const MAX_FRAME: usize = 64 * 1024;
+const NORMAL_MAX_FRAME: usize = 256 * 1024;
+const STEALTH_MAX_FRAME: usize = 64 * 1024;
 const DATA_CHUNK: usize = 16 * 1024;
 const AEAD_TAG_LEN: usize = 16;
 const STEALTH_HEADER_LEN: usize = 3;
-const NORMAL_PAYLOAD_CAPACITY: usize = MAX_FRAME - AEAD_TAG_LEN - 1;
+const NORMAL_PAYLOAD_CAPACITY: usize = NORMAL_MAX_FRAME - AEAD_TAG_LEN - 1;
 pub const DEFAULT_STEALTH_FRAME_SIZE: usize = 4096;
 pub const DEFAULT_STEALTH_TICK_MS: u64 = 50;
 
@@ -88,7 +89,11 @@ impl ChunkPolicy {
         match self {
             Self::LowLatency => (2 * 1024, 8 * 1024),
             Self::Balanced => (4 * 1024, 16 * 1024),
-            Self::Bulk => (16 * 1024, 64 * 1024),
+            Self::Bulk => {
+                let min = fallback_min.max(64 * 1024);
+                let max = fallback_max.max(min);
+                (min, max)
+            }
             Self::Stealth => (stealth_capacity, stealth_capacity),
             Self::Custom => (fallback_min, fallback_max),
         }
@@ -190,8 +195,8 @@ impl FrameOptions {
             "shared.stealth.frame_size must leave room for frame metadata"
         );
         ensure!(
-            self.stealth_frame_size <= MAX_FRAME,
-            "shared.stealth.frame_size must be <= {MAX_FRAME}"
+            self.stealth_frame_size <= STEALTH_MAX_FRAME,
+            "shared.stealth.frame_size must be <= {STEALTH_MAX_FRAME}"
         );
         ensure!(
             self.stealth_tick_ms > 0,
@@ -424,7 +429,7 @@ where
     plain.extend_from_slice(&frame.payload);
     let encrypted = encrypt(&keys.tx, seq, &keys.nonce_tag, &plain)?;
     *tx_seq += 1;
-    if encrypted.len() > MAX_FRAME {
+    if encrypted.len() > NORMAL_MAX_FRAME {
         bail!("encrypted frame too large");
     }
     pace_before_write(options, encrypted.len() + 4, next_pace_at).await;
@@ -541,7 +546,7 @@ where
     let seq = *rx_seq;
     let masked_len = stream.read_u32().await?;
     let len = (masked_len ^ length_mask(&keys.rx_len_mask, seq)?) as usize;
-    if len == 0 || len > MAX_FRAME {
+    if len == 0 || len > NORMAL_MAX_FRAME {
         bail!("invalid frame length {len}");
     }
     let mut encrypted = vec![0_u8; len];
@@ -735,17 +740,26 @@ mod tests {
             ..FrameOptions::default()
         };
         let (_min, max) = options.normalized_chunk_bounds();
+        assert_eq!(max, 64 * 1024);
+
+        let options = FrameOptions {
+            chunk_policy: ChunkPolicy::Bulk,
+            min_chunk: 64 * 1024,
+            max_chunk: 512 * 1024,
+            ..FrameOptions::default()
+        };
+        let (_min, max) = options.normalized_chunk_bounds();
         assert_eq!(max, NORMAL_PAYLOAD_CAPACITY);
 
         let options = FrameOptions {
             chunk_policy: ChunkPolicy::Custom,
-            min_chunk: 64 * 1024,
-            max_chunk: 128 * 1024,
+            min_chunk: 128 * 1024,
+            max_chunk: 512 * 1024,
             ..FrameOptions::default()
         };
         assert_eq!(
             options.normalized_chunk_bounds(),
-            (NORMAL_PAYLOAD_CAPACITY, NORMAL_PAYLOAD_CAPACITY)
+            (128 * 1024, NORMAL_PAYLOAD_CAPACITY)
         );
     }
 
@@ -754,6 +768,8 @@ mod tests {
         let options = FrameOptions {
             chunk_policy: ChunkPolicy::Bulk,
             randomize_chunks: false,
+            min_chunk: 64 * 1024,
+            max_chunk: 512 * 1024,
             ..FrameOptions::default()
         };
 

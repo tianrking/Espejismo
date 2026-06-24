@@ -394,16 +394,8 @@ impl TunnelManager {
         self.lanes
             .iter()
             .filter(|lane| lane.kind == preferred)
-            .chain(self.lanes.iter())
-            .min_by_key(|lane| {
-                lane.health
-                    .try_lock()
-                    .map(|health| {
-                        let penalty = u64::from(health.last_error.is_some()) * 1_000;
-                        health.active_streams * 10 + health.last_open_latency_ms + penalty
-                    })
-                    .unwrap_or(u64::MAX / 2)
-            })
+            .min_by_key(|lane| lane_score(lane))
+            .or_else(|| self.lanes.iter().min_by_key(|lane| lane_score(lane)))
             .cloned()
     }
 
@@ -440,6 +432,16 @@ impl TunnelManager {
             last_error: health.last_error.clone(),
         });
     }
+}
+
+fn lane_score(lane: &TunnelLane) -> u64 {
+    lane.health
+        .try_lock()
+        .map(|health| {
+            let penalty = u64::from(health.last_error.is_some()) * 1_000;
+            health.active_streams * 10 + health.last_open_latency_ms + penalty
+        })
+        .unwrap_or(u64::MAX / 2)
 }
 
 #[derive(Clone)]

@@ -102,6 +102,10 @@ pub(super) fn default_handshake_padding() -> usize {
     256
 }
 
+pub(super) fn default_http_bulk_threshold_bytes() -> u64 {
+    1024 * 1024
+}
+
 pub(super) fn default_tun_name() -> String {
     "esptun0".to_string()
 }

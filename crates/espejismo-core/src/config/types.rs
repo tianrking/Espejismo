@@ -234,6 +234,8 @@ pub struct LocalConfig {
     pub http_listen: Option<SocketAddr>,
     #[serde(default = "default_handshake_padding")]
     pub handshake_padding: usize,
+    #[serde(default = "default_http_bulk_threshold_bytes")]
+    pub http_bulk_threshold_bytes: u64,
     #[serde(default)]
     pub auth: Option<ProxyAuth>,
     #[serde(default)]
@@ -520,6 +522,7 @@ impl Default for LocalConfig {
             socks5_listen: default_socks5_listen(),
             http_listen: default_http_listen(),
             handshake_padding: default_handshake_padding(),
+            http_bulk_threshold_bytes: default_http_bulk_threshold_bytes(),
             auth: None,
             tun: LocalTunConfig::default(),
             tunnel_pool: TunnelPoolConfig::default(),

@@ -10,7 +10,7 @@ pub(super) const FRAME_FIN: u8 = 4;
 pub(super) const FRAME_RST: u8 = 5;
 pub(super) const FRAME_PING: u8 = 6;
 pub(super) const FRAME_GOAWAY: u8 = 7;
-pub(super) const MAX_PAYLOAD: usize = 64 * 1024;
+pub(super) const MAX_PAYLOAD: usize = 256 * 1024;
 
 pub(super) async fn write_frame<W>(
     writer: &mut W,

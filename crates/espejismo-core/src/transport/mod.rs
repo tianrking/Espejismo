@@ -616,6 +616,7 @@ mod tests {
 
         let mut client_stream = ctrl_a.open_stream().await.unwrap();
         let mut server_stream = session_b.next().await.unwrap().unwrap();
+        tokio::spawn(async move { while session_b.next().await.is_some() {} });
 
         let total: usize = 1024 * 1024;
         let writer = tokio::spawn(async move {
