@@ -70,10 +70,14 @@ Set `ESPEJISMO_LOCAL_LOG_FILE` when the local process writes somewhere other
 than `/tmp/espejismo-local-bench.log`; set `ESPEJISMO_ALLOW_VERBOSE_LOGS=1`
 only for intentional debugging runs whose numbers will not be used for tuning.
 
-`summary.md` includes per-run results, median/mean/min/max/stddev, and
-proxy/direct efficiency for matching tests. Use it when comparing mux,
-frame-size, pacing, or lane-pool changes so raw link variation and Espejismo
-overhead are recorded in the same run.
+`summary.md` includes per-run results, median/mean/min/max/stddev,
+proxy/direct efficiency for matching tests, and a `Tunnel Cost` table when
+admin snapshots are available. The cost table compares curl application bytes
+with per-test tunnel byte deltas, which makes stealth padding, frame overhead,
+and idle traffic visible instead of hiding them inside a single throughput
+number. Use it when comparing mux, frame-size, pacing, obfuscation, or
+lane-pool changes so raw link variation and Espejismo overhead are recorded in
+the same run.
 
 ## Unit Coverage
 

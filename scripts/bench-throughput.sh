@@ -99,6 +99,9 @@ Run: ${RUN_ID}
 EOF
     command_output "Kernel" uname -a
     command_output "Curl" curl --version
+    if [ "$HAS_PYTHON" -eq 1 ]; then
+        command_output "Python" "$PYTHON_BIN" --version
+    fi
     if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
         command_output "Git" git log --oneline -1
     fi
@@ -310,8 +313,10 @@ run_single() {
     local direction="$4"
     local url="$5"
     local label="r${round}-${case_name}"
+    capture_admin "${label}-before"
     curl_worker "$label" "$mode" "$direction" "$url"
     summarize_one "$round" "$case_name" "$label" "$mode" "$direction"
+    capture_admin "${label}-after"
 }
 
 run_parallel() {
@@ -322,6 +327,7 @@ run_parallel() {
     local url="$5"
     local label="r${round}-${case_name}"
     local start_ms end_ms elapsed_ms elapsed_secs bytes mbps ok
+    capture_admin "${label}-before"
     start_ms="$(now_ms)"
     for i in $(seq 1 "$PARALLEL"); do
         curl_worker "${label}-${i}" "$mode" "$direction" "$url" &
@@ -351,6 +357,7 @@ run_parallel() {
     append_result "$round" "$case_name" "$label" "$mode" "$direction" "$PARALLEL" "$elapsed_secs" "$bytes" "$mbps" "$ok"
     printf '| %s | %s | %s | %s | %s | %s | %s | %s |\n' "$round" "$case_name" "$mode" "$direction" "$PARALLEL" "$mbps" "$elapsed_secs" "$ok" >>"$SUMMARY_MD"
     echo "${label}: ${mbps} Mbit/s (${elapsed_secs}s, parallel=${PARALLEL}, ok=${ok})"
+    capture_admin "${label}-after"
 }
 
 run_round() {
@@ -380,18 +387,21 @@ EOF
         return 0
     fi
 
-    "$PYTHON_BIN" - "$RESULTS_JSONL" "$SUMMARY_MD" <<'PY'
+    "$PYTHON_BIN" - "$RESULTS_JSONL" "$SUMMARY_MD" "$OUTPUT_DIR" <<'PY'
 import json
 import math
+from pathlib import Path
 import statistics
 import sys
 from collections import defaultdict
 
-results_path, summary_path = sys.argv[1], sys.argv[2]
+results_path, summary_path, output_dir = sys.argv[1], sys.argv[2], Path(sys.argv[3])
 groups = defaultdict(list)
+results = []
 with open(results_path, "r", encoding="utf-8") as fh:
     for line in fh:
         item = json.loads(line)
+        results.append(item)
         groups[item["case"]].append(item)
 
 def fmt(value):
@@ -428,6 +438,67 @@ with open(summary_path, "a", encoding="utf-8") as out:
                 f"| {proxy_case} | {direct_case} | {fmt(statistics.median(ratios))}% | "
                 f"{fmt(statistics.mean(ratios))}% |\n"
             )
+
+    def read_admin(label, suffix):
+        path = output_dir / f"admin-{label}-{suffix}.json"
+        if not path.exists() or path.stat().st_size == 0:
+            return None
+        try:
+            return json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return None
+
+    def tunnel_counters(snapshot):
+        runtime = snapshot.get("runtime") or {}
+        lanes = runtime.get("tunnel_lanes") or []
+        if lanes:
+            return {
+                "client_to_remote": sum(int(lane.get("bytes_client_to_remote") or 0) for lane in lanes),
+                "remote_to_client": sum(int(lane.get("bytes_remote_to_client") or 0) for lane in lanes),
+                "source": "runtime.tunnel_lanes",
+            }
+        metrics = snapshot.get("metrics") or {}
+        return {
+            "client_to_remote": int(metrics.get("bytes_client_to_remote") or 0),
+            "remote_to_client": int(metrics.get("bytes_remote_to_client") or 0),
+            "source": "metrics",
+        }
+
+    out.write("\n## Tunnel Cost\n\n")
+    out.write(
+        "This section compares application bytes reported by curl with local "
+        "Espejismo tunnel byte deltas from per-test admin snapshots. DATA bytes, "
+        "control frames, encryption overhead, stealth padding, and idle padding "
+        "can all contribute to the tunnel delta.\n\n"
+    )
+    out.write("| Proxy Test | Direction | App Bytes | Tunnel Primary Bytes | Ratio | Reverse Bytes | Source |\n")
+    out.write("| --- | --- | ---: | ---: | ---: | ---: | --- |\n")
+    rows = 0
+    for item in results:
+        if item["mode"] != "proxy":
+            continue
+        before = read_admin(item["label"], "before")
+        after = read_admin(item["label"], "after")
+        if before is None or after is None:
+            continue
+        b = tunnel_counters(before)
+        a = tunnel_counters(after)
+        up = max(0, a["client_to_remote"] - b["client_to_remote"])
+        down = max(0, a["remote_to_client"] - b["remote_to_client"])
+        if item["direction"] == "upload":
+            primary, reverse = up, down
+        else:
+            primary, reverse = down, up
+        app_bytes = int(item["bytes"])
+        ratio = (primary / app_bytes * 100.0) if app_bytes > 0 else math.nan
+        ratio_text = "n/a" if math.isnan(ratio) else f"{fmt(ratio)}%"
+        out.write(
+            f"| {item['label']} | {item['direction']} | {app_bytes} | {primary} | "
+            f"{ratio_text} | {reverse} | {a['source']} |\n"
+        )
+        rows += 1
+    if rows == 0:
+        out.write("| n/a | n/a | 0 | 0 | n/a | 0 | admin snapshots missing |\n")
 PY
 }
 
@@ -479,7 +550,7 @@ cat >>"$SUMMARY_MD" <<EOF
 
 - Raw curl output: \`${RAW_DIR}\`
 - JSONL results: \`${RESULTS_JSONL}\`
-- Admin snapshots: \`${OUTPUT_DIR}/admin-round-*-before.json\`, \`${OUTPUT_DIR}/admin-round-*-after.json\`
+- Admin snapshots: \`${OUTPUT_DIR}/admin-*.json\`
 EOF
 
 echo "wrote ${SUMMARY_MD}"

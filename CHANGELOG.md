@@ -15,6 +15,8 @@
   min, max, standard deviation, and proxy/direct efficiency reporting.
 - Throughput benchmark environment and log-risk reports that fail fast when
   recent logs contain giant mux frame dumps.
+- Per-test benchmark tunnel-cost reporting from admin snapshots, so proxy
+  efficiency can be compared with real tunnel byte deltas.
 - `--profile auto-throughput` for measured high-BDP TCP paths, using the exact
   normal-frame payload cap, larger buffers/windows, a lower HTTP bulk threshold,
   and a wider bulk-lane pool.
