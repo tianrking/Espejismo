@@ -14,7 +14,7 @@ pub struct LogGuard {
 }
 
 pub fn init_logging(config: &LogConfig) -> Result<LogGuard> {
-    let filter = EnvFilter::try_new(&config.level)
+    let filter = EnvFilter::try_new(safe_log_filter(&config.level))
         .or_else(|_| EnvFilter::try_new("info"))
         .context("create log filter")?;
 
@@ -78,5 +78,80 @@ where
             )
             .try_init()
             .context("initialize json logger"),
+    }
+}
+
+fn safe_log_filter(level: &str) -> String {
+    let mut directives = Vec::new();
+    let mut app_level = None;
+
+    for directive in level
+        .split(',')
+        .map(str::trim)
+        .filter(|item| !item.is_empty())
+    {
+        match directive {
+            "trace" | "debug" => app_level = Some(directive),
+            _ => directives.push(directive.to_string()),
+        }
+    }
+
+    if directives
+        .iter()
+        .all(|directive| directive.contains('=') || directive.contains('['))
+    {
+        directives.insert(0, "info".to_string());
+    }
+
+    if let Some(level) = app_level {
+        directives.push(format!("espejismo_core={level}"));
+        directives.push(format!("espejismo_client={level}"));
+        directives.push(format!("espejismo_server={level}"));
+    }
+
+    let noisy_dependencies = [
+        "tokio_yamux",
+        "yamux",
+        "h2",
+        "hyper",
+        "mio",
+        "want",
+        "rustls",
+    ];
+    directives.retain(|directive| {
+        !noisy_dependencies
+            .iter()
+            .any(|dependency| directive.starts_with(&format!("{dependency}=")))
+    });
+    for dependency in noisy_dependencies {
+        directives.push(format!("{dependency}=info"));
+    }
+
+    directives.join(",")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::safe_log_filter;
+
+    #[test]
+    fn global_debug_only_enables_application_debug() {
+        let filter = safe_log_filter("debug");
+
+        assert!(filter.starts_with("info,"));
+        assert!(filter.contains("espejismo_core=debug"));
+        assert!(filter.contains("espejismo_client=debug"));
+        assert!(filter.contains("espejismo_server=debug"));
+        assert!(filter.contains("tokio_yamux=info"));
+    }
+
+    #[test]
+    fn module_filter_is_preserved_with_noisy_dependencies_capped() {
+        let filter = safe_log_filter("info,espejismo_core=debug,tokio_yamux=debug");
+
+        assert!(filter.contains("info"));
+        assert!(filter.contains("espejismo_core=debug"));
+        assert!(filter.contains("tokio_yamux=info"));
+        assert!(!filter.contains("tokio_yamux=debug"));
     }
 }

@@ -8,6 +8,8 @@
   sink for throughput testing without Python HTTP server overhead.
 - Repeated-round throughput harness aggregation with per-test median, mean,
   min, max, standard deviation, and proxy/direct efficiency reporting.
+- Throughput benchmark environment and log-risk reports that fail fast when
+  recent logs contain giant mux frame dumps.
 - `--profile auto-throughput` for measured high-BDP TCP paths, using the exact
   normal-frame payload cap, larger buffers/windows, a lower HTTP bulk threshold,
   and a wider bulk-lane pool.
@@ -17,6 +19,9 @@
 - Release and native binary CI builds now include the benchmark HTTP helper.
 - Stream relay copy buffers are larger to better feed high-throughput single
   streams.
+- Global `debug` or `trace` logging now applies to Espejismo crates only, while
+  noisy transport dependencies stay capped at `info` to prevent benchmark
+  distortion from giant frame-body logs.
 
 ### Fixed
 

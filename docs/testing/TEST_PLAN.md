@@ -62,10 +62,18 @@ scripts/bench-throughput.sh
 ```
 
 The script writes raw curl output, `results.jsonl`, `summary.md`, and optional
-admin snapshots into `bench-results/<run-id>/`. `summary.md` includes per-run
-results, median/mean/min/max/stddev, and proxy/direct efficiency for matching
-tests. Use it when comparing mux, frame-size, pacing, or lane-pool changes so
-raw link variation and Espejismo overhead are recorded in the same run.
+admin snapshots into `bench-results/<run-id>/`. It also writes
+`environment.md` and `log-risk.md`. The log-risk check scans the recent local
+log tail and fails by default if it sees giant lines or mux frame-body dumps,
+because verbose transport logs can make proxy throughput look falsely slow.
+Set `ESPEJISMO_LOCAL_LOG_FILE` when the local process writes somewhere other
+than `/tmp/espejismo-local-bench.log`; set `ESPEJISMO_ALLOW_VERBOSE_LOGS=1`
+only for intentional debugging runs whose numbers will not be used for tuning.
+
+`summary.md` includes per-run results, median/mean/min/max/stddev, and
+proxy/direct efficiency for matching tests. Use it when comparing mux,
+frame-size, pacing, or lane-pool changes so raw link variation and Espejismo
+overhead are recorded in the same run.
 
 ## Unit Coverage
 

@@ -421,7 +421,9 @@ deployments.
 
 ### logging
 
-`level`: Tracing filter such as `info`, `debug`, or module filters.
+`level`: Tracing filter such as `info`, `debug`, or module filters. Global
+`debug` and `trace` are treated as Espejismo-only verbosity; high-volume
+transport dependencies remain capped at `info`.
 
 `format`: `compact`, `pretty`, or `json`.
 

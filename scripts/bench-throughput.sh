@@ -20,6 +20,12 @@ OUTPUT_DIR="${OUTPUT_ROOT%/}/${RUN_ID}"
 RAW_DIR="${OUTPUT_DIR}/raw"
 RESULTS_JSONL="${OUTPUT_DIR}/results.jsonl"
 SUMMARY_MD="${OUTPUT_DIR}/summary.md"
+ENV_MD="${OUTPUT_DIR}/environment.md"
+LOG_RISK_MD="${OUTPUT_DIR}/log-risk.md"
+LOCAL_LOG_FILE="${ESPEJISMO_LOCAL_LOG_FILE:-/tmp/espejismo-local-bench.log}"
+LOG_SCAN_LINES="${ESPEJISMO_LOG_SCAN_LINES:-300}"
+MAX_LOG_LINE_BYTES="${ESPEJISMO_MAX_LOG_LINE_BYTES:-8192}"
+ALLOW_VERBOSE_LOGS="${ESPEJISMO_ALLOW_VERBOSE_LOGS:-0}"
 
 mkdir -p "$RAW_DIR"
 : >"$RESULTS_JSONL"
@@ -52,8 +58,134 @@ if [ ! -f "$UPLOAD_FILE" ]; then
     dd if=/dev/zero of="$UPLOAD_FILE" bs=1M count="$UPLOAD_MIB" status=none
 fi
 
+command_output() {
+    local title="$1"
+    shift
+    {
+        echo "### ${title}"
+        echo
+        echo '```text'
+        "$@" 2>&1 || true
+        echo '```'
+        echo
+    } >>"$ENV_MD"
+}
+
+capture_environment() {
+    cat >"$ENV_MD" <<EOF
+# Espejismo Benchmark Environment
+
+Run: ${RUN_ID}
+
+| Field | Value |
+| --- | --- |
+| Started UTC | \`$(date -u +%Y-%m-%dT%H:%M:%SZ)\` |
+| Host | \`$(hostname 2>/dev/null || echo unknown)\` |
+| Proxy URL | \`${PROXY_URL}\` |
+| Direct download URL | \`${DIRECT_DOWNLOAD_URL}\` |
+| Proxy download URL | \`${PROXY_DOWNLOAD_URL}\` |
+| Direct upload URL | \`${DIRECT_UPLOAD_URL}\` |
+| Proxy upload URL | \`${PROXY_UPLOAD_URL}\` |
+| Upload file | \`${UPLOAD_FILE}\` |
+| Upload MiB | \`${UPLOAD_MIB}\` |
+| Parallelism | \`${PARALLEL}\` |
+| Rounds | \`${ROUNDS}\` |
+| Curl max time | \`${MAX_TIME}\` |
+| Admin URL | \`${ADMIN_URL:-disabled}\` |
+| Local log file scanned | \`${LOCAL_LOG_FILE}\` |
+| Log scan lines | \`${LOG_SCAN_LINES}\` |
+| Max allowed log line bytes | \`${MAX_LOG_LINE_BYTES}\` |
+
+EOF
+    command_output "Kernel" uname -a
+    command_output "Curl" curl --version
+    if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        command_output "Git" git log --oneline -1
+    fi
+    if [ -n "$ADMIN_URL" ]; then
+        local admin_out="${OUTPUT_DIR}/admin-environment.json"
+        if [ -n "$ADMIN_TOKEN" ]; then
+            curl -fsS -H "Authorization: Bearer ${ADMIN_TOKEN}" "$ADMIN_URL" -o "$admin_out" || true
+        else
+            curl -fsS "$ADMIN_URL" -o "$admin_out" || true
+        fi
+        if [ -s "$admin_out" ]; then
+            {
+                echo "### Admin Status"
+                echo
+                echo "Captured in \`${admin_out}\`."
+                echo
+            } >>"$ENV_MD"
+        fi
+    fi
+}
+
+check_log_safety() {
+    cat >"$LOG_RISK_MD" <<EOF
+# Espejismo Benchmark Log Risk Check
+
+| Field | Value |
+| --- | --- |
+| Log file | \`${LOCAL_LOG_FILE}\` |
+| Lines scanned from tail | \`${LOG_SCAN_LINES}\` |
+| Max allowed line bytes | \`${MAX_LOG_LINE_BYTES}\` |
+| Allow verbose logs | \`${ALLOW_VERBOSE_LOGS}\` |
+
+EOF
+
+    if [ ! -f "$LOCAL_LOG_FILE" ]; then
+        cat >>"$LOG_RISK_MD" <<EOF
+No log file was found at the configured path. The benchmark will continue.
+EOF
+        return 0
+    fi
+
+    local scan_file="${RAW_DIR}/log-scan-tail.txt"
+    tail -n "$LOG_SCAN_LINES" "$LOCAL_LOG_FILE" >"$scan_file" || true
+    local max_line giant_lines frame_dumps
+    max_line="$(awk '{ if (length($0) > max) max = length($0) } END { print max + 0 }' "$scan_file")"
+    giant_lines="$(awk -v limit="$MAX_LOG_LINE_BYTES" 'length($0) > limit { count++ } END { print count + 0 }' "$scan_file")"
+    frame_dumps="$( (grep -E 'tokio_yamux::session|Frame \{.*body: Some' "$scan_file" || true) | wc -l | awk '{print $1}' )"
+
+    cat >>"$LOG_RISK_MD" <<EOF
+| Maximum observed line bytes | \`${max_line}\` |
+| Lines over limit | \`${giant_lines}\` |
+| Suspected frame-dump lines | \`${frame_dumps}\` |
+| Tail sample | \`${scan_file}\` |
+
+EOF
+
+    if [ "$giant_lines" -gt 0 ] || [ "$frame_dumps" -gt 0 ]; then
+        cat >>"$LOG_RISK_MD" <<EOF
+Result: unsafe for throughput measurement. Verbose frame logs can dominate I/O
+and make proxy transfer results look much slower than the protocol really is.
+Restart Espejismo with \`[logging] level = "info"\` or an application-only debug
+filter before running the benchmark.
+EOF
+        if [ "$ALLOW_VERBOSE_LOGS" != "1" ]; then
+            echo "unsafe verbose logs detected; see ${LOG_RISK_MD}" >&2
+            exit 3
+        fi
+    else
+        cat >>"$LOG_RISK_MD" <<EOF
+Result: safe. No recent giant log lines or mux frame body dumps were detected.
+EOF
+    fi
+}
+
 now_ms() {
-    date +%s%3N
+    local value
+    value="$(date +%s%3N 2>/dev/null || true)"
+    if [[ "$value" =~ ^[0-9]+$ ]]; then
+        echo "$value"
+    elif [ "$HAS_PYTHON" -eq 1 ]; then
+        "$PYTHON_BIN" - <<'PY'
+import time
+print(int(time.time() * 1000))
+PY
+    else
+        echo "$(($(date +%s) * 1000))"
+    fi
 }
 
 capture_admin() {
@@ -319,11 +451,18 @@ Run: ${RUN_ID}
 | Round delay seconds | \`${ROUND_DELAY_SECS}\` |
 | Admin URL | \`${ADMIN_URL:-disabled}\` |
 
+Environment: \`${ENV_MD}\`
+
+Log risk check: \`${LOG_RISK_MD}\`
+
 ## Results
 
 | Round | Test | Mode | Direction | Parallel | Mbit/s | Seconds | OK |
 | ---: | --- | --- | --- | ---: | ---: | ---: | --- |
 EOF
+
+capture_environment
+check_log_safety
 
 for round in $(seq 1 "$ROUNDS"); do
     run_round "$round"
