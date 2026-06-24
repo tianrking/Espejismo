@@ -45,6 +45,8 @@ struct LaneHealth {
     stream_open_failures: u64,
     bytes_client_to_remote: u64,
     bytes_remote_to_client: u64,
+    recent_client_to_remote_bps: u64,
+    recent_remote_to_client_bps: u64,
     last_open_latency_ms: u64,
     last_mux_rtt_ms: Option<u64>,
     mux_rtt_trend_ms: VecDeque<u64>,
@@ -126,10 +128,11 @@ impl TunnelService {
         lane_id: usize,
         client_to_remote: u64,
         remote_to_client: u64,
+        elapsed: Duration,
     ) {
         let manager = self.inner.read().await.clone();
         manager
-            .record_stream_bytes(lane_id, client_to_remote, remote_to_client)
+            .record_stream_bytes(lane_id, client_to_remote, remote_to_client, elapsed)
             .await;
     }
 }
@@ -247,6 +250,7 @@ impl TunnelManager {
         lane_id: usize,
         client_to_remote: u64,
         remote_to_client: u64,
+        elapsed: Duration,
     ) {
         if let Some(lane) = self.lanes.iter().find(|lane| lane.id == lane_id) {
             let mut health = lane.health.lock().await;
@@ -256,6 +260,7 @@ impl TunnelManager {
             health.bytes_remote_to_client = health
                 .bytes_remote_to_client
                 .saturating_add(remote_to_client);
+            update_recent_throughput(&mut health, client_to_remote, remote_to_client, elapsed);
             health.active_streams = health.active_streams.saturating_sub(1);
             health.last_activity_unix_secs = Some(unix_now_secs());
             self.publish_lane(lane, &health, "connected");
@@ -474,6 +479,9 @@ impl TunnelManager {
             stream_open_failures: health.stream_open_failures,
             bytes_client_to_remote: health.bytes_client_to_remote,
             bytes_remote_to_client: health.bytes_remote_to_client,
+            recent_client_to_remote_bps: health.recent_client_to_remote_bps,
+            recent_remote_to_client_bps: health.recent_remote_to_client_bps,
+            adaptive_score: lane_score_from_health(health),
             last_open_latency_ms: health.last_open_latency_ms,
             last_mux_rtt_ms: health.last_mux_rtt_ms,
             mux_rtt_trend_ms: health.mux_rtt_trend_ms.iter().copied().collect(),
@@ -490,14 +498,79 @@ impl TunnelManager {
 fn lane_score(lane: &TunnelLane) -> u64 {
     lane.health
         .try_lock()
-        .map(|health| {
-            let penalty = u64::from(health.last_error.is_some()) * 1_000_000_000;
-            let load = health
-                .active_streams
-                .saturating_add(health.pending_stream_opens);
-            load * 1_000_000 + health.last_open_latency_ms + penalty
-        })
+        .map(|health| lane_score_from_health(&health))
         .unwrap_or(u64::MAX / 2)
+}
+
+fn lane_score_from_health(health: &LaneHealth) -> u64 {
+    let load = health
+        .active_streams
+        .saturating_add(health.pending_stream_opens);
+    let attempts = health
+        .streams_opened
+        .saturating_add(health.stream_open_failures)
+        .max(1);
+    let failure_penalty = health.stream_open_failures.saturating_mul(200_000_000) / attempts;
+    let error_penalty = u64::from(health.last_error.is_some()) * 500_000_000;
+    let rtt_penalty = average_mux_rtt_ms(health).saturating_mul(1_000);
+    let open_latency_penalty = health.last_open_latency_ms.saturating_mul(100);
+    let throughput_credit = health
+        .recent_client_to_remote_bps
+        .saturating_add(health.recent_remote_to_client_bps)
+        .saturating_div(1_000)
+        .min(500_000);
+    load.saturating_mul(1_000_000)
+        .saturating_add(failure_penalty)
+        .saturating_add(error_penalty)
+        .saturating_add(rtt_penalty)
+        .saturating_add(open_latency_penalty)
+        .saturating_sub(throughput_credit)
+}
+
+fn average_mux_rtt_ms(health: &LaneHealth) -> u64 {
+    if !health.mux_rtt_trend_ms.is_empty() {
+        let sum = health
+            .mux_rtt_trend_ms
+            .iter()
+            .fold(0_u64, |sum, rtt| sum.saturating_add(*rtt));
+        return sum / health.mux_rtt_trend_ms.len() as u64;
+    }
+    health.last_mux_rtt_ms.unwrap_or_default()
+}
+
+fn update_recent_throughput(
+    health: &mut LaneHealth,
+    client_to_remote: u64,
+    remote_to_client: u64,
+    elapsed: Duration,
+) {
+    let elapsed_nanos = elapsed.as_nanos();
+    if elapsed_nanos == 0 {
+        return;
+    }
+    let client_bps = bits_per_second(client_to_remote, elapsed_nanos);
+    let remote_bps = bits_per_second(remote_to_client, elapsed_nanos);
+    health.recent_client_to_remote_bps = ewma_bps(health.recent_client_to_remote_bps, client_bps);
+    health.recent_remote_to_client_bps = ewma_bps(health.recent_remote_to_client_bps, remote_bps);
+}
+
+fn bits_per_second(bytes: u64, elapsed_nanos: u128) -> u64 {
+    ((bytes as u128)
+        .saturating_mul(8)
+        .saturating_mul(1_000_000_000)
+        / elapsed_nanos)
+        .min(u64::MAX as u128) as u64
+}
+
+fn ewma_bps(previous: u64, sample: u64) -> u64 {
+    if previous == 0 {
+        sample
+    } else {
+        previous
+            .saturating_mul(3)
+            .saturating_add(sample)
+            .saturating_div(4)
+    }
 }
 
 fn hopped_endpoint(endpoint: &str, port_hopping: &PortHoppingConfig) -> String {
@@ -588,7 +661,9 @@ fn unix_now_secs() -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{lane_score, LaneHealth, LaneKind, TunnelLane};
+    use std::time::Duration;
+
+    use super::{lane_score, update_recent_throughput, LaneHealth, LaneKind, TunnelLane};
     use tokio::sync::Mutex;
 
     fn lane_with_health(health: LaneHealth) -> TunnelLane {
@@ -614,5 +689,47 @@ mod tests {
         });
 
         assert!(lane_score(&idle) < lane_score(&loaded));
+    }
+
+    #[test]
+    fn lane_score_penalizes_stream_open_failures() {
+        let healthy = lane_with_health(LaneHealth {
+            streams_opened: 10,
+            stream_open_failures: 0,
+            ..LaneHealth::default()
+        });
+        let failing = lane_with_health(LaneHealth {
+            streams_opened: 10,
+            stream_open_failures: 5,
+            ..LaneHealth::default()
+        });
+
+        assert!(lane_score(&healthy) < lane_score(&failing));
+    }
+
+    #[test]
+    fn lane_score_uses_rtt_trend_and_recent_throughput() {
+        let fast = lane_with_health(LaneHealth {
+            mux_rtt_trend_ms: [20, 22, 18].into(),
+            recent_remote_to_client_bps: 200_000_000,
+            ..LaneHealth::default()
+        });
+        let slow = lane_with_health(LaneHealth {
+            mux_rtt_trend_ms: [180, 190, 200].into(),
+            recent_remote_to_client_bps: 1_000_000,
+            ..LaneHealth::default()
+        });
+
+        assert!(lane_score(&fast) < lane_score(&slow));
+    }
+
+    #[test]
+    fn recent_throughput_uses_ewma() {
+        let mut health = LaneHealth::default();
+        update_recent_throughput(&mut health, 1_000_000, 0, Duration::from_secs(1));
+        assert_eq!(health.recent_client_to_remote_bps, 8_000_000);
+
+        update_recent_throughput(&mut health, 2_000_000, 0, Duration::from_secs(1));
+        assert_eq!(health.recent_client_to_remote_bps, 10_000_000);
     }
 }

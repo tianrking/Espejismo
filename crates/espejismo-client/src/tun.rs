@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use espejismo_core::config::LocalTunConfig;
@@ -149,18 +149,21 @@ async fn handle_tun_tcp(
                 debug!(lane_id, %local, %remote, priority = ?priority, "TUN TCP flow opened tunnel stream");
                 let mut client_to_remote = 0;
                 let mut remote_to_client = 0;
+                let mut copy_elapsed = Duration::ZERO;
                 let result = async {
                     write_tcp_connect_with_priority(&mut tunnel_stream, &authority, priority)
                         .await?;
+                    let copy_started = Instant::now();
                     (client_to_remote, remote_to_client) =
                         idle_copy_bidirectional(&mut local_stream, &mut tunnel_stream, idle)
                             .await?;
+                    copy_elapsed = copy_started.elapsed();
                     anyhow::Ok(())
                 }
                 .await;
                 metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
                 tunnel
-                    .record_stream_bytes(lane_id, client_to_remote, remote_to_client)
+                    .record_stream_bytes(lane_id, client_to_remote, remote_to_client, copy_elapsed)
                     .await;
                 result
             }
@@ -267,6 +270,7 @@ async fn relay_udp_authority(
         open_tun_stream(tunnel.clone(), StreamPriority::Interactive).await?;
     let lane_id = stream.lane_id();
     let mut response = Vec::new();
+    let started = Instant::now();
     let result = async {
         write_udp_datagram_with_priority(&mut stream, authority, priority, payload).await?;
         let len = timeout(response_timeout, stream.read_u16()).await?? as usize;
@@ -276,7 +280,12 @@ async fn relay_udp_authority(
     }
     .await;
     tunnel
-        .record_stream_bytes(lane_id, payload.len() as u64, response.len() as u64)
+        .record_stream_bytes(
+            lane_id,
+            payload.len() as u64,
+            response.len() as u64,
+            started.elapsed(),
+        )
         .await;
     result?;
     Ok(response)
@@ -327,7 +336,9 @@ async fn warm_up_tunnel(tunnel: Arc<TunnelService>) -> Result<()> {
     .map_err(|_| anyhow::anyhow!("TUN warm-up stream open timed out"))??;
     let lane_id = stream.lane_id();
     drop(stream);
-    tunnel.record_stream_bytes(lane_id, 0, 0).await;
+    tunnel
+        .record_stream_bytes(lane_id, 0, 0, Duration::ZERO)
+        .await;
     info!(lane_id, "TUN warm-up stream opened");
     Ok(())
 }

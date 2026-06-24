@@ -288,9 +288,10 @@ Keep `shared.mux.mode = "yamux"` for production.
 
 ## Follow-Up Work
 
-- Add a non-Python test sink such as `iperf3`-style HTTP body discard or a small
 - Use the Rust `espejismo-bench-http` source/sink for future HK2/RK runs to
   remove Python server overhead from upload tests.
+- Use admin snapshots to compare adaptive lane score, recent bps, RTT trend,
+  active streams, and pending opens during each multi-round benchmark.
 - Test under controlled loss and latency using Linux `tc netem`.
 - Run repeated harness rounds so benchmark summaries report median, min, max,
   and standard deviation across several adjacent windows.

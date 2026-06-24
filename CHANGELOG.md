@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Adaptive tunnel lane scoring now combines active streams, pending stream
+  opens, stream-open failure ratio, last error state, mux RTT trend, open
+  latency, and recent EWMA throughput before selecting a physical lane.
+- Admin runtime state and Prometheus output now expose each lane's recent
+  client-to-remote bps, recent remote-to-client bps, and current adaptive
+  score so benchmark runs can explain scheduler choices.
+
 ## v0.1.3
 
 `v0.1.3` is a transport-mode and benchmark release for the `v0.1.x` line.

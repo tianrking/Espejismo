@@ -65,7 +65,7 @@ async fn handle_socks5_client_inner(
             .await;
             metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
             tunnel
-                .record_stream_bytes(lane_id, client_to_remote, remote_to_client)
+                .record_stream_bytes(lane_id, client_to_remote, remote_to_client, copy_elapsed)
                 .await;
             debug!(
                 ingress = "socks5",
@@ -172,7 +172,7 @@ async fn handle_http_client_inner(
     .await;
     metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
     tunnel
-        .record_stream_bytes(lane_id, client_to_remote, remote_to_client)
+        .record_stream_bytes(lane_id, client_to_remote, remote_to_client, copy_elapsed)
         .await;
     debug!(
         ingress = "http",
@@ -340,6 +340,7 @@ async fn relay_udp_packet(
     let mut stream = tunnel.open_stream(priority).await?;
     let lane_id = stream.lane_id();
     let mut response = Vec::new();
+    let started = Instant::now();
     let result = async {
         write_udp_datagram_with_priority(&mut stream, &target.authority(), priority, payload)
             .await?;
@@ -350,7 +351,12 @@ async fn relay_udp_packet(
     }
     .await;
     tunnel
-        .record_stream_bytes(lane_id, payload.len() as u64, response.len() as u64)
+        .record_stream_bytes(
+            lane_id,
+            payload.len() as u64,
+            response.len() as u64,
+            started.elapsed(),
+        )
         .await;
     result?;
     Ok(response)

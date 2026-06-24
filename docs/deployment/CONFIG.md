@@ -350,6 +350,14 @@ fine for single-user desktop use.
 
 `max_connection_age_secs`: Rotate old physical tunnels for new streams.
 
+Lane selection is adaptive inside each preferred lane class. New streams prefer
+the requested class (`interactive` for small requests, UDP, SOCKS5, and unknown
+flows; `bulk` for HTTP requests whose `Content-Length` crosses
+`http_bulk_threshold_bytes`) and then score candidate physical lanes by current
+load, pending opens, stream-open failure ratio, last error state, mux RTT trend,
+open latency, and recent EWMA throughput. The admin endpoint exposes the score
+and recent bps fields per lane; lower scores are healthier.
+
 Suggested desktop/browser baseline:
 
 ```toml

@@ -79,6 +79,13 @@ number. Use it when comparing mux, frame-size, pacing, obfuscation, or
 lane-pool changes so raw link variation and Espejismo overhead are recorded in
 the same run.
 
+For lane-scheduler work, keep `ESPEJISMO_ADMIN_URL` enabled and inspect the
+before/after snapshots or Prometheus output. Each tunnel lane should publish
+active streams, pending opens, stream-open failures, mux RTT trend, recent
+client-to-remote bps, recent remote-to-client bps, and `adaptive_score`.
+Healthy benchmark comparisons should show both aggregate throughput and whether
+bulk/interactive flows were actually placed on the intended lane class.
+
 ## Unit Coverage
 
 Current unit tests cover:
@@ -95,6 +102,8 @@ Current unit tests cover:
 - Config validation, including public admin listener token requirements.
 - Egress policy host, port, and private IP rules.
 - Admin authorization, bounded request parsing, and lane metric rendering.
+- Adaptive lane scoring across load, stream-open failures, RTT trend, and
+  recent EWMA throughput.
 
 ## Fuzz Targets
 

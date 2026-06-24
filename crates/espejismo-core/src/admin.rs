@@ -301,6 +301,18 @@ fn render_runtime_prometheus(role: &str, snapshot: &RuntimeStateSnapshot) -> Str
         "# HELP espejismo_tunnel_lane_bytes_remote_to_client Total bytes sent from remote to client by lane.\n",
     );
     out.push_str("# TYPE espejismo_tunnel_lane_bytes_remote_to_client counter\n");
+    out.push_str(
+        "# HELP espejismo_tunnel_lane_recent_client_to_remote_bps Recent EWMA throughput from client to remote by lane.\n",
+    );
+    out.push_str("# TYPE espejismo_tunnel_lane_recent_client_to_remote_bps gauge\n");
+    out.push_str(
+        "# HELP espejismo_tunnel_lane_recent_remote_to_client_bps Recent EWMA throughput from remote to client by lane.\n",
+    );
+    out.push_str("# TYPE espejismo_tunnel_lane_recent_remote_to_client_bps gauge\n");
+    out.push_str(
+        "# HELP espejismo_tunnel_lane_adaptive_score Current adaptive lane-selection score; lower is preferred.\n",
+    );
+    out.push_str("# TYPE espejismo_tunnel_lane_adaptive_score gauge\n");
     out.push_str("# HELP espejismo_tunnel_lane_reconnect_count Total reconnects by lane.\n");
     out.push_str("# TYPE espejismo_tunnel_lane_reconnect_count counter\n");
     out.push_str(
@@ -359,6 +371,24 @@ fn render_runtime_prometheus(role: &str, snapshot: &RuntimeStateSnapshot) -> Str
             "espejismo_tunnel_lane_bytes_remote_to_client",
             &labels,
             lane.bytes_remote_to_client,
+        );
+        push_metric(
+            &mut out,
+            "espejismo_tunnel_lane_recent_client_to_remote_bps",
+            &labels,
+            lane.recent_client_to_remote_bps,
+        );
+        push_metric(
+            &mut out,
+            "espejismo_tunnel_lane_recent_remote_to_client_bps",
+            &labels,
+            lane.recent_remote_to_client_bps,
+        );
+        push_metric(
+            &mut out,
+            "espejismo_tunnel_lane_adaptive_score",
+            &labels,
+            lane.adaptive_score,
         );
         push_metric(
             &mut out,
@@ -473,6 +503,9 @@ mod tests {
                     stream_open_failures: 1,
                     bytes_client_to_remote: 6,
                     bytes_remote_to_client: 7,
+                    recent_client_to_remote_bps: 100,
+                    recent_remote_to_client_bps: 200,
+                    adaptive_score: 300,
                     last_open_latency_ms: 8,
                     last_mux_rtt_ms: Some(9),
                     mux_rtt_trend_ms: vec![9],
@@ -490,5 +523,7 @@ mod tests {
             "espejismo_tunnel_lane_pending_stream_opens{role=\"local\",lane_id=\"2\",lane_kind=\"bulk\",state=\"connected\"} 2"
         ));
         assert!(body.contains("espejismo_tunnel_lane_last_mux_rtt_ms"));
+        assert!(body.contains("espejismo_tunnel_lane_recent_client_to_remote_bps"));
+        assert!(body.contains("espejismo_tunnel_lane_adaptive_score"));
     }
 }
