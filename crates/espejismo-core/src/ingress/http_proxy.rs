@@ -10,6 +10,8 @@ const HTTP_PROXY_HEADER_TIMEOUT: Duration = Duration::from_secs(15);
 #[derive(Clone, Debug)]
 pub struct HttpTarget {
     pub authority: String,
+    pub method: String,
+    pub path: String,
     pub prebuffer: Vec<u8>,
     pub prebuffer_body_bytes: usize,
     pub content_length: Option<u64>,
@@ -94,6 +96,8 @@ where
             .await?;
         return Ok(HttpTarget {
             authority: target.to_string(),
+            method: method.to_string(),
+            path: String::new(),
             prebuffer: overflow.unwrap_or_default(),
             prebuffer_body_bytes: 0,
             content_length: None,
@@ -112,6 +116,8 @@ where
 
     Ok(HttpTarget {
         authority,
+        method: method.to_string(),
+        path,
         prebuffer,
         prebuffer_body_bytes,
         content_length,
@@ -201,7 +207,8 @@ fn find_header_end(data: &[u8], search_from: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_content_length;
+    use super::{accept_http_proxy, parse_content_length};
+    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn parses_content_length_case_insensitively() {
@@ -213,5 +220,50 @@ mod tests {
     fn ignores_invalid_content_length() {
         let lines = ["Content-Length: nope"];
         assert_eq!(parse_content_length(&lines), None);
+    }
+
+    #[tokio::test]
+    async fn absolute_http_target_preserves_method_and_path() {
+        let (mut client, mut proxy) = duplex(4096);
+        let writer = tokio::spawn(async move {
+            client
+                .write_all(
+                    b"GET http://example.test/files/256m.bin?mirror=hk HTTP/1.1\r\n\
+                      Host: example.test\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let target = accept_http_proxy(&mut proxy).await.unwrap();
+        assert_eq!(target.authority, "example.test:80");
+        assert_eq!(target.method, "GET");
+        assert_eq!(target.path, "/files/256m.bin?mirror=hk");
+        assert!(target
+            .prebuffer
+            .starts_with(b"GET /files/256m.bin?mirror=hk HTTP/1.1\r\nHost: example.test\r\n"));
+        writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn connect_target_preserves_method_without_path() {
+        let (mut client, mut proxy) = duplex(4096);
+        let writer = tokio::spawn(async move {
+            client
+                .write_all(b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test\r\n\r\n")
+                .await
+                .unwrap();
+            let mut response = Vec::new();
+            client.read_to_end(&mut response).await.unwrap();
+            response
+        });
+
+        let target = accept_http_proxy(&mut proxy).await.unwrap();
+        assert_eq!(target.authority, "example.test:443");
+        assert_eq!(target.method, "CONNECT");
+        assert_eq!(target.path, "");
+        drop(proxy);
+        let response = writer.await.unwrap();
+        assert!(response.starts_with(b"HTTP/1.1 200 Connection Established\r\n\r\n"));
     }
 }

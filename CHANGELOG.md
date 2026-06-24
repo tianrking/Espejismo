@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Plain HTTP proxy `GET` requests whose path looks like a large download
+  (`.bin`, `.zip`, `.tar.gz`, `.mp4`, `.iso`, and similar package/archive/media
+  suffixes) now use bulk tunnel lanes even when the request has no
+  `Content-Length`. Large HTTP uploads still use
+  `local.http_bulk_threshold_bytes`.
+
 ## v0.1.4
 
 `v0.1.4` is an adaptive lane scheduling and benchmark-observability release for

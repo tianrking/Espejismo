@@ -320,8 +320,12 @@ mutation.
 `handshake_padding`: Client hello padding cap.
 
 `http_bulk_threshold_bytes`: HTTP proxy requests with `Content-Length` greater
-than or equal to this value are opened on bulk lanes. The default is `1048576`
-(1 MiB). Set `0` to keep all HTTP proxy streams on interactive lanes.
+than or equal to this value are opened on bulk lanes. Plain HTTP `GET` requests
+whose path looks like a large download, such as `.bin`, `.zip`, `.tar.gz`,
+`.mp4`, or `.iso`, also use bulk lanes because downloads usually have no request
+body `Content-Length`. The default is `1048576` (1 MiB). Set `0` to disable the
+upload-size threshold; filename-style HTTP download classification still
+applies.
 
 ### local.auth
 
@@ -351,12 +355,13 @@ fine for single-user desktop use.
 `max_connection_age_secs`: Rotate old physical tunnels for new streams.
 
 Lane selection is adaptive inside each preferred lane class. New streams prefer
-the requested class (`interactive` for small requests, UDP, SOCKS5, and unknown
-flows; `bulk` for HTTP requests whose `Content-Length` crosses
-`http_bulk_threshold_bytes`) and then score candidate physical lanes by current
-load, pending opens, stream-open failure ratio, last error state, mux RTT trend,
-open latency, and recent EWMA throughput. The admin endpoint exposes the score
-and recent bps fields per lane; lower scores are healthier.
+the requested class (`interactive` for small requests, UDP, SOCKS5, HTTPS
+CONNECT, and unknown flows; `bulk` for large HTTP uploads and plain HTTP
+download paths that look like archives, installers, images, packages, or media)
+and then score candidate physical lanes by current load, pending opens,
+stream-open failure ratio, last error state, mux RTT trend, open latency, and
+recent EWMA throughput. The admin endpoint exposes the score and recent bps
+fields per lane; lower scores are healthier.
 
 Suggested desktop/browser baseline:
 

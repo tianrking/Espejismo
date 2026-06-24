@@ -108,11 +108,14 @@ compatible with the larger encrypted-frame path during tests and benchmarks.
 
 Yamux remains the recommended production mux mode.
 
-### 4. HTTP Large-Request Bulk Classification
+### 4. HTTP Bulk Classification
 
 `local.http_bulk_threshold_bytes` was added. HTTP proxy requests with
 `Content-Length` greater than or equal to this value open the tunnel stream with
-bulk priority.
+bulk priority. Plain HTTP `GET` requests with common large-download suffixes
+(`.bin`, `.zip`, `.tar.gz`, `.mp4`, `.iso`, and similar archive/package/media
+paths) also open bulk streams because downloads normally do not have a request
+body `Content-Length`.
 
 Default:
 
@@ -121,7 +124,10 @@ Default:
 http_bulk_threshold_bytes = 1048576
 ```
 
-Set it to `0` to keep all HTTP proxy streams on interactive lanes.
+Set it to `0` to disable the upload-size threshold. Filename-style plain HTTP
+download classification still applies. HTTPS `CONNECT` streams remain
+interactive until a future sniffing/routing layer can classify them from SNI or
+policy rules.
 
 ### 5. Strict Preferred-Lane Selection
 
@@ -318,6 +324,7 @@ Latest artifacts on HK2:
 | Bulk frame payload | Up to about 64 KiB | Operator-selectable up to 262127 bytes |
 | Bulk chunk config | Larger configured values were clamped to 64 KiB | `max_chunk` can tune 64 KiB, 128 KiB, or 256 KiB-class frames |
 | HTTP upload lane priority | Always interactive | Large `Content-Length` requests can use bulk lanes |
+| HTTP plain download lane priority | Always interactive | Common large-download `GET` paths can use bulk lanes |
 | Lane selection | Preferred lanes could still lose to lower-score opposite lanes | Preferred lane class is tried first |
 | Lane score | Load and open latency only | Load, pending opens, failure ratio, errors, RTT trend, open latency, and recent throughput |
 | Lane byte metrics | Fixed-length upload bodies could be invisible until helper return paths lined up | Actual tunnel stream reads/writes drive counters and throughput EWMA |
@@ -331,6 +338,14 @@ per-frame overhead and produced the best observed proxy upload throughput.
 The HTTP bulk lane feature is architecturally correct and useful for future
 scheduling, but this live test did not prove a separate speedup from lane
 classification alone.
+
+The first five-round adaptive benchmark also revealed a classification gap:
+HTTP `/256m.bin` downloads have no request body `Content-Length`, so their
+6.7 GiB response traffic stayed on the interactive lane while uploads were
+correctly spread across bulk lanes. The post-`v0.1.4` HTTP path-suffix
+classifier fixes that specific plain HTTP benchmark and release-download case;
+HTTPS `CONNECT`, SOCKS5, and TUN traffic still need the planned routing/sniffing
+layer for richer policy-based bulk detection.
 
 Native mux did not outperform Yamux in this run:
 

@@ -15,6 +15,11 @@ use tracing::debug;
 use crate::tunnel::{MeteredTunnelStream, TunnelService};
 
 const HTTP_BODY_COPY_BUFFER_SIZE: usize = 128 * 1024;
+const HTTP_BULK_DOWNLOAD_SUFFIXES: &[&str] = &[
+    ".7z", ".apk", ".bin", ".bz2", ".deb", ".dmg", ".exe", ".gz", ".iso", ".m4v", ".mkv", ".mov",
+    ".mp4", ".msi", ".pkg", ".rar", ".tar", ".tar.bz2", ".tar.gz", ".tar.xz", ".tbz2", ".tgz",
+    ".txz", ".xz", ".zip", ".zst",
+];
 
 pub(crate) async fn handle_socks5_client(
     mut local: TcpStream,
@@ -127,7 +132,12 @@ async fn handle_http_client_inner(
     let accept_started = Instant::now();
     let target = http_proxy::accept_http_proxy_with_auth(local, auth.as_ref()).await?;
     let accept_elapsed = accept_started.elapsed();
-    let priority = http_stream_priority(target.content_length, bulk_threshold_bytes);
+    let priority = http_stream_priority(
+        &target.method,
+        &target.path,
+        target.content_length,
+        bulk_threshold_bytes,
+    );
     let open_started = Instant::now();
     let stream = tunnel.open_stream(priority).await?;
     let open_elapsed = open_started.elapsed();
@@ -202,14 +212,29 @@ async fn handle_http_client_inner(
     result
 }
 
-fn http_stream_priority(content_length: Option<u64>, bulk_threshold_bytes: u64) -> StreamPriority {
-    if bulk_threshold_bytes > 0
-        && content_length.is_some_and(|length| length >= bulk_threshold_bytes)
-    {
+fn http_stream_priority(
+    method: &str,
+    path: &str,
+    content_length: Option<u64>,
+    bulk_threshold_bytes: u64,
+) -> StreamPriority {
+    let large_upload = bulk_threshold_bytes > 0
+        && content_length.is_some_and(|length| length >= bulk_threshold_bytes);
+    let large_download = method.eq_ignore_ascii_case("GET") && looks_like_bulk_download_path(path);
+    if large_upload || large_download {
         StreamPriority::Bulk
     } else {
         StreamPriority::Interactive
     }
+}
+
+fn looks_like_bulk_download_path(path: &str) -> bool {
+    let path = path.split_once('?').map_or(path, |(path, _)| path);
+    let path = path.split_once('#').map_or(path, |(path, _)| path);
+    let path = path.to_ascii_lowercase();
+    HTTP_BULK_DOWNLOAD_SUFFIXES
+        .iter()
+        .any(|suffix| path.ends_with(suffix))
 }
 
 fn throughput_bps(bytes: u64, elapsed: Duration) -> u64 {
@@ -385,7 +410,7 @@ mod tests {
     #[test]
     fn large_http_request_uses_bulk_priority() {
         assert_eq!(
-            http_stream_priority(Some(1_048_576), 1_048_576),
+            http_stream_priority("POST", "/upload", Some(1_048_576), 1_048_576),
             StreamPriority::Bulk
         );
     }
@@ -393,15 +418,39 @@ mod tests {
     #[test]
     fn missing_or_small_http_length_stays_interactive() {
         assert_eq!(
-            http_stream_priority(None, 1_048_576),
+            http_stream_priority("GET", "/api/items", None, 1_048_576),
             StreamPriority::Interactive
         );
         assert_eq!(
-            http_stream_priority(Some(1024), 1_048_576),
+            http_stream_priority("POST", "/upload", Some(1024), 1_048_576),
             StreamPriority::Interactive
         );
         assert_eq!(
-            http_stream_priority(Some(1024), 0),
+            http_stream_priority("POST", "/upload", Some(1024), 0),
+            StreamPriority::Interactive
+        );
+    }
+
+    #[test]
+    fn http_download_suffix_uses_bulk_priority() {
+        assert_eq!(
+            http_stream_priority("GET", "/files/256m.bin", None, 1_048_576),
+            StreamPriority::Bulk
+        );
+        assert_eq!(
+            http_stream_priority("get", "/dist/archive.tar.gz?mirror=hk", None, 1_048_576),
+            StreamPriority::Bulk
+        );
+    }
+
+    #[test]
+    fn ordinary_http_get_and_connect_stay_interactive() {
+        assert_eq!(
+            http_stream_priority("GET", "/index.html", None, 1_048_576),
+            StreamPriority::Interactive
+        );
+        assert_eq!(
+            http_stream_priority("CONNECT", "", None, 1_048_576),
             StreamPriority::Interactive
         );
     }
