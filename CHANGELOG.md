@@ -10,6 +10,8 @@
 - Admin runtime state and Prometheus output now expose each lane's recent
   client-to-remote bps, recent remote-to-client bps, and current adaptive
   score so benchmark runs can explain scheduler choices.
+- Local lane byte accounting now measures actual tunnel stream reads/writes,
+  including fixed-length HTTP upload bodies, SOCKS5 streams, and TUN flows.
 
 ## v0.1.3
 

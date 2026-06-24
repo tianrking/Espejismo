@@ -18,7 +18,7 @@ use tracing::{debug, info, warn};
 use tun_rs::DeviceBuilder;
 
 use crate::route;
-use crate::tunnel::{TunnelService, TunnelStream};
+use crate::tunnel::{MeteredTunnelStream, TunnelService, TunnelStream};
 
 const MAX_TUN_UDP_TASKS: usize = 1024;
 const TUN_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
@@ -143,24 +143,22 @@ async fn handle_tun_tcp(
             let result = async {
                 let authority = authority_from_socket(remote);
                 info!(%local, %remote, authority = %authority, "TUN TCP flow accepted");
-                let (mut tunnel_stream, priority) =
+                let (tunnel_stream, priority) =
                     open_tun_stream(tunnel.clone(), StreamPriority::Interactive).await?;
+                let mut tunnel_stream = MeteredTunnelStream::new(tunnel_stream);
                 let lane_id = tunnel_stream.lane_id();
                 debug!(lane_id, %local, %remote, priority = ?priority, "TUN TCP flow opened tunnel stream");
-                let mut client_to_remote = 0;
-                let mut remote_to_client = 0;
                 let mut copy_elapsed = Duration::ZERO;
                 let result = async {
                     write_tcp_connect_with_priority(&mut tunnel_stream, &authority, priority)
                         .await?;
                     let copy_started = Instant::now();
-                    (client_to_remote, remote_to_client) =
-                        idle_copy_bidirectional(&mut local_stream, &mut tunnel_stream, idle)
-                            .await?;
+                    idle_copy_bidirectional(&mut local_stream, &mut tunnel_stream, idle).await?;
                     copy_elapsed = copy_started.elapsed();
                     anyhow::Ok(())
                 }
                 .await;
+                let (client_to_remote, remote_to_client) = tunnel_stream.byte_counts();
                 metrics.add_tunnel_bytes(client_to_remote, remote_to_client);
                 tunnel
                     .record_stream_bytes(lane_id, client_to_remote, remote_to_client, copy_elapsed)
@@ -266,8 +264,8 @@ async fn relay_udp_authority(
     payload: &[u8],
     response_timeout: Duration,
 ) -> Result<Vec<u8>> {
-    let (mut stream, priority) =
-        open_tun_stream(tunnel.clone(), StreamPriority::Interactive).await?;
+    let (stream, priority) = open_tun_stream(tunnel.clone(), StreamPriority::Interactive).await?;
+    let mut stream = MeteredTunnelStream::new(stream);
     let lane_id = stream.lane_id();
     let mut response = Vec::new();
     let started = Instant::now();
@@ -279,11 +277,12 @@ async fn relay_udp_authority(
         anyhow::Ok(())
     }
     .await;
+    let (client_to_remote, remote_to_client) = stream.byte_counts();
     tunnel
         .record_stream_bytes(
             lane_id,
-            payload.len() as u64,
-            response.len() as u64,
+            client_to_remote,
+            remote_to_client,
             started.elapsed(),
         )
         .await;

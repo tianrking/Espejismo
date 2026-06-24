@@ -101,9 +101,33 @@ pub(crate) struct TunnelStream {
     lane_id: usize,
 }
 
+pub(crate) struct MeteredTunnelStream {
+    inner: TunnelStream,
+    client_to_remote: u64,
+    remote_to_client: u64,
+}
+
 impl TunnelStream {
     pub(crate) fn lane_id(&self) -> usize {
         self.lane_id
+    }
+}
+
+impl MeteredTunnelStream {
+    pub(crate) fn new(inner: TunnelStream) -> Self {
+        Self {
+            inner,
+            client_to_remote: 0,
+            remote_to_client: 0,
+        }
+    }
+
+    pub(crate) fn lane_id(&self) -> usize {
+        self.inner.lane_id()
+    }
+
+    pub(crate) fn byte_counts(&self) -> (u64, u64) {
+        (self.client_to_remote, self.remote_to_client)
     }
 }
 
@@ -154,6 +178,47 @@ impl AsyncWrite for TunnelStream {
         buf: &[u8],
     ) -> Poll<std::io::Result<usize>> {
         Pin::new(&mut self.inner).poll_write(cx, buf)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_flush(cx)
+    }
+
+    fn poll_shutdown(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        Pin::new(&mut self.inner).poll_shutdown(cx)
+    }
+}
+
+impl AsyncRead for MeteredTunnelStream {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<std::io::Result<()>> {
+        let before = buf.filled().len();
+        let result = Pin::new(&mut self.inner).poll_read(cx, buf);
+        if let Poll::Ready(Ok(())) = &result {
+            let read = buf.filled().len().saturating_sub(before) as u64;
+            self.remote_to_client = self.remote_to_client.saturating_add(read);
+        }
+        result
+    }
+}
+
+impl AsyncWrite for MeteredTunnelStream {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &[u8],
+    ) -> Poll<std::io::Result<usize>> {
+        let result = Pin::new(&mut self.inner).poll_write(cx, buf);
+        if let Poll::Ready(Ok(written)) = &result {
+            self.client_to_remote = self.client_to_remote.saturating_add(*written as u64);
+        }
+        result
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut TaskContext<'_>) -> Poll<std::io::Result<()>> {
