@@ -347,6 +347,24 @@ classifier fixes that specific plain HTTP benchmark and release-download case;
 HTTPS `CONNECT`, SOCKS5, and TUN traffic still need the planned routing/sniffing
 layer for richer policy-based bulk detection.
 
+Focused post-fix validation on `d00ed7f`:
+
+```text
+HK2 client build: /root/Espejismo at d00ed7f
+RK remote service: espejismo-remote 0.1.4
+Request: curl -x http://127.0.0.1:16681 http://rk.w0x7ce.eu:18082/1m.bin
+Result: HTTP 200, 1,048,576 bytes, 615,824 B/s, 1.702719 s
+RK relay log: target=rk.w0x7ce.eu:18082 priority=Bulk
+Local admin metrics: stream_opened=1, stream_failed=0, active_streams=0
+Bulk lane 1: streams=1, c2r=139, r2c=1,048,679, recent_r2c=6,212,990 bps
+```
+
+This proves the plain HTTP `.bin` classifier moves completed download response
+bytes onto a bulk lane. A larger `/16m.bin` probe was intentionally stopped
+after 60 seconds on this live path and exposed a separate observability gap:
+in-progress stream byte counters are still only committed to admin snapshots
+after the stream completes.
+
 Native mux did not outperform Yamux in this run:
 
 | Mux | Upload 4 x 128 MiB |
