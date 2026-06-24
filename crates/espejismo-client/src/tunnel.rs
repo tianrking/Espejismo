@@ -7,9 +7,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use espejismo_core::{
     connect_handshake, connect_http2_underlay, connect_tcp_stream, connect_websocket_underlay,
-    spawn_frame_transport, FrameOptions, HandshakeConfig, Metrics, RuntimeState, StreamPriority,
-    TcpConfig, TransportConnector, TransportTarget, TunnelLaneSnapshot, TunnelPoolConfig,
-    UnderlayConfig, UnderlayMode,
+    spawn_frame_transport, split_authority, FrameOptions, HandshakeConfig, Metrics,
+    PortHoppingConfig, RuntimeState, StreamPriority, TcpConfig, TransportConnector,
+    TransportTarget, TunnelLaneSnapshot, TunnelPoolConfig, UnderlayConfig, UnderlayMode,
 };
 use futures::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -73,6 +73,7 @@ pub(crate) struct TunnelManager {
     metrics: Metrics,
     runtime_state: RuntimeState,
     connector: Arc<dyn TransportConnector>,
+    port_hopping: PortHoppingConfig,
     select_lock: Mutex<()>,
     lanes: Vec<Arc<TunnelLane>>,
 }
@@ -87,6 +88,7 @@ pub(crate) struct TunnelManagerConfig {
     pub(crate) frames: FrameOptions,
     pub(crate) tcp: TcpConfig,
     pub(crate) underlay: UnderlayConfig,
+    pub(crate) port_hopping: PortHoppingConfig,
     pub(crate) mux: MuxRuntimeConfig,
     pub(crate) tunnel_buffer: usize,
     pub(crate) pool: TunnelPoolConfig,
@@ -215,6 +217,7 @@ impl TunnelManager {
                 options: config.tcp,
                 underlay: config.underlay,
             }),
+            port_hopping: config.port_hopping,
             select_lock: Mutex::new(()),
             lanes,
         }
@@ -332,7 +335,7 @@ impl TunnelManager {
         let mut upstream = match timeout(
             LANE_CONNECT_TIMEOUT,
             self.connector.connect(TransportTarget {
-                endpoint: self.server.clone(),
+                endpoint: hopped_endpoint(&self.server, &self.port_hopping),
             }),
         )
         .await
@@ -495,6 +498,20 @@ fn lane_score(lane: &TunnelLane) -> u64 {
             load * 1_000_000 + health.last_open_latency_ms + penalty
         })
         .unwrap_or(u64::MAX / 2)
+}
+
+fn hopped_endpoint(endpoint: &str, port_hopping: &PortHoppingConfig) -> String {
+    let Some(port) = port_hopping.selected_port_at(unix_now_secs()) else {
+        return endpoint.to_string();
+    };
+    let Ok((host, _)) = split_authority(endpoint) else {
+        return endpoint.to_string();
+    };
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
 }
 
 #[derive(Clone)]

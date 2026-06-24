@@ -292,6 +292,28 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
             "shared.underlay.http2.path must start with '/'"
         );
     }
+    if config.shared.port_hopping.enabled {
+        anyhow::ensure!(
+            !config.shared.port_hopping.ports.is_empty(),
+            "shared.port_hopping.ports must not be empty when port hopping is enabled"
+        );
+        anyhow::ensure!(
+            config.shared.port_hopping.window_secs > 0,
+            "shared.port_hopping.window_secs must be greater than 0"
+        );
+        anyhow::ensure!(
+            !config.shared.port_hopping.seed.trim().is_empty(),
+            "shared.port_hopping.seed must not be empty"
+        );
+        let mut ports = std::collections::BTreeSet::new();
+        for &port in &config.shared.port_hopping.ports {
+            anyhow::ensure!(port > 0, "shared.port_hopping.ports must not contain 0");
+            anyhow::ensure!(
+                ports.insert(port),
+                "shared.port_hopping.ports must not contain duplicates"
+            );
+        }
+    }
     let egress_policy: crate::egress::EgressPolicy = config.remote.egress.clone().into();
     egress_policy.upstream_proxy()?;
     Ok(config)
@@ -690,6 +712,35 @@ mod tests {
         "#;
         let err = parse_config(config).unwrap_err().to_string();
         assert!(err.contains("http2.path"), "{err}");
+    }
+
+    #[test]
+    fn rejects_duplicate_port_hopping_ports() {
+        let config = r#"
+            [shared.port_hopping]
+            enabled = true
+            ports = [6690, 6690]
+            window_secs = 300
+            seed = "test"
+        "#;
+        let err = parse_config(config).unwrap_err().to_string();
+        assert!(err.contains("port_hopping.ports"), "{err}");
+    }
+
+    #[test]
+    fn port_hopping_selection_is_stable_inside_window() {
+        let config = r#"
+            [shared.port_hopping]
+            enabled = true
+            ports = [10000, 10001, 10002]
+            window_secs = 30
+            seed = "test"
+        "#;
+        let config = parse_config(config).unwrap();
+        let a = config.shared.port_hopping.selected_port_at(60);
+        let b = config.shared.port_hopping.selected_port_at(89);
+        assert_eq!(a, b);
+        assert!(config.shared.port_hopping.ports.contains(&a.unwrap()));
     }
 
     #[test]

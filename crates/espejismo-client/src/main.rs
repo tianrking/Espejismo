@@ -10,9 +10,9 @@ use espejismo_core::{
     apply_log_overrides, apply_named_profile, bind_tcp_listener, config_to_toml, connect_handshake,
     connect_tcp_stream, decode_profile_url, encode_config_base64, encode_profile_url, init_logging,
     load_config, load_config_base64, parse_psk, print_update_check, report_config_check,
-    spawn_admin_server, AdminAction, AdminState, ClientProfile, ConfigInput, EspejismoConfig,
-    FrameOptionOverrides, FrameOptions, HandshakeConfig, LogOverrides, Metrics, ProxyAuth,
-    RuntimeState, TcpConfig, TunnelPoolConfig,
+    spawn_admin_server, split_authority, AdminAction, AdminState, ClientProfile, ConfigInput,
+    EspejismoConfig, FrameOptionOverrides, FrameOptions, HandshakeConfig, LogOverrides, Metrics,
+    ProxyAuth, RuntimeState, TcpConfig, TunnelPoolConfig,
 };
 use serde_json::json;
 use tokio::net::lookup_host;
@@ -149,6 +149,7 @@ struct LocalRuntime {
     frames: FrameOptions,
     tcp: TcpConfig,
     underlay: espejismo_core::UnderlayConfig,
+    port_hopping: espejismo_core::PortHoppingConfig,
     mux: espejismo_core::mux::MuxRuntimeConfig,
     tunnel_buffer: usize,
     tunnel_pool: TunnelPoolConfig,
@@ -394,6 +395,7 @@ fn build_tunnel_manager(
             frames: runtime.frames.clone(),
             tcp: runtime.tcp.clone(),
             underlay: runtime.underlay.clone(),
+            port_hopping: runtime.port_hopping.clone(),
             mux: runtime.mux,
             tunnel_buffer: runtime.tunnel_buffer,
             pool: runtime.tunnel_pool.clone(),
@@ -404,9 +406,10 @@ fn build_tunnel_manager(
 }
 
 async fn probe_remote_handshake(runtime: &LocalRuntime) -> Result<()> {
+    let server = selected_server_endpoint(&runtime.server, &runtime.port_hopping);
     let upstream = tokio::time::timeout(
         Duration::from_secs(10),
-        connect_tcp_stream(runtime.server.as_str(), &runtime.tcp),
+        connect_tcp_stream(server.as_str(), &runtime.tcp),
     )
     .await
     .context("remote TCP probe timed out")??;
@@ -454,6 +457,30 @@ async fn probe_remote_handshake(runtime: &LocalRuntime) -> Result<()> {
     .context("remote handshake probe timed out")??;
     println!("OK remote handshake succeeded: {}", runtime.server);
     Ok(())
+}
+
+fn selected_server_endpoint(
+    endpoint: &str,
+    port_hopping: &espejismo_core::PortHoppingConfig,
+) -> String {
+    let Some(port) = port_hopping.selected_port_at(current_unix_secs()) else {
+        return endpoint.to_string();
+    };
+    let Ok((host, _)) = split_authority(endpoint) else {
+        return endpoint.to_string();
+    };
+    if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    }
+}
+
+fn current_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }
 
 fn local_reload_action(
@@ -746,6 +773,7 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
         }),
         tcp: config.shared.tcp.clone(),
         underlay: config.shared.underlay.clone(),
+        port_hopping: config.shared.port_hopping.clone(),
         mux,
         tunnel_buffer: args.tunnel_buffer.unwrap_or(config.shared.tunnel_buffer),
         tunnel_pool,

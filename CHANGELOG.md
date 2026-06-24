@@ -23,6 +23,9 @@
 - Optional HTTP/2 underlay (`[shared.underlay].mode = "http2"`) using
   cleartext prior-knowledge h2 streams for the existing Espejismo crypto/mux
   stream.
+- Optional deterministic port hopping through `[shared.port_hopping]`, with the
+  client selecting a candidate port per time window and the remote binding the
+  configured candidate ports.
 - `--profile auto-throughput` for measured high-BDP TCP paths, using the exact
   normal-frame payload cap, larger buffers/windows, a lower HTTP bulk threshold,
   and a wider bulk-lane pool.

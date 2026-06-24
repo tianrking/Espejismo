@@ -273,6 +273,30 @@ use the configured `local.server` authority. The HTTP/2 underlay uses cleartext
 prior-knowledge h2 on the configured TCP endpoint; put it behind TLS/ALPN at a
 reverse proxy if you need browser-like public HTTPS termination.
 
+### shared.port_hopping
+
+Optional deterministic port hopping. It is disabled by default.
+
+```toml
+[shared.port_hopping]
+enabled = true
+ports = [6690, 18443, 28443, 38443]
+window_secs = 300
+seed = "change-me-shared-port-hop-seed"
+```
+
+When enabled, the local client selects one port from `ports` for the current
+time window and rewrites the configured `local.server` port before opening a
+physical lane. The remote binds `remote.listen` plus every configured port, so
+the client can move between windows without requiring privileged firewall
+mutation.
+
+`ports`: Candidate remote ports. Client and server must match.
+
+`window_secs`: Time window used for deterministic selection.
+
+`seed`: Shared non-empty selector seed. Treat it as deployment-private metadata.
+
 ### local
 
 `server`: Remote endpoint in `host:port` form.

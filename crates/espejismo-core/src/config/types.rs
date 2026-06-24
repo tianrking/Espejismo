@@ -2,6 +2,7 @@ use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use super::defaults::*;
 use crate::egress::EgressPolicy;
@@ -82,6 +83,8 @@ pub struct SharedConfig {
     pub stealth_shaper: StealthShaperConfig,
     #[serde(default)]
     pub underlay: UnderlayConfig,
+    #[serde(default)]
+    pub port_hopping: PortHoppingConfig,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -293,6 +296,35 @@ pub struct Http2UnderlayConfig {
     pub path: String,
     #[serde(default)]
     pub authority: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct PortHoppingConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub ports: Vec<u16>,
+    #[serde(default = "default_port_hopping_window_secs")]
+    pub window_secs: u64,
+    #[serde(default = "default_port_hopping_seed")]
+    pub seed: String,
+}
+
+impl PortHoppingConfig {
+    pub fn selected_port_at(&self, unix_secs: u64) -> Option<u16> {
+        if !self.enabled || self.ports.is_empty() || self.window_secs == 0 {
+            return None;
+        }
+        let slot = unix_secs / self.window_secs;
+        let mut hasher = Sha256::new();
+        hasher.update(self.seed.as_bytes());
+        hasher.update(slot.to_be_bytes());
+        let digest = hasher.finalize();
+        let mut selector = [0_u8; 8];
+        selector.copy_from_slice(&digest[..8]);
+        let index = (u64::from_be_bytes(selector) as usize) % self.ports.len();
+        self.ports.get(index).copied()
+    }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -525,6 +557,7 @@ impl Default for SharedConfig {
             stealth: StealthConfig::default(),
             stealth_shaper: StealthShaperConfig::default(),
             underlay: UnderlayConfig::default(),
+            port_hopping: PortHoppingConfig::default(),
         }
     }
 }
@@ -626,6 +659,17 @@ impl Default for Http2UnderlayConfig {
         Self {
             path: default_http2_path(),
             authority: None,
+        }
+    }
+}
+
+impl Default for PortHoppingConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ports: Vec::new(),
+            window_secs: default_port_hopping_window_secs(),
+            seed: default_port_hopping_seed(),
         }
     }
 }

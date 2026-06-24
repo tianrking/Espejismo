@@ -50,6 +50,8 @@ Current release target: `v0.1.2`.
 - Optional cleartext HTTP/2 prior-knowledge physical underlay that carries the
   same Espejismo crypto/mux stream inside one bidirectional h2 request/response
   body pair.
+- Optional deterministic port hopping for new physical lanes, with remote
+  multi-port listeners and client-side time-window port selection.
 - Local tunnel pool with configurable interactive and bulk physical TCP lanes,
   health-scored stream placement, per-lane reconnect/error/latency/byte status,
   maximum connection age rotation for new streams, and logical stream muxing

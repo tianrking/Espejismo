@@ -280,3 +280,11 @@ pub(super) fn default_websocket_path() -> String {
 pub(super) fn default_http2_path() -> String {
     "/espejismo".to_string()
 }
+
+pub(super) fn default_port_hopping_window_secs() -> u64 {
+    300
+}
+
+pub(super) fn default_port_hopping_seed() -> String {
+    "espejismo-port-hop".to_string()
+}

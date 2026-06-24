@@ -16,7 +16,7 @@ use espejismo_core::{
 };
 use serde_json::json;
 use tokio::net::lookup_host;
-use tokio::sync::{RwLock, Semaphore};
+use tokio::sync::{mpsc, RwLock, Semaphore};
 use tracing::{debug, info};
 
 mod fallback;
@@ -116,6 +116,7 @@ pub(crate) struct RemoteRuntime {
     pub(crate) replay_window_secs: i64,
     pub(crate) tunnel_buffer: usize,
     pub(crate) tcp: TcpConfig,
+    pub(crate) port_hopping: espejismo_core::PortHoppingConfig,
     pub(crate) tarpit_max: usize,
     pub(crate) tarpit_hold: Duration,
     pub(crate) admin_listen: Option<SocketAddr>,
@@ -215,16 +216,35 @@ async fn main() -> Result<()> {
         );
     }
 
-    let listener = bind_tcp_listener(runtime.listen, &runtime.tcp)?;
+    let listeners = bind_remote_listeners(&runtime)?;
     let tarpit = tarpit::TarpitManager::spawn(runtime.tarpit_max, runtime.tarpit_hold);
     let replay = Arc::new(tokio::sync::Mutex::new(ReplayCache::new(
         runtime.replay_window_secs,
     )));
     let mux_mode = runtime.settings.read().await.mux.mode;
-    info!(listen = %runtime.listen, mux = ?mux_mode, "remote listening with mux tunnel support");
+    info!(listen = %runtime.listen, mux = ?mux_mode, listeners = listeners.len(), "remote listening with mux tunnel support");
+    let (accepted_tx, mut accepted_rx) = mpsc::channel(1024);
+    for listener in listeners {
+        let accepted_tx = accepted_tx.clone();
+        tokio::spawn(async move {
+            loop {
+                match listener.accept().await {
+                    Ok((socket, peer)) => {
+                        if accepted_tx.send((socket, peer)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Err(err) => {
+                        debug!(error = %err, "remote listener accept failed");
+                        break;
+                    }
+                }
+            }
+        });
+    }
+    drop(accepted_tx);
 
-    loop {
-        let (socket, peer) = listener.accept().await?;
+    while let Some((socket, peer)) = accepted_rx.recv().await {
         let _ = apply_tcp_options(&socket, &runtime.tcp);
         let Ok(connection_permit) = runtime.global_connection_limit.clone().try_acquire_owned()
         else {
@@ -243,6 +263,7 @@ async fn main() -> Result<()> {
             }
         });
     }
+    Ok(())
 }
 
 fn log_overrides(args: &Args) -> LogOverrides {
@@ -252,6 +273,24 @@ fn log_overrides(args: &Args) -> LogOverrides {
         file: args.log_file.clone(),
         no_ansi: args.no_log_ansi,
     }
+}
+
+fn bind_remote_listeners(runtime: &RemoteRuntime) -> Result<Vec<tokio::net::TcpListener>> {
+    let mut addrs = Vec::new();
+    addrs.push(runtime.listen);
+    if runtime.port_hopping.enabled {
+        for &port in &runtime.port_hopping.ports {
+            let mut addr = runtime.listen;
+            addr.set_port(port);
+            if !addrs.contains(&addr) {
+                addrs.push(addr);
+            }
+        }
+    }
+    addrs
+        .into_iter()
+        .map(|addr| bind_tcp_listener(addr, &runtime.tcp))
+        .collect()
 }
 
 fn apply_cli_overrides_to_config(config: &mut EspejismoConfig, args: &Args) -> Result<()> {
@@ -532,6 +571,7 @@ fn build_runtime(
             .unwrap_or(config.remote.replay_window_secs),
         tunnel_buffer: args.tunnel_buffer.unwrap_or(config.shared.tunnel_buffer),
         tcp: config.shared.tcp.clone(),
+        port_hopping: config.shared.port_hopping.clone(),
         tarpit_max: args.tarpit_max.unwrap_or(config.remote.tarpit_max),
         tarpit_hold: Duration::from_secs(
             args.tarpit_hold_secs

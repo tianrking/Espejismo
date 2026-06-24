@@ -88,6 +88,11 @@ body carries client-to-remote bytes and the response body carries
 remote-to-client bytes. This keeps the same Espejismo crypto and mux layers
 above a real HTTP/2 stream abstraction.
 
+`[shared.port_hopping]` can optionally choose the remote port per time window.
+The client rewrites the configured server port for each new physical lane, while
+the remote binds the configured candidate ports and sends all accepted sockets
+through the same authentication/mux pipeline.
+
 `spawn_frame_transport` bridges the frame codec into a Tokio `DuplexStream`.
 This gives upper layers a normal `AsyncRead + AsyncWrite` object while keeping
 AEAD, padding, jitter, and fail-fast behavior inside the protocol core.
