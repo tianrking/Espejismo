@@ -215,6 +215,47 @@ A/B did not show a stable throughput gain. The likely causes are raw path
 variance, the Python HTTP sink, and the need for structured per-lane runtime
 metrics during the benchmark.
 
+### Structured Harness Validation
+
+After adding `scripts/bench-throughput.sh` and per-lane admin metrics, the same
+HK2 to RK topology was retested with direct and proxied checks in one run.
+
+| Commit | Direct P4 Upload | Proxy P4 Upload | Efficiency | Lane Finding |
+| --- | ---: | ---: | ---: | --- |
+| `c46db48` | 504.2 Mbit/s | 412.6 Mbit/s | 82% | Only two bulk lanes carried upload streams |
+| `6245148` | 471.8 Mbit/s | 415.2 Mbit/s | 88% | Four bulk lanes were created, but latency score still biased one lane |
+| `9fd9f94` | 538.3 Mbit/s | 456.0 Mbit/s | 85% | P4 upload was distributed across the four bulk lanes |
+
+The `c46db48` run proved the benchmark harness was necessary: aggregate
+throughput alone looked acceptable, but the lane snapshot showed the concurrent
+open race clearly. `6245148` added pending-open reservations so simultaneous
+streams could not all select the same lane before `active_streams` changed.
+`9fd9f94` then made lane scoring load-first, with open latency only as a
+tie-breaker, so an idle lane wins over a loaded low-latency lane.
+
+Latest validation run:
+
+| Test | Direct | Espejismo | Efficiency |
+| --- | ---: | ---: | ---: |
+| Download 256 MiB, single stream | 87.0 Mbit/s | 83.4 Mbit/s | 96% |
+| Download 4 x 256 MiB | 91.6 Mbit/s | 89.8 Mbit/s | 98% |
+| Upload 128 MiB, single stream | 240.9 Mbit/s | 130.0 Mbit/s | 54% |
+| Upload 4 x 128 MiB | 538.3 Mbit/s | 456.0 Mbit/s | 85% |
+
+Latest artifacts on HK2:
+
+```text
+/tmp/espejismo-bench-results/20260624T0321-idle-lane/summary.md
+/tmp/espejismo-bench-results/20260624T0321-idle-lane/results.jsonl
+/tmp/espejismo-bench-results/20260624T0321-idle-lane/admin-after.json
+```
+
+The remaining single-stream upload gap is real, but it is a different problem
+from P4 lane scheduling. It likely combines one-stream flow-control limits,
+frame/mux overhead, and the Python upload sink. The P4 case is now much closer
+to the raw link and is the better model for browser/TUN workloads with multiple
+flows.
+
 ## What Changed in Efficiency
 
 | Area | Before | After |
@@ -245,13 +286,10 @@ Keep `shared.mux.mode = "yamux"` for production.
 
 ## Follow-Up Work
 
-- Use the benchmark harness for every future throughput change and archive the
-  resulting `summary.md` plus `results.jsonl`.
-- Track lane counters from `/status` or `/metrics` during benchmarks: active
-  streams, pending stream opens, streams opened, stream open failures, last
-  activity, RTT, session age, bytes sent, bytes received, and lane kind.
 - Add a non-Python test sink such as `iperf3`-style HTTP body discard or a small
   Rust sink to remove Python server overhead from upload tests.
 - Test under controlled loss and latency using Linux `tc netem`.
+- Add repeated-run aggregation to the benchmark harness so it can report median,
+  min, max, and standard deviation across several adjacent windows.
 - Keep stealth deployments on smaller fixed-size frames; use large bulk frames
   only for throughput-oriented profiles.
