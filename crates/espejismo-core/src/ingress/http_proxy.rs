@@ -11,6 +11,7 @@ const HTTP_PROXY_HEADER_TIMEOUT: Duration = Duration::from_secs(15);
 pub struct HttpTarget {
     pub authority: String,
     pub prebuffer: Vec<u8>,
+    pub prebuffer_body_bytes: usize,
     pub content_length: Option<u64>,
 }
 
@@ -94,6 +95,7 @@ where
         return Ok(HttpTarget {
             authority: target.to_string(),
             prebuffer: overflow.unwrap_or_default(),
+            prebuffer_body_bytes: 0,
             content_length: None,
         });
     }
@@ -102,13 +104,16 @@ where
     let (authority, path) = parse_absolute_http_target(target)?;
     let rewritten = rewrite_absolute_request(method, &path, version, &header_lines);
     let mut prebuffer = rewritten.into_bytes();
+    let mut prebuffer_body_bytes = 0;
     if let Some(extra) = overflow {
+        prebuffer_body_bytes = extra.len();
         prebuffer.extend_from_slice(&extra);
     }
 
     Ok(HttpTarget {
         authority,
         prebuffer,
+        prebuffer_body_bytes,
         content_length,
     })
 }

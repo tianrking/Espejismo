@@ -1,3 +1,4 @@
+use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -6,7 +7,7 @@ use espejismo_core::{
     http_proxy, idle_copy_bidirectional, socks5, write_tcp_connect_with_priority,
     write_udp_datagram_with_priority, Metrics, ProxyAuth, StreamPriority,
 };
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::timeout;
 use tracing::debug;
@@ -129,8 +130,8 @@ async fn handle_http_client_inner(
     let mut stream = tunnel.open_stream(priority).await?;
     let open_elapsed = open_started.elapsed();
     let lane_id = stream.lane_id();
-    let mut client_to_remote = 0;
-    let mut remote_to_client = 0;
+    let mut client_to_remote = 0_u64;
+    let mut remote_to_client = 0_u64;
     let mut request_elapsed = Duration::ZERO;
     let mut prebuffer_elapsed = Duration::ZERO;
     let mut copy_elapsed = Duration::ZERO;
@@ -141,11 +142,23 @@ async fn handle_http_client_inner(
         if !target.prebuffer.is_empty() {
             let prebuffer_started = Instant::now();
             stream.write_all(&target.prebuffer).await?;
+            client_to_remote = client_to_remote.saturating_add(target.prebuffer.len() as u64);
             prebuffer_elapsed = prebuffer_started.elapsed();
         }
         let copy_started = Instant::now();
-        (client_to_remote, remote_to_client) =
-            idle_copy_bidirectional(local, &mut stream, idle).await?;
+        if let Some(content_length) = target.content_length {
+            let remaining = content_length.saturating_sub(target.prebuffer_body_bytes as u64);
+            client_to_remote = client_to_remote.saturating_add(
+                copy_exact_request_body(local, &mut stream, remaining, idle).await?,
+            );
+            stream.flush().await?;
+            remote_to_client = copy_response_until_close(&mut stream, local, idle).await?;
+        } else {
+            let (request_bytes, response_bytes) =
+                idle_copy_bidirectional(local, &mut stream, idle).await?;
+            client_to_remote = client_to_remote.saturating_add(request_bytes);
+            remote_to_client = response_bytes;
+        }
         copy_elapsed = copy_started.elapsed();
         anyhow::Ok(())
     }
@@ -192,6 +205,61 @@ fn throughput_bps(bytes: u64, elapsed: Duration) -> u64 {
         .saturating_mul(8)
         .saturating_mul(1_000_000_000)
         / nanos) as u64
+}
+
+async fn copy_exact_request_body<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    mut remaining: u64,
+    idle: Duration,
+) -> std::io::Result<u64>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buf = vec![0_u8; 256 * 1024];
+    let mut copied = 0;
+    while remaining > 0 {
+        let take = remaining.min(buf.len() as u64) as usize;
+        let n = timeout(idle, reader.read(&mut buf[..take]))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "HTTP request body idle"))??;
+        if n == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "HTTP request body ended before Content-Length",
+            ));
+        }
+        writer.write_all(&buf[..n]).await?;
+        copied += n as u64;
+        remaining -= n as u64;
+    }
+    Ok(copied)
+}
+
+async fn copy_response_until_close<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    idle: Duration,
+) -> std::io::Result<u64>
+where
+    R: AsyncRead + Unpin,
+    W: AsyncWrite + Unpin,
+{
+    let mut buf = vec![0_u8; 256 * 1024];
+    let mut copied = 0;
+    loop {
+        let n = timeout(idle, reader.read(&mut buf))
+            .await
+            .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "HTTP response idle"))??;
+        if n == 0 {
+            break;
+        }
+        writer.write_all(&buf[..n]).await?;
+        copied += n as u64;
+    }
+    let _ = writer.shutdown().await;
+    Ok(copied)
 }
 
 async fn handle_udp_associate(
@@ -246,8 +314,10 @@ async fn relay_udp_packet(
 
 #[cfg(test)]
 mod tests {
-    use super::http_stream_priority;
+    use super::{copy_exact_request_body, http_stream_priority};
     use espejismo_core::StreamPriority;
+    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+    use tokio::time::Duration;
 
     #[test]
     fn large_http_request_uses_bulk_priority() {
@@ -271,5 +341,24 @@ mod tests {
             http_stream_priority(Some(1024), 0),
             StreamPriority::Interactive
         );
+    }
+
+    #[tokio::test]
+    async fn exact_http_body_copy_stops_at_content_length() {
+        let (mut client, mut client_peer) = duplex(64);
+        let (mut tunnel, mut tunnel_peer) = duplex(64);
+        let writer = tokio::spawn(async move {
+            client_peer.write_all(b"body-extra").await.unwrap();
+        });
+
+        let copied = copy_exact_request_body(&mut client, &mut tunnel, 4, Duration::from_secs(1))
+            .await
+            .unwrap();
+        assert_eq!(copied, 4);
+
+        let mut received = [0_u8; 4];
+        tunnel_peer.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, b"body");
+        writer.await.unwrap();
     }
 }

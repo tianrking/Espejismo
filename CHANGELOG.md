@@ -18,6 +18,12 @@
 - Stream relay copy buffers are larger to better feed high-throughput single
   streams.
 
+### Fixed
+
+- HTTP proxy requests with a known `Content-Length` now forward exactly that
+  request body and then switch to response copy, avoiding upload stalls when
+  clients keep the HTTP connection open while waiting for a response.
+
 ## v0.1.2
 
 `v0.1.2` is a throughput observability and lane-dispatch release for the
