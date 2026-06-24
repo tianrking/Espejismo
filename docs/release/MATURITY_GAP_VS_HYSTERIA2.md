@@ -50,9 +50,9 @@ around the simplified script policy.
 
 ### P0 Release Safety
 
-- Maintain and execute `docs/release/V0.1.1_CHECKLIST.md` per platform.
+- Maintain and execute `docs/release/V0.1.2_CHECKLIST.md` per platform.
 - Keep doctor/probe checks mandatory in release scripts for local validation.
-- Add CI guard for docs-version consistency (`v0.1.1` lines and release tag docs).
+- Add CI guard for docs-version consistency (`v0.1.2` lines and release tag docs).
 
 ### P1 Reliable TUN Operations
 

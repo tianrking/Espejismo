@@ -2,6 +2,36 @@
 
 ## Unreleased
 
+## v0.1.2
+
+`v0.1.2` is a throughput observability and lane-dispatch release for the
+`v0.1.x` line.
+
+### Added
+
+- `scripts/bench-throughput.sh` for repeatable direct/proxy download and upload
+  benchmarks with raw curl output, JSONL results, Markdown summaries, and
+  optional admin snapshots.
+- Per-lane runtime counters in admin status and Prometheus metrics, including
+  active streams, pending stream opens, streams opened, stream open failures,
+  per-lane bytes, last activity time, and session age.
+- HK2 to RK benchmark records documenting direct-link variance, Espejismo
+  overhead, and lane-dispatch behavior under parallel upload tests.
+
+### Changed
+
+- Concurrent local stream opens now reserve a lane before connecting so
+  simultaneous bulk flows spread across available tunnel lanes.
+- Lane scoring now prefers idle lanes over lower-latency loaded lanes, with open
+  latency used only as a tie-breaker after load.
+
+### Fixed
+
+- Fixed Clippy `items_after_test_module` CI failure by keeping the handler test
+  module at the end of the file.
+- Fixed parallel bulk upload imbalance where several streams could land on the
+  same lane before `active_streams` was updated.
+
 ## v0.1.1
 
 `v0.1.1` is a TUN stability and operations release for the `v0.1.x` line.

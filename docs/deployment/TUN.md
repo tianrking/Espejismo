@@ -17,7 +17,7 @@ the client a global-forwarding mode without changing the remote server.
 | TUN ingress (local capture) | Yes | Yes | Yes | Requires elevated privileges or platform entitlement. |
 | Global IPv4 TCP forwarding via TUN | Yes | Yes | Yes | Split-default route takeover plus remote route protection. |
 | Global IPv4 UDP forwarding via TUN | Yes | Yes | Yes | Application-level UDP relay over encrypted TCP mux tunnel. |
-| Global IPv6 route takeover via TUN | No | No | No | Not advertised as complete in `v0.1.1`. |
+| Global IPv6 route takeover via TUN | No | No | No | Not advertised as complete in `v0.1.2`. |
 | ICMP forwarding (`ping`) | No | No | No | Use TCP/HTTP probes for validation. |
 | Physical UDP underlay takeover | No | No | No | UDP underlay remains reserved/experimental. |
 | Auto DNS takeover | Yes | Yes | Yes (IPv4 DNS only) | Windows uses `netsh interface ipv4` DNS APIs. |
