@@ -286,6 +286,10 @@ fn render_runtime_prometheus(role: &str, snapshot: &RuntimeStateSnapshot) -> Str
     );
     out.push_str("# TYPE espejismo_tunnel_lane_streams_opened counter\n");
     out.push_str(
+        "# HELP espejismo_tunnel_lane_pending_stream_opens Logical stream opens reserved on a local tunnel lane.\n",
+    );
+    out.push_str("# TYPE espejismo_tunnel_lane_pending_stream_opens gauge\n");
+    out.push_str(
         "# HELP espejismo_tunnel_lane_stream_open_failures Total stream open failures on a local tunnel lane.\n",
     );
     out.push_str("# TYPE espejismo_tunnel_lane_stream_open_failures counter\n");
@@ -331,6 +335,12 @@ fn render_runtime_prometheus(role: &str, snapshot: &RuntimeStateSnapshot) -> Str
             "espejismo_tunnel_lane_streams_opened",
             &labels,
             lane.streams_opened,
+        );
+        push_metric(
+            &mut out,
+            "espejismo_tunnel_lane_pending_stream_opens",
+            &labels,
+            lane.pending_stream_opens,
         );
         push_metric(
             &mut out,
@@ -458,6 +468,7 @@ mod tests {
                     state: "connected".to_string(),
                     reconnect_count: 3,
                     active_streams: 4,
+                    pending_stream_opens: 2,
                     streams_opened: 5,
                     stream_open_failures: 1,
                     bytes_client_to_remote: 6,
@@ -474,6 +485,9 @@ mod tests {
         );
         assert!(body.contains(
             "espejismo_tunnel_lane_streams_opened{role=\"local\",lane_id=\"2\",lane_kind=\"bulk\",state=\"connected\"} 5"
+        ));
+        assert!(body.contains(
+            "espejismo_tunnel_lane_pending_stream_opens{role=\"local\",lane_id=\"2\",lane_kind=\"bulk\",state=\"connected\"} 2"
         ));
         assert!(body.contains("espejismo_tunnel_lane_last_mux_rtt_ms"));
     }

@@ -23,6 +23,7 @@ pub struct TunnelLaneSnapshot {
     pub state: String,
     pub reconnect_count: u64,
     pub active_streams: u64,
+    pub pending_stream_opens: u64,
     pub streams_opened: u64,
     pub stream_open_failures: u64,
     pub bytes_client_to_remote: u64,

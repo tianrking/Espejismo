@@ -248,8 +248,8 @@ Keep `shared.mux.mode = "yamux"` for production.
 - Use the benchmark harness for every future throughput change and archive the
   resulting `summary.md` plus `results.jsonl`.
 - Track lane counters from `/status` or `/metrics` during benchmarks: active
-  streams, streams opened, stream open failures, last activity, RTT, session
-  age, bytes sent, bytes received, and lane kind.
+  streams, pending stream opens, streams opened, stream open failures, last
+  activity, RTT, session age, bytes sent, bytes received, and lane kind.
 - Add a non-Python test sink such as `iperf3`-style HTTP body discard or a small
   Rust sink to remove Python server overhead from upload tests.
 - Test under controlled loss and latency using Linux `tc netem`.

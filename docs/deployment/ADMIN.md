@@ -36,14 +36,15 @@ frame key-update counters, and local tunnel lane counters.
 `/status` and `/connections` also include runtime state: tunnel state,
 reconnect count, consecutive failures, recent errors, egress policy version,
 process start time, last config apply time, lane RTT samples, per-lane session
-age, active streams, streams opened, stream open failures, last activity time,
-last error time, and per-lane byte totals.
+age, active streams, pending stream opens, streams opened, stream open failures,
+last activity time, last error time, and per-lane byte totals.
 
 `/metrics` exposes the lane snapshot as Prometheus-style series when local
 tunnel lanes exist:
 
 ```text
 espejismo_tunnel_lane_active_streams{role="local",lane_id="0",lane_kind="bulk",state="connected"} 2
+espejismo_tunnel_lane_pending_stream_opens{role="local",lane_id="0",lane_kind="bulk",state="connected"} 0
 espejismo_tunnel_lane_streams_opened{role="local",lane_id="0",lane_kind="bulk",state="connected"} 42
 espejismo_tunnel_lane_stream_open_failures{role="local",lane_id="0",lane_kind="bulk",state="connected"} 0
 espejismo_tunnel_lane_bytes_client_to_remote{role="local",lane_id="0",lane_kind="bulk",state="connected"} 1048576

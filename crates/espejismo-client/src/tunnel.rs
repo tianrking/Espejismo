@@ -39,6 +39,7 @@ impl LaneKind {
 struct LaneHealth {
     reconnect_count: u64,
     active_streams: u64,
+    pending_stream_opens: u64,
     streams_opened: u64,
     stream_open_failures: u64,
     bytes_client_to_remote: u64,
@@ -71,6 +72,7 @@ pub(crate) struct TunnelManager {
     metrics: Metrics,
     runtime_state: RuntimeState,
     connector: Arc<dyn TransportConnector>,
+    select_lock: Mutex<()>,
     lanes: Vec<Arc<TunnelLane>>,
 }
 
@@ -210,17 +212,28 @@ impl TunnelManager {
             connector: Arc::new(TcpTransportConnector {
                 options: config.tcp,
             }),
+            select_lock: Mutex::new(()),
             lanes,
         }
     }
 
     pub(crate) async fn open_stream(&self, priority: StreamPriority) -> Result<TunnelStream> {
-        let lane = self
-            .select_lane(priority)
-            .context("no tunnel lanes configured")?;
+        let lane = {
+            let _select_guard = self.select_lock.lock().await;
+            let lane = self
+                .select_lane(priority)
+                .context("no tunnel lanes configured")?;
+            self.reserve_lane_open(&lane).await;
+            lane
+        };
         let lane_id = lane.id;
-        let inner = self.open_stream_on_lane(lane, priority).await?;
-        Ok(TunnelStream { inner, lane_id })
+        match self.open_stream_on_lane(lane.clone(), priority).await {
+            Ok(inner) => Ok(TunnelStream { inner, lane_id }),
+            Err(err) => {
+                self.release_lane_reservation(&lane).await;
+                Err(err)
+            }
+        }
     }
 
     pub(crate) async fn record_stream_bytes(
@@ -409,6 +422,7 @@ impl TunnelManager {
 
     async fn record_open_success(&self, lane: &Arc<TunnelLane>, elapsed: Duration) {
         let mut health = lane.health.lock().await;
+        health.pending_stream_opens = health.pending_stream_opens.saturating_sub(1);
         health.active_streams = health.active_streams.saturating_add(1);
         health.streams_opened = health.streams_opened.saturating_add(1);
         health.last_open_latency_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
@@ -428,6 +442,20 @@ impl TunnelManager {
         self.runtime_state.record_error(error);
     }
 
+    async fn reserve_lane_open(&self, lane: &Arc<TunnelLane>) {
+        let mut health = lane.health.lock().await;
+        health.pending_stream_opens = health.pending_stream_opens.saturating_add(1);
+        health.last_activity_unix_secs = Some(unix_now_secs());
+        self.publish_lane(lane, &health, "connected");
+    }
+
+    async fn release_lane_reservation(&self, lane: &Arc<TunnelLane>) {
+        let mut health = lane.health.lock().await;
+        health.pending_stream_opens = health.pending_stream_opens.saturating_sub(1);
+        health.last_activity_unix_secs = Some(unix_now_secs());
+        self.publish_lane(lane, &health, "degraded");
+    }
+
     fn publish_lane(&self, lane: &TunnelLane, health: &LaneHealth, state: &str) {
         self.runtime_state.update_tunnel_lane(TunnelLaneSnapshot {
             id: lane.id,
@@ -435,6 +463,7 @@ impl TunnelManager {
             state: state.to_string(),
             reconnect_count: health.reconnect_count,
             active_streams: health.active_streams,
+            pending_stream_opens: health.pending_stream_opens,
             streams_opened: health.streams_opened,
             stream_open_failures: health.stream_open_failures,
             bytes_client_to_remote: health.bytes_client_to_remote,
@@ -457,7 +486,10 @@ fn lane_score(lane: &TunnelLane) -> u64 {
         .try_lock()
         .map(|health| {
             let penalty = u64::from(health.last_error.is_some()) * 1_000;
-            health.active_streams * 10 + health.last_open_latency_ms + penalty
+            let load = health
+                .active_streams
+                .saturating_add(health.pending_stream_opens);
+            load * 10 + health.last_open_latency_ms + penalty
         })
         .unwrap_or(u64::MAX / 2)
 }
