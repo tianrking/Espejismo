@@ -567,4 +567,81 @@ mod tests {
             assert_eq!(*b, (i % 256) as u8, "byte mismatch at offset {i}");
         }
     }
+
+    // Same full-stack shape as the native test above but exercising the yamux
+    // path with the operator-tuned window (P1: config now maps to YamuxConfig).
+    #[tokio::test]
+    async fn encrypted_transport_with_yamux_mux_preserves_bulk_integrity() {
+        use super::spawn_frame_transport;
+        use crate::crypto::{accept_handshake, connect_handshake, HandshakeConfig};
+        use crate::mux::{client_session, server_session, MuxRuntimeConfig};
+        use crate::protocol::framing::FrameOptions;
+        use futures::StreamExt;
+
+        let (mut net_a, mut net_b) = duplex(1024 * 1024);
+        let cfg = HandshakeConfig::new(b"test-secret-that-is-long-enough".to_vec(), 30, 128, 4);
+        let cfg_c = cfg.clone();
+        let client_hs = tokio::spawn(async move {
+            let keys = connect_handshake(&mut net_a, &cfg_c).await?;
+            Ok::<_, anyhow::Error>((net_a, keys))
+        });
+        let cfg_s = cfg.clone();
+        let server_hs = tokio::spawn(async move {
+            let keys = accept_handshake(&mut net_b, &cfg_s).await?;
+            Ok::<_, anyhow::Error>((net_b, keys))
+        });
+        let (net_a, keys_a) = client_hs.await.unwrap().unwrap();
+        let (net_b, keys_b) = server_hs.await.unwrap().unwrap();
+
+        let opts = FrameOptions {
+            heartbeat_secs: 30,
+            ..FrameOptions::default()
+        };
+        let transport_a = spawn_frame_transport(net_a, keys_a, opts.clone(), 1024 * 1024);
+        let transport_b = spawn_frame_transport(net_b, keys_b, opts, 1024 * 1024);
+        let mux = MuxRuntimeConfig {
+            mode: crate::config::MuxMode::Yamux,
+            max_streams: 256,
+            native_initial_window_bytes: 1024 * 1024,
+            native_stream_buffer_frames: 128,
+            native_send_queue_frames: 64,
+            native_idle_timeout: Duration::from_secs(300),
+            native_drain_timeout: Duration::from_secs(30),
+        };
+        let (mut ctrl_a, mut session_a) = client_session(transport_a, mux);
+        let mut session_b = server_session(transport_b, mux);
+
+        tokio::spawn(async move { while session_a.next().await.is_some() {} });
+
+        let mut client_stream = ctrl_a.open_stream().await.unwrap();
+        let mut server_stream = session_b.next().await.unwrap().unwrap();
+
+        let total: usize = 1024 * 1024;
+        let writer = tokio::spawn(async move {
+            let mut sent = 0usize;
+            let mut buf = vec![0u8; 8192];
+            while sent < total {
+                let take = buf.len().min(total - sent);
+                for (j, slot) in buf.iter_mut().enumerate().take(take) {
+                    *slot = (sent + j) as u8;
+                }
+                let mut written = 0;
+                while written < take {
+                    let n = server_stream.write(&buf[written..take]).await.unwrap();
+                    assert!(n > 0, "server stream write returned 0");
+                    written += n;
+                }
+                sent += take;
+            }
+            server_stream.shutdown().await.unwrap();
+        });
+
+        let mut received = Vec::with_capacity(total);
+        client_stream.read_to_end(&mut received).await.unwrap();
+        writer.await.unwrap();
+        assert_eq!(received.len(), total, "client received wrong byte count");
+        for (i, b) in received.iter().enumerate() {
+            assert_eq!(*b, (i % 256) as u8, "byte mismatch at offset {i}");
+        }
+    }
 }

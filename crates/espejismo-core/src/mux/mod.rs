@@ -46,6 +46,19 @@ impl MuxRuntimeConfig {
             drain_timeout: self.native_drain_timeout,
         }
     }
+
+    /// Map the shared runtime config onto a tokio_yamux `Config`.
+    /// Without this the yamux path used `YamuxConfig::default()` (256 KB
+    /// stream window) and silently ignored the operator-tuned window/stream
+    /// limits, which caps throughput on high-RTT links.
+    fn yamux(self) -> YamuxConfig {
+        YamuxConfig {
+            // tokio_yamux requires max_stream_window_size >= 256 KiB.
+            max_stream_window_size: (self.native_initial_window_bytes as u32).max(256 * 1024),
+            max_stream_count: self.max_streams,
+            ..YamuxConfig::default()
+        }
+    }
 }
 
 pub enum MuxStream {
@@ -101,7 +114,7 @@ where
 {
     match config.mode {
         MuxMode::Yamux => {
-            let session = Session::new_client(transport, YamuxConfig::default());
+            let session = Session::new_client(transport, config.yamux());
             let control = MuxControl::Yamux(session.control());
             (control, ClientMuxSession::Yamux(Box::new(session)))
         }
@@ -120,10 +133,9 @@ where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     match config.mode {
-        MuxMode::Yamux => ServerMuxSession::Yamux(Box::new(Session::new_server(
-            transport,
-            YamuxConfig::default(),
-        ))),
+        MuxMode::Yamux => {
+            ServerMuxSession::Yamux(Box::new(Session::new_server(transport, config.yamux())))
+        }
         MuxMode::Native => {
             let (_control, session) = native::server_session(transport, config.native());
             ServerMuxSession::Native(session)
