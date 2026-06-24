@@ -64,6 +64,56 @@ async fn native_mux_opens_stream_and_roundtrips_data() {
 }
 
 #[tokio::test]
+async fn native_mux_bulk_transfer_preserves_integrity() {
+    // Pure native mux over an in-memory duplex: NO encrypted pump, NO TCP.
+    // If this desyncs, the bug is inside the native mux itself.
+    let (client_io, server_io) = duplex(64 * 1024);
+    let (mut client_control, mut client_session) =
+        client_session(client_io, NativeMuxConfig::default());
+    let (_server_control, mut server_session) =
+        server_session(server_io, NativeMuxConfig::default());
+
+    tokio::spawn(async move { while client_session.next().await.is_some() {} });
+
+    let mut client_stream = client_control
+        .open_stream(StreamPriority::Interactive)
+        .await
+        .unwrap();
+    let mut server_stream = server_session.next().await.unwrap().unwrap();
+
+    let total: usize = 1024 * 1024; // 1 MB
+    let writer = tokio::spawn(async move {
+        let mut sent = 0usize;
+        let mut buf = vec![0u8; 8192];
+        while sent < total {
+            for j in 0..buf.len() {
+                if sent + j >= total {
+                    buf.truncate(j);
+                    break;
+                }
+                buf[j] = (sent + j) as u8;
+            }
+            let n = server_stream.write(&buf).await.unwrap();
+            assert!(n > 0, "server stream write returned 0");
+            sent += n;
+            buf.clear();
+            buf.resize(8192, 0);
+        }
+        server_stream.shutdown().await.unwrap();
+        sent
+    });
+
+    let mut received = Vec::with_capacity(total);
+    client_stream.read_to_end(&mut received).await.unwrap();
+    let sent = writer.await.unwrap();
+    assert_eq!(sent, total, "server did not send all bytes");
+    assert_eq!(received.len(), total, "client received wrong byte count");
+    for (i, b) in received.iter().enumerate() {
+        assert_eq!(*b, (i % 256) as u8, "byte mismatch at offset {i}");
+    }
+}
+
+#[tokio::test]
 async fn native_mux_ping_reports_rtt() {
     let (client_io, server_io) = duplex(64 * 1024);
     let (client_control, mut client_session) =

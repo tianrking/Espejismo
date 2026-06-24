@@ -407,21 +407,54 @@ impl Drop for NativeStream {
 }
 
 async fn run_session<T>(
-    mut transport: T,
+    transport: T,
     command_tx: mpsc::Sender<Command>,
     mut command_rx: mpsc::Receiver<Command>,
     accept_tx: mpsc::Sender<Result<NativeStream, io::Error>>,
     mut next_stream_id: u32,
     config: NativeMuxConfig,
 ) where
-    T: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let mut streams = HashMap::<u32, StreamEntry>::new();
     let mut pending = PendingFrames::new(pending_frame_limit(&config));
     let mut pending_pings = HashMap::<u64, (Instant, oneshot::Sender<Duration>)>::new();
     let mut draining_since: Option<Instant> = None;
+
+    // Read frames on a dedicated task that feeds a channel.
+    //
+    // `read_frame` is NOT cancellation-safe: read_u8/read_u32/read_exact
+    // consume bytes from the stream as soon as they return Ready, so if the
+    // future is dropped between reads (which tokio::select! does whenever the
+    // command branch wins while a frame is only partially buffered), those
+    // partial bytes are lost and the framing desyncs permanently. Reading into
+    // a channel decouples reading from the select: recv() is cancel-safe, so a
+    // fully-read frame is never lost.
+    let (mut read_half, mut write_half) = tokio::io::split(transport);
+    let (frame_tx, mut frame_rx) =
+        mpsc::channel::<Result<Option<(u8, u32, Vec<u8>)>>>(COMMAND_CHANNEL_EXTRA_FRAMES);
+    tokio::spawn(async move {
+        loop {
+            match read_frame(&mut read_half).await {
+                Ok(Some(frame)) => {
+                    if frame_tx.send(Ok(Some(frame))).await.is_err() {
+                        break;
+                    }
+                }
+                Ok(None) => {
+                    let _ = frame_tx.send(Ok(None)).await;
+                    break;
+                }
+                Err(err) => {
+                    let _ = frame_tx.send(Err(err)).await;
+                    break;
+                }
+            }
+        }
+    });
+
     loop {
-        if flush_pending(&mut transport, &mut streams, &mut pending)
+        if flush_pending(&mut write_half, &mut streams, &mut pending)
             .await
             .is_err()
         {
@@ -455,9 +488,9 @@ async fn run_session<T>(
                     Err(_) => break,
                 }
             }
-            frame = read_frame(&mut transport) => {
+            frame = frame_rx.recv() => {
                 match frame {
-                    Ok(Some((kind, stream_id, payload))) => {
+                    Some(Ok(Some((kind, stream_id, payload)))) => {
                         match handle_frame(kind, stream_id, payload, FrameContext {
                             command_tx: &command_tx,
                             accept_tx: &accept_tx,
@@ -482,8 +515,8 @@ async fn run_session<T>(
                             }
                         }
                     }
-                    Ok(None) => break,
-                    Err(err) => {
+                    Some(Ok(None)) => break,
+                    Some(Err(err)) => {
                         let _ = accept_tx
                             .send(Err(io::Error::new(
                                 io::ErrorKind::InvalidData,
@@ -492,6 +525,7 @@ async fn run_session<T>(
                             .await;
                         break;
                     }
+                    None => break,
                 }
             }
             _ = tokio::time::sleep(config.session_idle_timeout), if streams.is_empty() && draining_since.is_none() => {
