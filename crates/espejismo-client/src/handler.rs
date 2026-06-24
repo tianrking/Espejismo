@@ -143,7 +143,7 @@ async fn handle_http_client_inner(
         request_elapsed = request_started.elapsed();
         if !target.prebuffer.is_empty() {
             let prebuffer_started = Instant::now();
-            stream.write_all(&target.prebuffer).await?;
+            write_all_chunked(&mut stream, &target.prebuffer).await?;
             client_to_remote = client_to_remote.saturating_add(target.prebuffer.len() as u64);
             prebuffer_elapsed = prebuffer_started.elapsed();
         }
@@ -240,6 +240,16 @@ where
     Ok(copied)
 }
 
+async fn write_all_chunked<W>(writer: &mut W, data: &[u8]) -> std::io::Result<()>
+where
+    W: AsyncWrite + Unpin,
+{
+    for chunk in data.chunks(HTTP_BODY_COPY_BUFFER_SIZE) {
+        writer.write_all(chunk).await?;
+    }
+    Ok(())
+}
+
 async fn copy_response_until_close<R, W>(
     reader: &mut R,
     writer: &mut W,
@@ -317,7 +327,7 @@ async fn relay_udp_packet(
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_exact_request_body, http_stream_priority};
+    use super::{copy_exact_request_body, http_stream_priority, write_all_chunked};
     use espejismo_core::StreamPriority;
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
     use tokio::time::Duration;
@@ -363,5 +373,17 @@ mod tests {
         tunnel_peer.read_exact(&mut received).await.unwrap();
         assert_eq!(&received, b"body");
         writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn chunked_prebuffer_write_preserves_large_buffers() {
+        let (mut tunnel, mut peer) = duplex(512 * 1024);
+        let data = vec![7_u8; 300 * 1024];
+        write_all_chunked(&mut tunnel, &data).await.unwrap();
+        tunnel.shutdown().await.unwrap();
+
+        let mut received = Vec::new();
+        peer.read_to_end(&mut received).await.unwrap();
+        assert_eq!(received, data);
     }
 }
