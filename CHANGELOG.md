@@ -17,6 +17,9 @@
   recent logs contain giant mux frame dumps.
 - Per-test benchmark tunnel-cost reporting from admin snapshots, so proxy
   efficiency can be compared with real tunnel byte deltas.
+- Optional WebSocket underlay (`[shared.underlay].mode = "websocket"`) for
+  carrying the existing Espejismo crypto/mux stream inside real WebSocket binary
+  frames.
 - `--profile auto-throughput` for measured high-BDP TCP paths, using the exact
   normal-frame payload cap, larger buffers/windows, a lower HTTP bulk threshold,
   and a wider bulk-lane pool.

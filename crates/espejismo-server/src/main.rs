@@ -131,6 +131,7 @@ pub(crate) struct RemoteRuntime {
 pub(crate) struct RemoteSettings {
     pub(crate) users: Arc<Vec<HandshakeUser>>,
     pub(crate) frames: FrameOptions,
+    pub(crate) underlay: espejismo_core::UnderlayConfig,
     pub(crate) mux: espejismo_core::mux::MuxRuntimeConfig,
     pub(crate) handshake_timeout: Duration,
     pub(crate) reject_delay: Duration,
@@ -573,6 +574,7 @@ fn build_remote_settings(config: &EspejismoConfig, args: &Args) -> Result<Remote
             backpressure_threshold_ms: args.backpressure_threshold_ms,
             backpressure_cooldown_ms: args.backpressure_cooldown_ms,
         }),
+        underlay: config.shared.underlay.clone(),
         mux: espejismo_core::mux::MuxRuntimeConfig::from_config(
             config.shared.max_streams,
             &config.shared.mux,

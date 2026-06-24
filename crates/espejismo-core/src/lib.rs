@@ -13,6 +13,7 @@ pub mod protocol;
 pub mod runtime_state;
 pub mod tcp;
 pub mod transport;
+pub mod underlay;
 pub mod updater;
 
 pub use admin::{spawn_admin_server, AdminAction, AdminState};
@@ -21,7 +22,8 @@ pub use config::{
     apply_named_profile, config_to_toml, encode_config_base64, load_config, load_config_base64,
     parse_config, AdminConfig, ConfigInput, EgressConfig, EspejismoConfig, FrameOptionOverrides,
     HandshakeWindowConfig, LogConfig, LogFormat, MuxConfig, MuxMode, ObfuscationConfig,
-    PacingConfig, ProbeDefenseMode, TcpConfig, TunnelPoolConfig,
+    PacingConfig, ProbeDefenseMode, TcpConfig, TunnelPoolConfig, UnderlayConfig, UnderlayMode,
+    WebSocketUnderlayConfig,
 };
 pub use crypto::{
     accept_handshake, accept_handshake_with_replay, accept_handshake_with_users, connect_handshake,
@@ -57,5 +59,9 @@ pub use tcp::{apply_tcp_options, bind_tcp_listener, connect_tcp_stream};
 pub use transport::{
     idle_copy_bidirectional, metered_idle_copy_bidirectional, spawn_frame_transport, CopyMeter,
     NoopCopyMeter,
+};
+pub use underlay::{
+    accept_websocket_underlay, connect_websocket_underlay, default_websocket_max_frame_bytes,
+    websocket_upgrade_header_matches, WebSocketRole,
 };
 pub use updater::{check_for_update, default_release_url, UpdateInfo};

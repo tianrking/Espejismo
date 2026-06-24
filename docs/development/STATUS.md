@@ -44,6 +44,9 @@ Current release target: `v0.1.2`.
 - Shared TCP socket options: TCP_NODELAY, keepalive, heartbeat frames, socket
   buffers, Linux TCP_USER_TIMEOUT, and optional congestion-control selection.
 - TCP-friendly pacing knobs for burst budget, rate cap, and minimum write size.
+- Optional WebSocket physical underlay that performs HTTP/1.1 Upgrade and then
+  carries the existing Espejismo crypto/mux stream inside binary WebSocket
+  frames.
 - Local tunnel pool with configurable interactive and bulk physical TCP lanes,
   health-scored stream placement, per-lane reconnect/error/latency/byte status,
   maximum connection age rotation for new streams, and logical stream muxing

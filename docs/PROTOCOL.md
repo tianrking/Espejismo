@@ -29,9 +29,12 @@ The protocol favors rotating keys, masked metadata, variable or fixed-size
 encrypted blocks, optional padding, fail-closed authentication, silent rejection,
 and bounded public-side resource use.
 
-The production underlay is TCP. Multiplexing and transport adapters sit above
-the encrypted frame transport so future underlays can reuse the same handshake,
-frame codec, request prefaces, and policy layer.
+The default production underlay is TCP. When `[shared.underlay].mode =
+"websocket"`, peers first complete a standard HTTP/1.1 WebSocket Upgrade on the
+configured path, then carry the same Espejismo handshake and encrypted frame
+bytes inside WebSocket binary frames. Multiplexing and transport adapters sit
+above the encrypted frame transport so underlays reuse the same handshake, frame
+codec, request prefaces, and policy layer.
 
 ## Numeric Encoding
 

@@ -148,6 +148,7 @@ struct LocalRuntime {
     handshake: HandshakeConfig,
     frames: FrameOptions,
     tcp: TcpConfig,
+    underlay: espejismo_core::UnderlayConfig,
     mux: espejismo_core::mux::MuxRuntimeConfig,
     tunnel_buffer: usize,
     tunnel_pool: TunnelPoolConfig,
@@ -392,6 +393,7 @@ fn build_tunnel_manager(
             handshake: runtime.handshake.clone(),
             frames: runtime.frames.clone(),
             tcp: runtime.tcp.clone(),
+            underlay: runtime.underlay.clone(),
             mux: runtime.mux,
             tunnel_buffer: runtime.tunnel_buffer,
             pool: runtime.tunnel_pool.clone(),
@@ -402,12 +404,32 @@ fn build_tunnel_manager(
 }
 
 async fn probe_remote_handshake(runtime: &LocalRuntime) -> Result<()> {
-    let mut upstream = tokio::time::timeout(
+    let upstream = tokio::time::timeout(
         Duration::from_secs(10),
         connect_tcp_stream(runtime.server.as_str(), &runtime.tcp),
     )
     .await
     .context("remote TCP probe timed out")??;
+    let mut upstream: Box<dyn espejismo_core::TransportStream> = match runtime.underlay.mode {
+        espejismo_core::UnderlayMode::Tcp => Box::new(upstream),
+        espejismo_core::UnderlayMode::WebSocket => {
+            let host = runtime
+                .underlay
+                .websocket
+                .host
+                .clone()
+                .unwrap_or_else(|| runtime.server.clone());
+            Box::new(
+                espejismo_core::connect_websocket_underlay(
+                    upstream,
+                    &host,
+                    &runtime.underlay.websocket.path,
+                    runtime.underlay.websocket.max_frame_bytes,
+                )
+                .await?,
+            )
+        }
+    };
     tokio::time::timeout(
         Duration::from_secs(10),
         connect_handshake(&mut upstream, &runtime.handshake),
@@ -707,6 +729,7 @@ fn build_runtime(config: EspejismoConfig, args: &Args) -> Result<LocalRuntime> {
             backpressure_cooldown_ms: args.backpressure_cooldown_ms,
         }),
         tcp: config.shared.tcp.clone(),
+        underlay: config.shared.underlay.clone(),
         mux,
         tunnel_buffer: args.tunnel_buffer.unwrap_or(config.shared.tunnel_buffer),
         tunnel_pool,

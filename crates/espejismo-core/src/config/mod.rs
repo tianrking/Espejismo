@@ -276,6 +276,16 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     if config.remote.egress.proxy.is_some() && config.remote.egress.socks5_proxy.is_some() {
         anyhow::bail!("use remote.egress.proxy or remote.egress.socks5_proxy, not both");
     }
+    if config.shared.underlay.mode == crate::config::UnderlayMode::WebSocket {
+        anyhow::ensure!(
+            config.shared.underlay.websocket.path.starts_with('/'),
+            "shared.underlay.websocket.path must start with '/'"
+        );
+        anyhow::ensure!(
+            config.shared.underlay.websocket.max_frame_bytes >= 1024,
+            "shared.underlay.websocket.max_frame_bytes must be >= 1024"
+        );
+    }
     let egress_policy: crate::egress::EgressPolicy = config.remote.egress.clone().into();
     egress_policy.upstream_proxy()?;
     Ok(config)
@@ -648,6 +658,19 @@ mod tests {
         "#;
         let err = parse_config(config).unwrap_err().to_string();
         assert!(err.contains("stealth_shaper.max_delay_ms"), "{err}");
+    }
+
+    #[test]
+    fn rejects_invalid_websocket_underlay_path() {
+        let config = r#"
+            [shared.underlay]
+            mode = "websocket"
+
+            [shared.underlay.websocket]
+            path = "espejismo"
+        "#;
+        let err = parse_config(config).unwrap_err().to_string();
+        assert!(err.contains("websocket.path"), "{err}");
     }
 
     #[test]

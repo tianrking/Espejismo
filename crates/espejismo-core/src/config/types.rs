@@ -80,6 +80,8 @@ pub struct SharedConfig {
     pub stealth: StealthConfig,
     #[serde(default)]
     pub stealth_shaper: StealthShaperConfig,
+    #[serde(default)]
+    pub underlay: UnderlayConfig,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -252,6 +254,33 @@ pub struct StealthShaperConfig {
     pub max_delay_ms: u64,
     #[serde(default = "default_stealth_shaper_idle_max_delay_ms")]
     pub idle_max_delay_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct UnderlayConfig {
+    #[serde(default)]
+    pub mode: UnderlayMode,
+    #[serde(default)]
+    pub websocket: WebSocketUnderlayConfig,
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum UnderlayMode {
+    #[default]
+    Tcp,
+    #[serde(rename = "websocket", alias = "web_socket")]
+    WebSocket,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WebSocketUnderlayConfig {
+    #[serde(default = "default_websocket_path")]
+    pub path: String,
+    #[serde(default = "crate::underlay::default_websocket_max_frame_bytes")]
+    pub max_frame_bytes: usize,
+    #[serde(default)]
+    pub host: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -483,6 +512,7 @@ impl Default for SharedConfig {
             obfuscation: ObfuscationConfig::default(),
             stealth: StealthConfig::default(),
             stealth_shaper: StealthShaperConfig::default(),
+            underlay: UnderlayConfig::default(),
         }
     }
 }
@@ -555,6 +585,25 @@ impl Default for StealthShaperConfig {
             min_delay_ms: default_stealth_shaper_min_delay_ms(),
             max_delay_ms: default_stealth_shaper_max_delay_ms(),
             idle_max_delay_ms: default_stealth_shaper_idle_max_delay_ms(),
+        }
+    }
+}
+
+impl Default for UnderlayConfig {
+    fn default() -> Self {
+        Self {
+            mode: UnderlayMode::Tcp,
+            websocket: WebSocketUnderlayConfig::default(),
+        }
+    }
+}
+
+impl Default for WebSocketUnderlayConfig {
+    fn default() -> Self {
+        Self {
+            path: default_websocket_path(),
+            max_frame_bytes: crate::underlay::default_websocket_max_frame_bytes(),
+            host: None,
         }
     }
 }

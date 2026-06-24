@@ -238,6 +238,30 @@ this budget.
 
 `idle_max_delay_ms`: Upper bound after `web` idle decay.
 
+### shared.underlay
+
+Physical transport wrapper for the Espejismo crypto/mux stream. The default is
+raw TCP.
+
+```toml
+[shared.underlay]
+mode = "websocket"
+
+[shared.underlay.websocket]
+path = "/espejismo"
+max_frame_bytes = 1048576
+# host = "example.com"
+```
+
+`mode`: `tcp` or `websocket`.
+
+`websocket.path`: HTTP Upgrade request path. Client and server must match.
+
+`websocket.max_frame_bytes`: Maximum accepted WebSocket binary frame payload.
+
+`websocket.host`: Optional client-side Host header override. Leave unset to use
+the configured `local.server` authority.
+
 ### local
 
 `server`: Remote endpoint in `host:port` form.

@@ -3,11 +3,13 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use espejismo_core::{
-    accept_handshake_with_users, read_tunnel_request, spawn_frame_transport, EgressPolicy, Metrics,
-    ReplayCache, TrafficEvent, TrafficObserver, TunnelRequest,
+    accept_handshake_with_users, accept_websocket_underlay, read_tunnel_request,
+    spawn_frame_transport, websocket_upgrade_header_matches, AuthenticatedSession, EgressPolicy,
+    Metrics, ReplayCache, TrafficEvent, TrafficObserver, TransportStream, TunnelRequest,
+    UnderlayMode,
 };
 use futures::StreamExt;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tokio::time::{sleep, timeout};
@@ -31,6 +33,18 @@ pub(crate) async fn handle_peer(
     metrics: Metrics,
 ) -> Result<()> {
     let settings = runtime.settings.read().await.clone();
+    if settings.underlay.mode == UnderlayMode::WebSocket
+        && should_accept_websocket(&mut inbound, &settings).await?
+    {
+        let websocket = accept_websocket_underlay(
+            inbound,
+            &settings.underlay.websocket.path,
+            settings.underlay.websocket.max_frame_bytes,
+        )
+        .await?;
+        return handle_websocket_peer(websocket, runtime, settings, replay, metrics).await;
+    }
+
     if should_route_to_http_fallback(&mut inbound, &settings.fallback_http).await? {
         route_http_fallback(inbound, &settings.fallback_http).await?;
         return Ok(());
@@ -81,8 +95,80 @@ pub(crate) async fn handle_peer(
             return Err(err.into());
         }
     };
-    let handshake_elapsed = handshake_started.elapsed();
+    run_authenticated_tunnel(
+        inbound,
+        keys,
+        runtime,
+        settings,
+        metrics,
+        handshake_started.elapsed(),
+    )
+    .await
+}
 
+async fn handle_websocket_peer<S>(
+    mut inbound: S,
+    runtime: RemoteRuntime,
+    settings: crate::RemoteSettings,
+    replay: Arc<tokio::sync::Mutex<ReplayCache>>,
+    metrics: Metrics,
+) -> Result<()>
+where
+    S: TransportStream + 'static,
+{
+    metrics.inc_active_physical();
+    runtime.runtime_state.set_tunnel_state("authenticating");
+    let handshake_started = Instant::now();
+    let keys = match timeout(
+        settings.handshake_timeout,
+        accept_handshake_with_users(&mut inbound, &settings.users, replay),
+    )
+    .await
+    {
+        Ok(Ok(keys)) => {
+            metrics.inc_handshake_success();
+            metrics.inc_user_handshake_success(&keys.user);
+            keys
+        }
+        Ok(Err(err)) => {
+            metrics.inc_handshake_failure();
+            metrics.dec_active_physical();
+            runtime
+                .runtime_state
+                .record_error(format!("websocket handshake rejected: {err}"));
+            return Err(err);
+        }
+        Err(err) => {
+            metrics.inc_handshake_failure();
+            metrics.dec_active_physical();
+            runtime
+                .runtime_state
+                .record_error(format!("websocket handshake timeout: {err}"));
+            return Err(err.into());
+        }
+    };
+    run_authenticated_tunnel(
+        inbound,
+        keys,
+        runtime,
+        settings,
+        metrics,
+        handshake_started.elapsed(),
+    )
+    .await
+}
+
+async fn run_authenticated_tunnel<S>(
+    inbound: S,
+    keys: AuthenticatedSession,
+    runtime: RemoteRuntime,
+    settings: crate::RemoteSettings,
+    metrics: Metrics,
+    handshake_elapsed: Duration,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
     let cold_start_started = Instant::now();
     if !settings.cold_start_delay.is_zero() {
         sleep(settings.cold_start_delay).await;
@@ -157,6 +243,22 @@ pub(crate) async fn handle_peer(
     metrics.dec_active_physical();
     runtime.runtime_state.set_tunnel_state("idle");
     Ok(())
+}
+
+async fn should_accept_websocket(
+    stream: &mut TcpStream,
+    settings: &crate::RemoteSettings,
+) -> Result<bool> {
+    let mut buf = vec![0_u8; 4096];
+    let n = match timeout(settings.fallback_http.probe_timeout, stream.peek(&mut buf)).await {
+        Ok(Ok(n)) => n,
+        Ok(Err(err)) => return Err(err.into()),
+        Err(_) => return Ok(false),
+    };
+    Ok(websocket_upgrade_header_matches(
+        &buf[..n],
+        &settings.underlay.websocket.path,
+    ))
 }
 
 async fn handle_mux_stream(

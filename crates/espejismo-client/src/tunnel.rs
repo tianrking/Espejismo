@@ -6,9 +6,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use espejismo_core::{
-    connect_handshake, connect_tcp_stream, spawn_frame_transport, FrameOptions, HandshakeConfig,
-    Metrics, RuntimeState, StreamPriority, TcpConfig, TransportConnector, TransportTarget,
-    TunnelLaneSnapshot, TunnelPoolConfig,
+    connect_handshake, connect_tcp_stream, connect_websocket_underlay, spawn_frame_transport,
+    FrameOptions, HandshakeConfig, Metrics, RuntimeState, StreamPriority, TcpConfig,
+    TransportConnector, TransportTarget, TunnelLaneSnapshot, TunnelPoolConfig, UnderlayConfig,
+    UnderlayMode,
 };
 use futures::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -85,6 +86,7 @@ pub(crate) struct TunnelManagerConfig {
     pub(crate) handshake: HandshakeConfig,
     pub(crate) frames: FrameOptions,
     pub(crate) tcp: TcpConfig,
+    pub(crate) underlay: UnderlayConfig,
     pub(crate) mux: MuxRuntimeConfig,
     pub(crate) tunnel_buffer: usize,
     pub(crate) pool: TunnelPoolConfig,
@@ -211,6 +213,7 @@ impl TunnelManager {
             runtime_state,
             connector: Arc::new(TcpTransportConnector {
                 options: config.tcp,
+                underlay: config.underlay,
             }),
             select_lock: Mutex::new(()),
             lanes,
@@ -497,6 +500,7 @@ fn lane_score(lane: &TunnelLane) -> u64 {
 #[derive(Clone)]
 struct TcpTransportConnector {
     options: TcpConfig,
+    underlay: UnderlayConfig,
 }
 
 impl TransportConnector for TcpTransportConnector {
@@ -507,7 +511,27 @@ impl TransportConnector for TcpTransportConnector {
     {
         Box::pin(async move {
             let stream = connect_tcp_stream(&target.endpoint, &self.options).await?;
-            Ok(Box::new(stream) as Box<dyn espejismo_core::TransportStream>)
+            match self.underlay.mode {
+                UnderlayMode::Tcp => {
+                    Ok(Box::new(stream) as Box<dyn espejismo_core::TransportStream>)
+                }
+                UnderlayMode::WebSocket => {
+                    let host = self
+                        .underlay
+                        .websocket
+                        .host
+                        .clone()
+                        .unwrap_or_else(|| target.endpoint.clone());
+                    let stream = connect_websocket_underlay(
+                        stream,
+                        &host,
+                        &self.underlay.websocket.path,
+                        self.underlay.websocket.max_frame_bytes,
+                    )
+                    .await?;
+                    Ok(Box::new(stream) as Box<dyn espejismo_core::TransportStream>)
+                }
+            }
         })
     }
 }
