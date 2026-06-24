@@ -14,6 +14,8 @@ use tracing::debug;
 
 use crate::tunnel::TunnelService;
 
+const HTTP_BODY_COPY_BUFFER_SIZE: usize = 128 * 1024;
+
 pub(crate) async fn handle_socks5_client(
     mut local: TcpStream,
     tunnel: Arc<TunnelService>,
@@ -218,7 +220,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut buf = vec![0_u8; 256 * 1024];
+    let mut buf = vec![0_u8; HTTP_BODY_COPY_BUFFER_SIZE];
     let mut copied = 0;
     while remaining > 0 {
         let take = remaining.min(buf.len() as u64) as usize;
@@ -247,7 +249,7 @@ where
     R: AsyncRead + Unpin,
     W: AsyncWrite + Unpin,
 {
-    let mut buf = vec![0_u8; 256 * 1024];
+    let mut buf = vec![0_u8; HTTP_BODY_COPY_BUFFER_SIZE];
     let mut copied = 0;
     loop {
         let n = timeout(idle, reader.read(&mut buf))
