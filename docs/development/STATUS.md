@@ -38,6 +38,8 @@ Current release target: `v0.1.2`.
   apply rebuilds the tunnel pool and updates server/auth/pacing/mux settings for
   new flows.
 - Built-in config profiles through `--profile fast|balanced|low-latency|stealth|server-safe`.
+- High-BDP throughput overlay through `--profile auto-throughput` for measured
+  benchmark runs on long-haul TCP paths.
 - Config diagnostics through `--check-config` for both local and remote.
 - Shared TCP socket options: TCP_NODELAY, keepalive, heartbeat frames, socket
   buffers, Linux TCP_USER_TIMEOUT, and optional congestion-control selection.
@@ -98,6 +100,9 @@ Current release target: `v0.1.2`.
 - CI for Linux, macOS, and Windows.
 - Release artifact workflow for Linux x86_64/i686/aarch64/armv7, macOS
   aarch64, and Windows x86_64/i686/aarch64.
+- Rust benchmark HTTP source/sink binary (`espejismo-bench-http`) plus repeated
+  throughput harness summaries with median, mean, min, max, stddev, and
+  proxy/direct efficiency.
 - Local packaging scripts for Unix-like hosts and Windows PowerShell.
 - systemd and Docker deployment starter assets.
 

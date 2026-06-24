@@ -8,7 +8,7 @@ mod defaults;
 mod types;
 
 use crate::ingress::ProxyAuth;
-use crate::protocol::framing::{ChunkPolicy, ObfuscationProfile};
+use crate::protocol::framing::{ChunkPolicy, ObfuscationProfile, NORMAL_PAYLOAD_CAPACITY};
 pub use types::*;
 
 pub fn load_config(input: ConfigInput) -> Result<EspejismoConfig> {
@@ -276,7 +276,7 @@ pub fn apply_named_profile(config: &mut EspejismoConfig, name: &str) -> Result<(
             config.shared.obfuscation.chunk_policy = ChunkPolicy::Bulk;
             config.shared.obfuscation.randomize_chunks = false;
             config.shared.obfuscation.min_chunk = 64 * 1024;
-            config.shared.obfuscation.max_chunk = 256 * 1024;
+            config.shared.obfuscation.max_chunk = NORMAL_PAYLOAD_CAPACITY;
             config.shared.pacing.enabled = true;
             config.shared.pacing.burst_bytes = 512 * 1024;
             config.shared.pacing.min_write_bytes = 64 * 1024;
@@ -287,6 +287,33 @@ pub fn apply_named_profile(config: &mut EspejismoConfig, name: &str) -> Result<(
             config.local.tunnel_pool.max_connections = 8;
             config.local.tunnel_pool.interactive_lanes = 1;
             config.local.tunnel_pool.bulk_lanes = 4;
+        }
+        "auto-throughput" | "throughput-auto" => {
+            config.shared.max_padding = 0;
+            config.shared.padding_chance_percent = 0;
+            config.shared.jitter_ms = 0;
+            config.shared.obfuscation.profile = ObfuscationProfile::Bulk;
+            config.shared.obfuscation.chunk_policy = ChunkPolicy::Bulk;
+            config.shared.obfuscation.randomize_chunks = false;
+            config.shared.obfuscation.min_chunk = 64 * 1024;
+            config.shared.obfuscation.max_chunk = NORMAL_PAYLOAD_CAPACITY;
+            config.shared.pacing.enabled = true;
+            config.shared.pacing.burst_bytes = 1024 * 1024;
+            config.shared.pacing.min_write_bytes = 64 * 1024;
+            config.shared.tunnel_buffer = 16 * 1024 * 1024;
+            config.shared.tcp.nodelay = true;
+            config.shared.tcp.send_buffer_bytes =
+                config.shared.tcp.send_buffer_bytes.max(4 * 1024 * 1024);
+            config.shared.tcp.recv_buffer_bytes =
+                config.shared.tcp.recv_buffer_bytes.max(4 * 1024 * 1024);
+            config.shared.mux.native_initial_window_bytes =
+                config.shared.mux.native_initial_window_bytes.max(16 * 1024 * 1024);
+            config.shared.max_streams = config.shared.max_streams.max(512);
+            config.local.http_bulk_threshold_bytes = 256 * 1024;
+            config.local.tunnel_pool.min_connections = 1;
+            config.local.tunnel_pool.max_connections = 8;
+            config.local.tunnel_pool.interactive_lanes = 1;
+            config.local.tunnel_pool.bulk_lanes = 6;
         }
         "balanced" => {
             config.shared.obfuscation.profile = ObfuscationProfile::Balanced;
@@ -344,7 +371,7 @@ pub fn apply_named_profile(config: &mut EspejismoConfig, name: &str) -> Result<(
             config.shared.pacing.burst_bytes = config.shared.pacing.burst_bytes.min(64 * 1024);
         }
         _ => anyhow::bail!(
-            "unknown profile '{name}', expected fast, balanced, low-latency, stealth, or server-safe"
+            "unknown profile '{name}', expected fast, balanced, low-latency, stealth, auto-throughput, or server-safe"
         ),
     }
     Ok(())
@@ -563,6 +590,16 @@ mod tests {
         apply_named_profile(&mut config, "stealth").unwrap();
         assert!(config.shared.obfuscation.profile.is_stealth());
         assert_eq!(config.shared.stealth.frame_size, 4096);
+
+        apply_named_profile(&mut config, "auto-throughput").unwrap();
+        assert_eq!(config.shared.obfuscation.max_chunk, 262_127);
+        assert_eq!(config.shared.tunnel_buffer, 16 * 1024 * 1024);
+        assert_eq!(
+            config.shared.mux.native_initial_window_bytes,
+            16 * 1024 * 1024
+        );
+        assert_eq!(config.local.tunnel_pool.bulk_lanes, 6);
+        assert_eq!(config.local.http_bulk_threshold_bytes, 256 * 1024);
 
         let err = apply_named_profile(&mut config, "unknown").unwrap_err();
         assert!(err.to_string().contains("unknown profile"));

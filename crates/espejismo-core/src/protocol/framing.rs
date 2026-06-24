@@ -16,7 +16,7 @@ const STEALTH_MAX_FRAME: usize = 64 * 1024;
 const DATA_CHUNK: usize = 16 * 1024;
 const AEAD_TAG_LEN: usize = 16;
 const STEALTH_HEADER_LEN: usize = 3;
-const NORMAL_PAYLOAD_CAPACITY: usize = NORMAL_MAX_FRAME - AEAD_TAG_LEN - 1;
+pub const NORMAL_PAYLOAD_CAPACITY: usize = NORMAL_MAX_FRAME - AEAD_TAG_LEN - 1;
 pub const DEFAULT_STEALTH_FRAME_SIZE: usize = 4096;
 pub const DEFAULT_STEALTH_TICK_MS: u64 = 50;
 

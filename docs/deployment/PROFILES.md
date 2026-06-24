@@ -14,6 +14,9 @@ Available profiles:
 
 - `fast`: minimal padding/jitter, 256 KiB-capable bulk chunks, larger buffers,
   and a wider tunnel pool for throughput-oriented TCP proxying.
+- `auto-throughput`: aggressive high-BDP TCP defaults for benchmarked long-haul
+  paths: exact maximum normal-frame payloads, larger socket/transport buffers,
+  a wider mux window, lower HTTP bulk threshold, and six bulk lanes.
 - `balanced`: production default for general proxy use.
 - `low-latency`: smaller chunks, TCP_NODELAY, tighter pacing, and fewer lanes
   for interactive requests.
@@ -24,6 +27,12 @@ Available profiles:
 
 Profiles are plain config overlays. They do not hide secrets and they do not
 override explicit CLI flags such as `--server`, `--listen`, or `--psk`.
+
+For cross-border VPS tuning, start with `--profile auto-throughput` on both
+local and remote, run `scripts/bench-throughput.sh` for several rounds, and then
+copy only the proven knobs into the real deployment config. Keep `stealth` as
+the censorship-resistance default when packet shape matters more than raw bulk
+throughput.
 
 ## Client Import Profiles
 

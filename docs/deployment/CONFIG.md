@@ -288,6 +288,19 @@ interactive_lanes = 1
 bulk_lanes = 4
 ```
 
+The same shape can be applied as an official overlay:
+
+```bash
+espejismo-remote --profile auto-throughput --config server.toml
+espejismo-local --profile auto-throughput --config client.toml
+```
+
+`auto-throughput` raises normal-frame chunks to the exact 262127-byte payload
+cap, enables 16 MiB tunnel/mux buffering, requests 4 MiB TCP socket buffers,
+sets `http_bulk_threshold_bytes = 262144`, and uses one interactive lane plus
+six bulk lanes. Use it for measured long-haul throughput tests, not as a stealth
+traffic-shaping profile.
+
 ### local.tun
 
 `enabled`: Enable native TUN ingress.

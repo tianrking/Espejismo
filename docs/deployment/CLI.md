@@ -61,8 +61,8 @@ espejismo-remote --profile server-safe --print-example-config > espejismo-server
 ```
 
 Available built-in profiles are `fast`, `balanced`, `low-latency`, `stealth`,
-and `server-safe`. Profiles are ordinary config overlays; explicit CLI options
-can still override individual fields.
+`auto-throughput`, and `server-safe`. Profiles are ordinary config overlays;
+explicit CLI options can still override individual fields.
 
 ## Config Diagnostics
 

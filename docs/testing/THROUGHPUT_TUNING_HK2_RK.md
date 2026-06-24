@@ -18,8 +18,7 @@ HK2 client host
         v
 RK server host
   espejismo-remote: 0.0.0.0:16690
-  HTTP download source: 0.0.0.0:18082
-  HTTP upload sink: 0.0.0.0:18083
+  Rust benchmark HTTP source/sink: 0.0.0.0:18082
 ```
 
 The test port set was temporary and separate from the long-running production
@@ -31,13 +30,16 @@ Use `scripts/bench-throughput.sh` from HK2 to capture direct-link and
 Espejismo-link performance in the same window:
 
 ```bash
+espejismo-bench-http --listen 0.0.0.0:18082
+
 ESPEJISMO_PROXY_URL=http://127.0.0.1:16681 \
 ESPEJISMO_DIRECT_DOWNLOAD_URL=http://<rk-public-ip>:18082/256m.bin \
 ESPEJISMO_PROXY_DOWNLOAD_URL=http://127.0.0.1:18082/256m.bin \
-ESPEJISMO_DIRECT_UPLOAD_URL=http://<rk-public-ip>:18083/upload \
-ESPEJISMO_PROXY_UPLOAD_URL=http://127.0.0.1:18083/upload \
+ESPEJISMO_DIRECT_UPLOAD_URL=http://<rk-public-ip>:18082/upload \
+ESPEJISMO_PROXY_UPLOAD_URL=http://127.0.0.1:18082/upload \
 ESPEJISMO_UPLOAD_FILE=/tmp/espejismo-upload-128m.bin \
 ESPEJISMO_PARALLEL=4 \
+ESPEJISMO_ROUNDS=5 \
 ESPEJISMO_ADMIN_URL=http://127.0.0.1:9090/status \
 ESPEJISMO_ADMIN_TOKEN=change-me-admin-token \
 scripts/bench-throughput.sh
@@ -49,7 +51,7 @@ The harness records:
 - proxied download and upload, single stream and parallel streams;
 - raw curl timings and byte counts;
 - `results.jsonl` for later comparison;
-- `summary.md` for human review;
+- `summary.md` with per-round and aggregate median/mean/min/max/stddev review;
 - optional admin snapshots before and after the run.
 
 This is the right way to compare future tuning changes because the direct tests
@@ -287,9 +289,10 @@ Keep `shared.mux.mode = "yamux"` for production.
 ## Follow-Up Work
 
 - Add a non-Python test sink such as `iperf3`-style HTTP body discard or a small
-  Rust sink to remove Python server overhead from upload tests.
+- Use the Rust `espejismo-bench-http` source/sink for future HK2/RK runs to
+  remove Python server overhead from upload tests.
 - Test under controlled loss and latency using Linux `tc netem`.
-- Add repeated-run aggregation to the benchmark harness so it can report median,
-  min, max, and standard deviation across several adjacent windows.
+- Run repeated harness rounds so benchmark summaries report median, min, max,
+  and standard deviation across several adjacent windows.
 - Keep stealth deployments on smaller fixed-size frames; use large bulk frames
   only for throughput-oriented profiles.

@@ -70,7 +70,7 @@ jobs:
         run: cargo install cross --locked
       - name: Build
         if: matrix.use_cross != true
-        run: cargo build --release --locked --target ${{ matrix.target }} --bin espejismo-local --bin espejismo-remote
+        run: cargo build --release --locked --target ${{ matrix.target }} --bin espejismo-local --bin espejismo-remote --bin espejismo-bench-http
       - name: Build with cross
         if: matrix.use_cross == true
         shell: bash
@@ -78,7 +78,7 @@ jobs:
           set -euo pipefail
           for attempt in 1 2 3 4 5; do
             echo "cross build attempt ${attempt}/5 for ${{ matrix.target }}"
-            if cross build --release --locked --target ${{ matrix.target }} --bin espejismo-local --bin espejismo-remote; then
+            if cross build --release --locked --target ${{ matrix.target }} --bin espejismo-local --bin espejismo-remote --bin espejismo-bench-http; then
               exit 0
             fi
             status=$?
@@ -99,6 +99,7 @@ jobs:
           mkdir -p "dist/${pkg}/bin" "dist/${pkg}/configs" "dist/${pkg}/docs" "dist/${pkg}/scripts"
           cp "target/${{ matrix.target }}/release/espejismo-local" "dist/${pkg}/bin/"
           cp "target/${{ matrix.target }}/release/espejismo-remote" "dist/${pkg}/bin/"
+          cp "target/${{ matrix.target }}/release/espejismo-bench-http" "dist/${pkg}/bin/"
           cp configs/examples/espejismo.toml "dist/${pkg}/configs/"
           cp README.md "dist/${pkg}/"
           cp README_ES.md "dist/${pkg}/"
@@ -109,6 +110,7 @@ jobs:
 
           mkdir -p "dist/${server_pkg}/bin" "dist/${server_pkg}/configs" "dist/${server_pkg}/docs" "dist/${server_pkg}/scripts"
           cp "target/${{ matrix.target }}/release/espejismo-remote" "dist/${server_pkg}/bin/"
+          cp "target/${{ matrix.target }}/release/espejismo-bench-http" "dist/${server_pkg}/bin/"
           cp configs/examples/espejismo.toml "dist/${server_pkg}/configs/"
           cp README.md CHANGELOG.md "dist/${server_pkg}/"
           cp docs/deployment/ADMIN.md docs/deployment/CONFIG.md docs/deployment/EGRESS.md docs/deployment/LOGGING.md docs/deployment/QUICKSTART.md docs/deployment/USERS.md "dist/${server_pkg}/docs/"
@@ -139,6 +141,7 @@ jobs:
           New-Item -ItemType Directory -Force "dist/$pkg/bin", "dist/$pkg/configs", "dist/$pkg/docs", "dist/$pkg/scripts" | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/espejismo-local.exe" "dist/$pkg/bin/"
           Copy-Item "target/${{ matrix.target }}/release/espejismo-remote.exe" "dist/$pkg/bin/"
+          Copy-Item "target/${{ matrix.target }}/release/espejismo-bench-http.exe" "dist/$pkg/bin/"
           Copy-Item $wintunDll "dist/$pkg/bin/wintun.dll"
           Copy-Item "configs/examples/espejismo.toml" "dist/$pkg/configs/"
           Copy-Item "README.md" "dist/$pkg/"
@@ -153,6 +156,7 @@ jobs:
 
           New-Item -ItemType Directory -Force "dist/$serverPkg/bin", "dist/$serverPkg/configs", "dist/$serverPkg/docs", "dist/$serverPkg/scripts" | Out-Null
           Copy-Item "target/${{ matrix.target }}/release/espejismo-remote.exe" "dist/$serverPkg/bin/"
+          Copy-Item "target/${{ matrix.target }}/release/espejismo-bench-http.exe" "dist/$serverPkg/bin/"
           Copy-Item "configs/examples/espejismo.toml" "dist/$serverPkg/configs/"
           Copy-Item "README.md", "CHANGELOG.md" "dist/$serverPkg/"
           Copy-Item "docs/deployment/ADMIN.md", "docs/deployment/CONFIG.md", "docs/deployment/EGRESS.md", "docs/deployment/LOGGING.md", "docs/deployment/QUICKSTART.md", "docs/deployment/USERS.md" "dist/$serverPkg/docs/"

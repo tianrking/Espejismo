@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Added
+
+- `espejismo-bench-http`, a small Rust HTTP download source and upload discard
+  sink for throughput testing without Python HTTP server overhead.
+- Repeated-round throughput harness aggregation with per-test median, mean,
+  min, max, standard deviation, and proxy/direct efficiency reporting.
+- `--profile auto-throughput` for measured high-BDP TCP paths, using the exact
+  normal-frame payload cap, larger buffers/windows, a lower HTTP bulk threshold,
+  and a wider bulk-lane pool.
+
+### Changed
+
+- Release and native binary CI builds now include the benchmark HTTP helper.
+- Stream relay copy buffers are larger to better feed high-throughput single
+  streams.
+
 ## v0.1.2
 
 `v0.1.2` is a throughput observability and lane-dispatch release for the

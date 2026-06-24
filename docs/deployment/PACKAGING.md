@@ -21,6 +21,7 @@ Each full package contains:
 ```text
 bin/espejismo-local
 bin/espejismo-remote
+bin/espejismo-bench-http
 configs/espejismo.toml
 docs/
 scripts/install.sh
@@ -47,7 +48,7 @@ official cross-platform release artifacts, or run the equivalent build command
 locally for the current platform:
 
 ```bash
-cargo build --release --locked --bin espejismo-local --bin espejismo-remote
+cargo build --release --locked --bin espejismo-local --bin espejismo-remote --bin espejismo-bench-http
 ```
 
 The download installers in `scripts/` are deliberately thin and only fetch

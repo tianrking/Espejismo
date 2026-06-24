@@ -47,21 +47,25 @@ Use `scripts/bench-throughput.sh` on a Linux test client to run direct and
 proxied download/upload checks with the same payloads:
 
 ```bash
+espejismo-bench-http --listen 0.0.0.0:18082
+
 ESPEJISMO_PROXY_URL=http://127.0.0.1:16681 \
 ESPEJISMO_DIRECT_DOWNLOAD_URL=http://203.0.113.10:18082/256m.bin \
 ESPEJISMO_PROXY_DOWNLOAD_URL=http://127.0.0.1:18082/256m.bin \
-ESPEJISMO_DIRECT_UPLOAD_URL=http://203.0.113.10:18083/upload \
-ESPEJISMO_PROXY_UPLOAD_URL=http://127.0.0.1:18083/upload \
+ESPEJISMO_DIRECT_UPLOAD_URL=http://203.0.113.10:18082/upload \
+ESPEJISMO_PROXY_UPLOAD_URL=http://127.0.0.1:18082/upload \
 ESPEJISMO_ADMIN_URL=http://127.0.0.1:9090/status \
 ESPEJISMO_ADMIN_TOKEN=change-me-admin-token \
 ESPEJISMO_PARALLEL=4 \
+ESPEJISMO_ROUNDS=5 \
 scripts/bench-throughput.sh
 ```
 
 The script writes raw curl output, `results.jsonl`, `summary.md`, and optional
-admin snapshots into `bench-results/<run-id>/`. Use it when comparing mux,
-frame-size, pacing, or lane-pool changes so raw link variation and Espejismo
-overhead are recorded in the same run.
+admin snapshots into `bench-results/<run-id>/`. `summary.md` includes per-run
+results, median/mean/min/max/stddev, and proxy/direct efficiency for matching
+tests. Use it when comparing mux, frame-size, pacing, or lane-pool changes so
+raw link variation and Espejismo overhead are recorded in the same run.
 
 ## Unit Coverage
 

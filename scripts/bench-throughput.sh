@@ -4,11 +4,13 @@ set -euo pipefail
 PROXY_URL="${ESPEJISMO_PROXY_URL:-http://127.0.0.1:16681}"
 DIRECT_DOWNLOAD_URL="${ESPEJISMO_DIRECT_DOWNLOAD_URL:-http://127.0.0.1:18082/256m.bin}"
 PROXY_DOWNLOAD_URL="${ESPEJISMO_PROXY_DOWNLOAD_URL:-http://127.0.0.1:18082/256m.bin}"
-DIRECT_UPLOAD_URL="${ESPEJISMO_DIRECT_UPLOAD_URL:-http://127.0.0.1:18083/upload}"
-PROXY_UPLOAD_URL="${ESPEJISMO_PROXY_UPLOAD_URL:-http://127.0.0.1:18083/upload}"
+DIRECT_UPLOAD_URL="${ESPEJISMO_DIRECT_UPLOAD_URL:-http://127.0.0.1:18082/upload}"
+PROXY_UPLOAD_URL="${ESPEJISMO_PROXY_UPLOAD_URL:-http://127.0.0.1:18082/upload}"
 UPLOAD_FILE="${ESPEJISMO_UPLOAD_FILE:-/tmp/espejismo-upload-128m.bin}"
 UPLOAD_MIB="${ESPEJISMO_UPLOAD_MIB:-128}"
 PARALLEL="${ESPEJISMO_PARALLEL:-4}"
+ROUNDS="${ESPEJISMO_ROUNDS:-1}"
+ROUND_DELAY_SECS="${ESPEJISMO_ROUND_DELAY_SECS:-5}"
 MAX_TIME="${ESPEJISMO_CURL_MAX_TIME:-600}"
 ADMIN_URL="${ESPEJISMO_ADMIN_URL:-}"
 ADMIN_TOKEN="${ESPEJISMO_ADMIN_TOKEN:-}"
@@ -34,10 +36,25 @@ need_command awk
 need_command dd
 need_command stat
 
+PYTHON_BIN="${ESPEJISMO_PYTHON:-python3}"
+HAS_PYTHON=0
+if command -v "$PYTHON_BIN" >/dev/null 2>&1 && "$PYTHON_BIN" -c 'import json, statistics' >/dev/null 2>&1; then
+    HAS_PYTHON=1
+fi
+
+if [ "$ROUNDS" -lt 1 ]; then
+    echo "ESPEJISMO_ROUNDS must be >= 1" >&2
+    exit 2
+fi
+
 if [ ! -f "$UPLOAD_FILE" ]; then
     echo "creating upload payload: $UPLOAD_FILE (${UPLOAD_MIB} MiB)"
     dd if=/dev/zero of="$UPLOAD_FILE" bs=1M count="$UPLOAD_MIB" status=none
 fi
+
+now_ms() {
+    date +%s%3N
+}
 
 capture_admin() {
     local phase="$1"
@@ -64,20 +81,24 @@ json_escape() {
         gsub(/"/,"\\\"");
         gsub(/\r/,"\\r");
         gsub(/\t/,"\\t");
-        print;
+        printf "%s", $0;
     }'
 }
 
 append_result() {
-    local label="$1"
-    local mode="$2"
-    local direction="$3"
-    local parallel="$4"
-    local elapsed_secs="$5"
-    local bytes="$6"
-    local mbps="$7"
-    local ok="$8"
-    printf '{"label":"%s","mode":"%s","direction":"%s","parallel":%s,"elapsed_secs":%s,"bytes":%s,"mbps":%s,"ok":%s}\n' \
+    local round="$1"
+    local case_name="$2"
+    local label="$3"
+    local mode="$4"
+    local direction="$5"
+    local parallel="$6"
+    local elapsed_secs="$7"
+    local bytes="$8"
+    local mbps="$9"
+    local ok="${10}"
+    printf '{"round":%s,"case":"%s","label":"%s","mode":"%s","direction":"%s","parallel":%s,"elapsed_secs":%s,"bytes":%s,"mbps":%s,"ok":%s}\n' \
+        "$round" \
+        "$(json_escape "$case_name")" \
         "$(json_escape "$label")" \
         "$(json_escape "$mode")" \
         "$(json_escape "$direction")" \
@@ -123,9 +144,11 @@ curl_worker() {
 }
 
 summarize_one() {
-    local label="$1"
-    local mode="$2"
-    local direction="$3"
+    local round="$1"
+    local case_name="$2"
+    local label="$3"
+    local mode="$4"
+    local direction="$5"
     local file="${RAW_DIR}/${label}.txt"
     local elapsed speed bytes exit_code http_code mbps ok
     elapsed="$(metric_value "$file" time_total)"
@@ -143,32 +166,36 @@ summarize_one() {
     if [ "${exit_code:-1}" = "0" ] && [ "${http_code:-000}" -ge 200 ] && [ "${http_code:-000}" -lt 400 ]; then
         ok=true
     fi
-    append_result "$label" "$mode" "$direction" 1 "${elapsed:-0}" "${bytes:-0}" "$mbps" "$ok"
-    printf '| %s | %s | %s | 1 | %s | %s | %s |\n' "$label" "$mode" "$direction" "${mbps}" "${elapsed:-0}" "$ok" >>"$SUMMARY_MD"
+    append_result "$round" "$case_name" "$label" "$mode" "$direction" 1 "${elapsed:-0}" "${bytes:-0}" "$mbps" "$ok"
+    printf '| %s | %s | %s | %s | 1 | %s | %s | %s |\n' "$round" "$case_name" "$mode" "$direction" "${mbps}" "${elapsed:-0}" "$ok" >>"$SUMMARY_MD"
     echo "${label}: ${mbps} Mbit/s (${elapsed:-0}s, ok=${ok})"
 }
 
 run_single() {
-    local label="$1"
-    local mode="$2"
-    local direction="$3"
-    local url="$4"
+    local round="$1"
+    local case_name="$2"
+    local mode="$3"
+    local direction="$4"
+    local url="$5"
+    local label="r${round}-${case_name}"
     curl_worker "$label" "$mode" "$direction" "$url"
-    summarize_one "$label" "$mode" "$direction"
+    summarize_one "$round" "$case_name" "$label" "$mode" "$direction"
 }
 
 run_parallel() {
-    local label="$1"
-    local mode="$2"
-    local direction="$3"
-    local url="$4"
+    local round="$1"
+    local case_name="$2"
+    local mode="$3"
+    local direction="$4"
+    local url="$5"
+    local label="r${round}-${case_name}"
     local start_ms end_ms elapsed_ms elapsed_secs bytes mbps ok
-    start_ms="$(date +%s%3N)"
+    start_ms="$(now_ms)"
     for i in $(seq 1 "$PARALLEL"); do
         curl_worker "${label}-${i}" "$mode" "$direction" "$url" &
     done
     wait
-    end_ms="$(date +%s%3N)"
+    end_ms="$(now_ms)"
     elapsed_ms=$((end_ms - start_ms))
     elapsed_secs="$(awk -v ms="$elapsed_ms" 'BEGIN { printf "%.3f", ms / 1000 }')"
     bytes=0
@@ -189,9 +216,87 @@ run_parallel() {
         fi
     done
     mbps="$(awk -v bytes="$bytes" -v ms="$elapsed_ms" 'BEGIN { if (ms > 0) printf "%.3f", bytes * 8 / (ms / 1000) / 1000000; else printf "0.000" }')"
-    append_result "$label" "$mode" "$direction" "$PARALLEL" "$elapsed_secs" "$bytes" "$mbps" "$ok"
-    printf '| %s | %s | %s | %s | %s | %s | %s |\n' "$label" "$mode" "$direction" "$PARALLEL" "$mbps" "$elapsed_secs" "$ok" >>"$SUMMARY_MD"
+    append_result "$round" "$case_name" "$label" "$mode" "$direction" "$PARALLEL" "$elapsed_secs" "$bytes" "$mbps" "$ok"
+    printf '| %s | %s | %s | %s | %s | %s | %s | %s |\n' "$round" "$case_name" "$mode" "$direction" "$PARALLEL" "$mbps" "$elapsed_secs" "$ok" >>"$SUMMARY_MD"
     echo "${label}: ${mbps} Mbit/s (${elapsed_secs}s, parallel=${PARALLEL}, ok=${ok})"
+}
+
+run_round() {
+    local round="$1"
+    echo "round ${round}/${ROUNDS}"
+    capture_admin "round-${round}-before"
+    run_single "$round" direct-download-p1 direct download "$DIRECT_DOWNLOAD_URL"
+    run_single "$round" proxy-download-p1 proxy download "$PROXY_DOWNLOAD_URL"
+    run_parallel "$round" direct-download-pN direct download "$DIRECT_DOWNLOAD_URL"
+    run_parallel "$round" proxy-download-pN proxy download "$PROXY_DOWNLOAD_URL"
+    run_single "$round" direct-upload-p1 direct upload "$DIRECT_UPLOAD_URL"
+    run_single "$round" proxy-upload-p1 proxy upload "$PROXY_UPLOAD_URL"
+    run_parallel "$round" direct-upload-pN direct upload "$DIRECT_UPLOAD_URL"
+    run_parallel "$round" proxy-upload-pN proxy upload "$PROXY_UPLOAD_URL"
+    capture_admin "round-${round}-after"
+}
+
+write_aggregate() {
+    if [ "$HAS_PYTHON" -ne 1 ]; then
+        cat >>"$SUMMARY_MD" <<EOF
+
+## Aggregate Statistics
+
+Aggregate statistics require a working Python 3 runtime. Set \`ESPEJISMO_PYTHON\`
+to a usable interpreter path if \`python3\` is not available.
+EOF
+        return 0
+    fi
+
+    "$PYTHON_BIN" - "$RESULTS_JSONL" "$SUMMARY_MD" <<'PY'
+import json
+import math
+import statistics
+import sys
+from collections import defaultdict
+
+results_path, summary_path = sys.argv[1], sys.argv[2]
+groups = defaultdict(list)
+with open(results_path, "r", encoding="utf-8") as fh:
+    for line in fh:
+        item = json.loads(line)
+        groups[item["case"]].append(item)
+
+def fmt(value):
+    return f"{value:.3f}"
+
+with open(summary_path, "a", encoding="utf-8") as out:
+    out.write("\n## Aggregate Statistics\n\n")
+    out.write("| Test | Runs | OK | Median Mbit/s | Mean Mbit/s | Min | Max | Stddev |\n")
+    out.write("| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+    for case in sorted(groups):
+        values = [float(item["mbps"]) for item in groups[case]]
+        ok_count = sum(1 for item in groups[case] if item["ok"])
+        stddev = statistics.pstdev(values) if len(values) > 1 else 0.0
+        out.write(
+            f"| {case} | {len(values)} | {ok_count} | {fmt(statistics.median(values))} | "
+            f"{fmt(statistics.mean(values))} | {fmt(min(values))} | {fmt(max(values))} | {fmt(stddev)} |\n"
+        )
+
+    out.write("\n## Proxy Efficiency\n\n")
+    out.write("| Proxy Test | Direct Baseline | Median Efficiency | Mean Efficiency |\n")
+    out.write("| --- | --- | ---: | ---: |\n")
+    for proxy_case in sorted(case for case in groups if case.startswith("proxy-")):
+        direct_case = "direct-" + proxy_case[len("proxy-"):]
+        if direct_case not in groups:
+            continue
+        direct_by_round = {item["round"]: float(item["mbps"]) for item in groups[direct_case]}
+        ratios = []
+        for item in groups[proxy_case]:
+            direct = direct_by_round.get(item["round"], 0.0)
+            if direct > 0:
+                ratios.append(float(item["mbps"]) / direct * 100.0)
+        if ratios:
+            out.write(
+                f"| {proxy_case} | {direct_case} | {fmt(statistics.median(ratios))}% | "
+                f"{fmt(statistics.mean(ratios))}% |\n"
+            )
+PY
 }
 
 cat >"$SUMMARY_MD" <<EOF
@@ -210,24 +315,24 @@ Run: ${RUN_ID}
 | Proxy upload URL | \`${PROXY_UPLOAD_URL}\` |
 | Upload file | \`${UPLOAD_FILE}\` |
 | Parallelism | \`${PARALLEL}\` |
+| Rounds | \`${ROUNDS}\` |
+| Round delay seconds | \`${ROUND_DELAY_SECS}\` |
 | Admin URL | \`${ADMIN_URL:-disabled}\` |
 
 ## Results
 
-| Test | Mode | Direction | Parallel | Mbit/s | Seconds | OK |
-| --- | --- | --- | ---: | ---: | ---: | --- |
+| Round | Test | Mode | Direction | Parallel | Mbit/s | Seconds | OK |
+| ---: | --- | --- | --- | ---: | ---: | ---: | --- |
 EOF
 
-capture_admin before
-run_single direct-download-p1 direct download "$DIRECT_DOWNLOAD_URL"
-run_single proxy-download-p1 proxy download "$PROXY_DOWNLOAD_URL"
-run_parallel direct-download-pN direct download "$DIRECT_DOWNLOAD_URL"
-run_parallel proxy-download-pN proxy download "$PROXY_DOWNLOAD_URL"
-run_single direct-upload-p1 direct upload "$DIRECT_UPLOAD_URL"
-run_single proxy-upload-p1 proxy upload "$PROXY_UPLOAD_URL"
-run_parallel direct-upload-pN direct upload "$DIRECT_UPLOAD_URL"
-run_parallel proxy-upload-pN proxy upload "$PROXY_UPLOAD_URL"
-capture_admin after
+for round in $(seq 1 "$ROUNDS"); do
+    run_round "$round"
+    if [ "$round" -lt "$ROUNDS" ] && [ "$ROUND_DELAY_SECS" -gt 0 ]; then
+        sleep "$ROUND_DELAY_SECS"
+    fi
+done
+
+write_aggregate
 
 cat >>"$SUMMARY_MD" <<EOF
 
@@ -235,8 +340,7 @@ cat >>"$SUMMARY_MD" <<EOF
 
 - Raw curl output: \`${RAW_DIR}\`
 - JSONL results: \`${RESULTS_JSONL}\`
-- Admin before snapshot: \`${OUTPUT_DIR}/admin-before.json\`
-- Admin after snapshot: \`${OUTPUT_DIR}/admin-after.json\`
+- Admin snapshots: \`${OUTPUT_DIR}/admin-round-*-before.json\`, \`${OUTPUT_DIR}/admin-round-*-after.json\`
 EOF
 
 echo "wrote ${SUMMARY_MD}"
