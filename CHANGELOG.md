@@ -4,6 +4,9 @@
 
 ### Added
 
+- First-packet replay digest hardening: the server now records the authenticated
+  outer client handshake packet digest in the replay cache before sending any
+  response, closing the same-window exact-replay gap.
 - `espejismo-bench-http`, a small Rust HTTP download source and upload discard
   sink for throughput testing without Python HTTP server overhead.
 - Repeated-round throughput harness aggregation with per-test median, mean,

@@ -343,7 +343,10 @@ to `[443]` so QUIC falls back to TCP HTTPS; use `[]` to allow UDP/443.
 
 `max_handshake_padding`: Remote accepted client hello padding cap.
 
-`replay_window_secs`: Replay cache window for client ephemeral keys.
+`replay_window_secs`: Replay cache window for authenticated first client packet
+digests and client ephemeral keys. Keep this at least as large as the accepted
+handshake-window tolerance so same-window exact replays are rejected before any
+server response is sent.
 
 `cold_start_delay_ms`: Delay after successful auth before tunnel startup.
 

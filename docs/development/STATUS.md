@@ -85,7 +85,8 @@ Current release target: `v0.1.2`.
 - Stealth obfuscation profile with fixed-size encrypted frames, masked
   handshake blocks, padding warmup, paced writes, and idle cadence decay.
 - SHA-256 client puzzle before HMAC verification.
-- Bounded replay cache for ephemeral public keys.
+- Bounded replay cache for authenticated first-packet digests and ephemeral
+  public keys.
 - Bounded silent tarpit pool for invalid handshakes.
 - HTTP-looking probe fallback to a configured upstream or dynamic built-in 200
   response.

@@ -112,6 +112,8 @@ The server MUST reject a client hello when:
 - The protocol version is unsupported.
 - Required capabilities are absent.
 - The timestamp is outside `shared.clock_skew_secs`.
+- The authenticated outer first client packet digest was already seen inside
+  the replay window.
 - The client ephemeral public key was already seen inside the replay window.
 
 On success, both peers derive session keys from the X25519 shared secret and PSK
@@ -246,6 +248,13 @@ or capability bit.
 Invalid or incomplete handshakes MUST NOT receive Espejismo application data.
 The remote MAY silently delay closure or place the socket in a bounded silent
 tarpit. Any tarpit MUST have a hard capacity and time-to-live.
+
+The replay cache covers both the authenticated outer first client packet digest
+and the X25519 client ephemeral public key. The first-packet digest is computed
+over the bytes observed on the wire for the initial client handshake envelope
+or stealth block. This makes exact active-probe replays inside the accepted
+handshake time window fail before the server sends a response, while preserving
+the public-key replay check as a second guard.
 
 HTTP-looking probes MAY be routed to a configured fallback upstream or a built-in
 HTTP response when probe fallback is enabled. Fallback behavior MUST remain

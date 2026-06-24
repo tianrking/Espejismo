@@ -474,6 +474,7 @@ struct ParsedClientHello {
     auth_key: [u8; 32],
     fixed_body: [u8; CLIENT_HELLO_FIXED_BODY_LEN],
     body: Vec<u8>,
+    first_packet_digest: [u8; 32],
 }
 
 fn build_client_hello(
@@ -639,6 +640,7 @@ where
         .read_exact(&mut payload)
         .await
         .context("client handshake payload failed")?;
+    let first_packet_digest = first_packet_digest(&[&nonce, &masked_len, &payload]);
     let mut authenticated = Vec::new();
     for (index, auth_key, _) in candidates {
         let mut plain = payload.clone();
@@ -647,7 +649,7 @@ where
             continue;
         };
         if client_hello_authenticates(&parsed) {
-            authenticated.push((parsed, index));
+            authenticated.push((parsed.with_first_packet_digest(first_packet_digest), index));
         }
     }
     match authenticated.len() {
@@ -698,6 +700,7 @@ fn parse_plain_client_hello(
         auth_key,
         fixed_body,
         body,
+        first_packet_digest: [0_u8; 32],
     })
 }
 
@@ -715,6 +718,7 @@ where
         .read_exact(&mut block)
         .await
         .context("stealth client handshake failed")?;
+    let first_packet_digest = first_packet_digest(&[&block]);
     let now = unix_now()?;
     let mut authenticated = Vec::new();
     for auth_key in cfg.accepted_auth_keys(now)? {
@@ -726,7 +730,7 @@ where
             continue;
         };
         if client_hello_authenticates(&parsed) {
-            authenticated.push(parsed);
+            authenticated.push(parsed.with_first_packet_digest(first_packet_digest));
         }
     }
     match authenticated.len() {
@@ -750,6 +754,7 @@ where
         .read_exact(&mut block)
         .await
         .context("stealth client handshake failed")?;
+    let first_packet_digest = first_packet_digest(&[&block]);
     let mut matched = None;
     let mut matches = 0_usize;
     let now = unix_now()?;
@@ -770,7 +775,7 @@ where
                 }
                 matches += 1;
                 if matched.is_none() {
-                    matched = Some((parsed, index));
+                    matched = Some((parsed.with_first_packet_digest(first_packet_digest), index));
                 }
             }
         }
@@ -824,7 +829,15 @@ fn parse_stealth_client_hello(
         auth_key,
         fixed_body,
         body,
+        first_packet_digest: [0_u8; 32],
     })
+}
+
+impl ParsedClientHello {
+    fn with_first_packet_digest(mut self, digest: [u8; 32]) -> Self {
+        self.first_packet_digest = digest;
+        self
+    }
 }
 
 fn client_hello_authenticates(client_hello: &ParsedClientHello) -> bool {
@@ -863,12 +876,21 @@ async fn verify_client_hello(
 
     let client_public_bytes = slice_32(&client_hello.fixed_body[32..64])?;
     if let Some(replay) = replay {
-        replay
-            .lock()
-            .await
-            .check_and_insert(now, client_public_bytes)?;
+        let mut replay = replay.lock().await;
+        replay.check_and_insert_first_packet_digest(now, client_hello.first_packet_digest)?;
+        replay.check_and_insert_ephemeral_public_key(now, client_public_bytes)?;
     }
     Ok(())
+}
+
+fn first_packet_digest(chunks: &[&[u8]]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(b"espejismo v1 first-packet replay digest");
+    for chunk in chunks {
+        hasher.update((chunk.len() as u64).to_be_bytes());
+        hasher.update(chunk);
+    }
+    hasher.finalize().into()
 }
 
 fn stealth_client_padding_cap(cfg: &HandshakeConfig, frame_size: usize) -> Result<usize> {
@@ -1279,8 +1301,9 @@ fn unix_now() -> Result<i64> {
 #[cfg(test)]
 mod tests {
     use super::{
-        accept_handshake, accept_handshake_with_users, connect_handshake, parse_plain_client_hello,
-        HandshakeConfig, HandshakeUser, HandshakeWindow, SERVER_HELLO_LEN,
+        accept_handshake, accept_handshake_with_replay, accept_handshake_with_users,
+        connect_handshake, parse_plain_client_hello, HandshakeConfig, HandshakeUser,
+        HandshakeWindow, SERVER_HELLO_LEN, STEALTH_HANDSHAKE_NONCE_LEN,
         VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
     };
     use crate::config::MuxMode;
@@ -1460,6 +1483,74 @@ mod tests {
         client.write_all(&envelope).await.unwrap();
         drop(client);
         assert!(server_task.await.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn server_rejects_replayed_plain_first_packet_digest() {
+        let cfg = HandshakeConfig::new(b"first-packet-secret-long-enough".to_vec(), 30, 128, 0);
+        let auth_key = cfg.client_auth_key().unwrap();
+        let secret = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let hello =
+            super::build_client_hello(&cfg, &secret, cfg.max_handshake_padding, &auth_key).unwrap();
+        let envelope = super::mask_variable_handshake_envelope(
+            &auth_key,
+            b"plain-client",
+            &[],
+            &hello.wire,
+            VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+        )
+        .unwrap();
+        let replay = Arc::new(Mutex::new(ReplayCache::new(60)));
+
+        let (mut client_a, mut server_a) = duplex(4096);
+        client_a.write_all(&envelope).await.unwrap();
+        accept_handshake_with_replay(&mut server_a, &cfg, replay.clone())
+            .await
+            .unwrap();
+
+        let (mut client_b, mut server_b) = duplex(4096);
+        client_b.write_all(&envelope).await.unwrap();
+        let err = match accept_handshake_with_replay(&mut server_b, &cfg, replay).await {
+            Ok(_) => panic!("replayed first packet should fail"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("first packet"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn server_rejects_replayed_stealth_first_packet_digest() {
+        let frame_size = 4096;
+        let cfg = HandshakeConfig::new(b"first-packet-stealth-secret-long".to_vec(), 30, 128, 0)
+            .with_stealth_frame_size(Some(frame_size));
+        let auth_key = cfg.client_auth_key().unwrap();
+        let secret = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let max_padding = super::stealth_client_padding_cap(&cfg, frame_size).unwrap();
+        let hello = super::build_client_hello(&cfg, &secret, max_padding, &auth_key).unwrap();
+        let block = super::mask_stealth_handshake_block(
+            &auth_key,
+            b"client-hello",
+            &[],
+            &hello.wire,
+            frame_size,
+        )
+        .unwrap();
+        assert_eq!(block.len(), frame_size);
+        assert!(block.len() > STEALTH_HANDSHAKE_NONCE_LEN);
+        let replay = Arc::new(Mutex::new(ReplayCache::new(60)));
+
+        let (mut client_a, mut server_a) = duplex(8192);
+        client_a.write_all(&block).await.unwrap();
+        accept_handshake_with_replay(&mut server_a, &cfg, replay.clone())
+            .await
+            .unwrap();
+
+        let (mut client_b, mut server_b) = duplex(8192);
+        client_b.write_all(&block).await.unwrap();
+        let err = match accept_handshake_with_replay(&mut server_b, &cfg, replay).await {
+            Ok(_) => panic!("replayed stealth first packet should fail"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("first packet"), "{err}");
     }
 
     #[tokio::test]
