@@ -100,6 +100,24 @@ impl ChunkPolicy {
     }
 }
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StealthShaperMode {
+    #[default]
+    Web,
+    Stream,
+    Custom,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StealthIdleNoise {
+    Off,
+    Uniform,
+    #[default]
+    Poisson,
+}
+
 #[derive(Clone, Debug)]
 pub struct FrameOptions {
     pub max_padding: usize,
@@ -115,6 +133,13 @@ pub struct FrameOptions {
     pub stealth_frame_size: usize,
     pub stealth_frame_size_candidates: Vec<usize>,
     pub stealth_tick_ms: u64,
+    pub stealth_shaper_enabled: bool,
+    pub stealth_shaper_mode: StealthShaperMode,
+    pub stealth_idle_noise: StealthIdleNoise,
+    pub stealth_padding_budget_bps: u64,
+    pub stealth_min_delay_ms: u64,
+    pub stealth_max_delay_ms: u64,
+    pub stealth_idle_max_delay_ms: u64,
     pub pacing_enabled: bool,
     pub pacing_max_bytes_per_sec: u64,
     pub pacing_burst_bytes: usize,
@@ -140,6 +165,13 @@ impl Default for FrameOptions {
             stealth_frame_size: DEFAULT_STEALTH_FRAME_SIZE,
             stealth_frame_size_candidates: Vec::new(),
             stealth_tick_ms: DEFAULT_STEALTH_TICK_MS,
+            stealth_shaper_enabled: false,
+            stealth_shaper_mode: StealthShaperMode::Web,
+            stealth_idle_noise: StealthIdleNoise::Poisson,
+            stealth_padding_budget_bps: 0,
+            stealth_min_delay_ms: DEFAULT_STEALTH_TICK_MS,
+            stealth_max_delay_ms: DEFAULT_STEALTH_TICK_MS * 2,
+            stealth_idle_max_delay_ms: 1000,
             pacing_enabled: true,
             pacing_max_bytes_per_sec: 0,
             pacing_burst_bytes: 64 * 1024,

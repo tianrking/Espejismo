@@ -260,3 +260,15 @@ pub(super) fn default_stealth_tick_ms() -> u64 {
 pub(super) fn default_stealth_frame_size_candidates() -> Vec<usize> {
     Vec::new()
 }
+
+pub(super) fn default_stealth_shaper_min_delay_ms() -> u64 {
+    20
+}
+
+pub(super) fn default_stealth_shaper_max_delay_ms() -> u64 {
+    80
+}
+
+pub(super) fn default_stealth_shaper_idle_max_delay_ms() -> u64 {
+    1000
+}

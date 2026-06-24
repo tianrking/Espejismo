@@ -6,7 +6,9 @@ use serde::{Deserialize, Serialize};
 use super::defaults::*;
 use crate::egress::EgressPolicy;
 use crate::ingress::ProxyAuth;
-use crate::protocol::framing::{ChunkPolicy, FrameOptions, ObfuscationProfile};
+use crate::protocol::framing::{
+    ChunkPolicy, FrameOptions, ObfuscationProfile, StealthIdleNoise, StealthShaperMode,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct ConfigInput {
@@ -76,6 +78,8 @@ pub struct SharedConfig {
     pub obfuscation: ObfuscationConfig,
     #[serde(default)]
     pub stealth: StealthConfig,
+    #[serde(default)]
+    pub stealth_shaper: StealthShaperConfig,
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
@@ -178,6 +182,13 @@ impl SharedConfig {
             stealth_frame_size: self.stealth.frame_size,
             stealth_frame_size_candidates: self.stealth.frame_size_candidates.clone(),
             stealth_tick_ms: self.stealth.tick_ms,
+            stealth_shaper_enabled: self.stealth_shaper.enabled,
+            stealth_shaper_mode: self.stealth_shaper.mode,
+            stealth_idle_noise: self.stealth_shaper.idle_noise,
+            stealth_padding_budget_bps: self.stealth_shaper.padding_budget_bps,
+            stealth_min_delay_ms: self.stealth_shaper.min_delay_ms,
+            stealth_max_delay_ms: self.stealth_shaper.max_delay_ms,
+            stealth_idle_max_delay_ms: self.stealth_shaper.idle_max_delay_ms,
             pacing_enabled: self.pacing.enabled,
             pacing_max_bytes_per_sec: self.pacing.max_bytes_per_sec,
             pacing_burst_bytes: self.pacing.burst_bytes,
@@ -223,6 +234,24 @@ pub struct StealthConfig {
     pub frame_size_candidates: Vec<usize>,
     #[serde(default = "default_stealth_tick_ms")]
     pub tick_ms: u64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct StealthShaperConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default)]
+    pub mode: StealthShaperMode,
+    #[serde(default)]
+    pub idle_noise: StealthIdleNoise,
+    #[serde(default)]
+    pub padding_budget_bps: u64,
+    #[serde(default = "default_stealth_shaper_min_delay_ms")]
+    pub min_delay_ms: u64,
+    #[serde(default = "default_stealth_shaper_max_delay_ms")]
+    pub max_delay_ms: u64,
+    #[serde(default = "default_stealth_shaper_idle_max_delay_ms")]
+    pub idle_max_delay_ms: u64,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -453,6 +482,7 @@ impl Default for SharedConfig {
             pacing: PacingConfig::default(),
             obfuscation: ObfuscationConfig::default(),
             stealth: StealthConfig::default(),
+            stealth_shaper: StealthShaperConfig::default(),
         }
     }
 }
@@ -511,6 +541,20 @@ impl Default for StealthConfig {
             frame_size: default_stealth_frame_size(),
             frame_size_candidates: default_stealth_frame_size_candidates(),
             tick_ms: default_stealth_tick_ms(),
+        }
+    }
+}
+
+impl Default for StealthShaperConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            mode: StealthShaperMode::default(),
+            idle_noise: StealthIdleNoise::default(),
+            padding_budget_bps: 0,
+            min_delay_ms: default_stealth_shaper_min_delay_ms(),
+            max_delay_ms: default_stealth_shaper_max_delay_ms(),
+            idle_max_delay_ms: default_stealth_shaper_idle_max_delay_ms(),
         }
     }
 }

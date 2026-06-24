@@ -83,7 +83,9 @@ Current release target: `v0.1.2`.
   encrypted frame-level `KEY_UPDATE` traffic-key rotation.
 - HKDF-derived masked frame length headers.
 - Stealth obfuscation profile with fixed-size encrypted frames, masked
-  handshake blocks, padding warmup, paced writes, and idle cadence decay.
+  handshake blocks, padding warmup, paced writes, idle cadence decay, and
+  optional `shared.stealth_shaper` controls for budgeted idle padding plus
+  uniform or Poisson timing noise.
 - SHA-256 client puzzle before HMAC verification.
 - Bounded replay cache for authenticated first-packet digests and ephemeral
   public keys.

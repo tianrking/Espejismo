@@ -7,6 +7,8 @@
 - First-packet replay digest hardening: the server now records the authenticated
   outer client handshake packet digest in the replay cache before sending any
   response, closing the same-window exact-replay gap.
+- Configurable stealth shaper controls for budgeted idle padding and less
+  regular stealth timing through `[shared.stealth_shaper]`.
 - `espejismo-bench-http`, a small Rust HTTP download source and upload discard
   sink for throughput testing without Python HTTP server overhead.
 - Repeated-round throughput harness aggregation with per-test median, mean,

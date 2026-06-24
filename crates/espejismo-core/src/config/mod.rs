@@ -242,6 +242,22 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
             config.shared.stealth.tick_ms > 0,
             "shared.stealth.tick_ms must be greater than 0"
         );
+        if config.shared.stealth_shaper.enabled {
+            anyhow::ensure!(
+                config.shared.stealth_shaper.min_delay_ms > 0,
+                "shared.stealth_shaper.min_delay_ms must be greater than 0 when stealth shaper is enabled"
+            );
+            anyhow::ensure!(
+                config.shared.stealth_shaper.max_delay_ms
+                    >= config.shared.stealth_shaper.min_delay_ms,
+                "shared.stealth_shaper.max_delay_ms must be >= min_delay_ms"
+            );
+            anyhow::ensure!(
+                config.shared.stealth_shaper.idle_max_delay_ms
+                    >= config.shared.stealth_shaper.max_delay_ms,
+                "shared.stealth_shaper.idle_max_delay_ms must be >= max_delay_ms"
+            );
+        }
     }
     let mut stealth_sizes = std::collections::BTreeSet::new();
     for &frame_size in &config.shared.stealth.frame_size_candidates {
@@ -353,6 +369,14 @@ pub fn apply_named_profile(config: &mut EspejismoConfig, name: &str) -> Result<(
             config.shared.stealth.frame_size = 4096;
             config.shared.stealth.frame_size_candidates = vec![3328, 3584, 4096, 4608];
             config.shared.stealth.tick_ms = 20;
+            config.shared.stealth_shaper.enabled = true;
+            config.shared.stealth_shaper.mode = crate::protocol::framing::StealthShaperMode::Web;
+            config.shared.stealth_shaper.idle_noise =
+                crate::protocol::framing::StealthIdleNoise::Poisson;
+            config.shared.stealth_shaper.padding_budget_bps = 16 * 1024;
+            config.shared.stealth_shaper.min_delay_ms = 20;
+            config.shared.stealth_shaper.max_delay_ms = 80;
+            config.shared.stealth_shaper.idle_max_delay_ms = 1000;
             config.shared.key_update_frames = 8192;
             config.local.handshake_padding = config.local.handshake_padding.max(256);
             config.local.tunnel_pool.min_connections = 1;
@@ -590,6 +614,8 @@ mod tests {
         apply_named_profile(&mut config, "stealth").unwrap();
         assert!(config.shared.obfuscation.profile.is_stealth());
         assert_eq!(config.shared.stealth.frame_size, 4096);
+        assert!(config.shared.stealth_shaper.enabled);
+        assert_eq!(config.shared.stealth_shaper.padding_budget_bps, 16 * 1024);
 
         apply_named_profile(&mut config, "auto-throughput").unwrap();
         assert_eq!(config.shared.obfuscation.max_chunk, 262_127);
@@ -603,6 +629,25 @@ mod tests {
 
         let err = apply_named_profile(&mut config, "unknown").unwrap_err();
         assert!(err.to_string().contains("unknown profile"));
+    }
+
+    #[test]
+    fn rejects_invalid_stealth_shaper_delay_window() {
+        let config = r#"
+            [shared.obfuscation]
+            profile = "stealth"
+
+            [shared.stealth]
+            frame_size = 4096
+
+            [shared.stealth_shaper]
+            enabled = true
+            min_delay_ms = 90
+            max_delay_ms = 30
+            idle_max_delay_ms = 1000
+        "#;
+        let err = parse_config(config).unwrap_err().to_string();
+        assert!(err.contains("stealth_shaper.max_delay_ms"), "{err}");
     }
 
     #[test]

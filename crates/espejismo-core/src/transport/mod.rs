@@ -10,7 +10,9 @@ use tokio::time::{sleep, timeout};
 use tracing::debug;
 
 use crate::crypto::SessionKeys;
-use crate::protocol::framing::{Frame, FrameOptions, FrameReader, FrameType, FrameWriter};
+use crate::protocol::framing::{
+    Frame, FrameOptions, FrameReader, FrameType, FrameWriter, StealthIdleNoise, StealthShaperMode,
+};
 
 const STEALTH_WARMUP_MIN_FRAMES: usize = 2;
 const STEALTH_WARMUP_MAX_FRAMES: usize = 5;
@@ -256,10 +258,16 @@ where
     let mut data_frames = 0_u64;
     let mut padding_frames = 0_u64;
     let mut bytes = 0_u64;
+    let mut padding_budget = StealthPaddingBudget::new(&options);
 
     let warmup_frames =
         rand::thread_rng().gen_range(STEALTH_WARMUP_MIN_FRAMES..=STEALTH_WARMUP_MAX_FRAMES);
     for _ in 0..warmup_frames {
+        if !padding_budget.allow(options.stealth_frame_size) {
+            sleep(stealth_tick_delay(&options, idle_frames)).await;
+            idle_frames = idle_frames.saturating_add(1);
+            continue;
+        }
         stealth_pre_write_delay(&options).await;
         frame_writer
             .send(Frame {
@@ -310,7 +318,7 @@ where
                         "perf encrypted stealth upload pump completed"
                     );
                     return Ok(());
-                } else {
+                } else if padding_budget.allow(options.stealth_frame_size) {
                     frame_writer
                         .send(Frame {
                             ty: FrameType::Padding,
@@ -319,6 +327,8 @@ where
                     .await?;
                     padding_frames = padding_frames.saturating_add(1);
                     idle_frames = idle_frames.saturating_add(1);
+                } else {
+                    idle_frames = idle_frames.saturating_add(1);
                 }
             }
         }
@@ -326,6 +336,9 @@ where
 }
 
 fn stealth_tick_delay(options: &FrameOptions, idle_frames: u64) -> Duration {
+    if options.stealth_shaper_enabled {
+        return stealth_shaped_tick_delay(options, idle_frames);
+    }
     let base = options.stealth_tick_ms.max(1);
     let multiplier = match idle_frames / STEALTH_IDLE_DECAY_FRAMES {
         0 => 1,
@@ -339,11 +352,105 @@ fn stealth_tick_delay(options: &FrameOptions, idle_frames: u64) -> Duration {
     Duration::from_millis(rand::thread_rng().gen_range(lower..=upper))
 }
 
+fn stealth_shaped_tick_delay(options: &FrameOptions, idle_frames: u64) -> Duration {
+    let min_delay = options.stealth_min_delay_ms.max(1);
+    let max_delay = options.stealth_max_delay_ms.max(min_delay);
+    let idle_max = options.stealth_idle_max_delay_ms.max(max_delay);
+    let (lower, upper) = match options.stealth_shaper_mode {
+        StealthShaperMode::Web => {
+            let multiplier = match idle_frames / STEALTH_IDLE_DECAY_FRAMES {
+                0 => 1,
+                1 => 2,
+                2 => 5,
+                _ => 10,
+            };
+            (
+                min_delay.saturating_mul(multiplier).min(idle_max),
+                max_delay.saturating_mul(multiplier).min(idle_max),
+            )
+        }
+        StealthShaperMode::Stream | StealthShaperMode::Custom => (min_delay, max_delay),
+    };
+    let upper = upper.max(lower);
+    if lower == upper {
+        return Duration::from_millis(lower);
+    }
+    match options.stealth_idle_noise {
+        StealthIdleNoise::Off => Duration::from_millis((lower + upper) / 2),
+        StealthIdleNoise::Uniform => {
+            Duration::from_millis(rand::thread_rng().gen_range(lower..=upper))
+        }
+        StealthIdleNoise::Poisson => {
+            let mean = ((lower + upper) / 2).max(1) as f64;
+            let u: f64 = rand::thread_rng().gen_range(0.000_001..1.0);
+            let sampled = (-u.ln() * mean).round() as u64;
+            Duration::from_millis(sampled.clamp(lower, upper))
+        }
+    }
+}
+
 async fn stealth_pre_write_delay(options: &FrameOptions) {
-    let upper = (options.stealth_tick_ms / 5).clamp(1, 10);
+    let base = if options.stealth_shaper_enabled {
+        options.stealth_min_delay_ms
+    } else {
+        options.stealth_tick_ms
+    };
+    let upper = (base / 5).clamp(1, 10);
     let delay = rand::thread_rng().gen_range(0..=upper);
     if delay > 0 {
         sleep(Duration::from_millis(delay)).await;
+    }
+}
+
+#[derive(Debug)]
+struct StealthPaddingBudget {
+    enabled: bool,
+    bytes_per_sec: u64,
+    tokens: f64,
+    burst: f64,
+    last_refill: Instant,
+}
+
+impl StealthPaddingBudget {
+    fn new(options: &FrameOptions) -> Self {
+        let frame_size = options.stealth_frame_size.max(1) as u64;
+        let bytes_per_sec = options.stealth_padding_budget_bps;
+        let burst = if bytes_per_sec == 0 {
+            0.0
+        } else {
+            bytes_per_sec.max(frame_size.saturating_mul(2)) as f64
+        };
+        Self {
+            enabled: options.stealth_shaper_enabled,
+            bytes_per_sec,
+            tokens: burst,
+            burst,
+            last_refill: Instant::now(),
+        }
+    }
+
+    fn allow(&mut self, bytes: usize) -> bool {
+        if !self.enabled {
+            return true;
+        }
+        if self.bytes_per_sec == 0 {
+            return false;
+        }
+        self.refill();
+        let bytes = bytes as f64;
+        if self.tokens < bytes {
+            return false;
+        }
+        self.tokens -= bytes;
+        true
+    }
+
+    fn refill(&mut self) {
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(self.last_refill);
+        self.last_refill = now;
+        let refill = elapsed.as_secs_f64() * self.bytes_per_sec as f64;
+        self.tokens = (self.tokens + refill).min(self.burst);
     }
 }
 
@@ -403,9 +510,45 @@ fn throughput_bps(bytes: u64, elapsed: Duration) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::idle_copy_bidirectional;
+    use super::{idle_copy_bidirectional, stealth_tick_delay, StealthPaddingBudget};
+    use crate::protocol::framing::{
+        FrameOptions, StealthIdleNoise, StealthShaperMode, DEFAULT_STEALTH_FRAME_SIZE,
+    };
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
     use tokio::time::Duration;
+
+    #[test]
+    fn stealth_padding_budget_limits_idle_padding_when_enabled() {
+        let options = FrameOptions {
+            stealth_shaper_enabled: true,
+            stealth_padding_budget_bps: DEFAULT_STEALTH_FRAME_SIZE as u64,
+            stealth_frame_size: DEFAULT_STEALTH_FRAME_SIZE,
+            ..FrameOptions::default()
+        };
+        let mut budget = StealthPaddingBudget::new(&options);
+
+        assert!(budget.allow(DEFAULT_STEALTH_FRAME_SIZE));
+        assert!(budget.allow(DEFAULT_STEALTH_FRAME_SIZE));
+        assert!(!budget.allow(DEFAULT_STEALTH_FRAME_SIZE));
+    }
+
+    #[test]
+    fn stealth_stream_shaper_delay_stays_in_configured_range() {
+        let options = FrameOptions {
+            stealth_shaper_enabled: true,
+            stealth_shaper_mode: StealthShaperMode::Stream,
+            stealth_idle_noise: StealthIdleNoise::Uniform,
+            stealth_min_delay_ms: 17,
+            stealth_max_delay_ms: 23,
+            ..FrameOptions::default()
+        };
+
+        for _ in 0..64 {
+            let delay = stealth_tick_delay(&options, 128);
+            assert!(delay >= Duration::from_millis(17), "{delay:?}");
+            assert!(delay <= Duration::from_millis(23), "{delay:?}");
+        }
+    }
 
     #[tokio::test]
     async fn idle_copy_bidirectional_exits_after_idle_timeout() {

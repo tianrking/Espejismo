@@ -191,6 +191,10 @@ writer MAY send a short random padding warmup after handshake completion. During
 idle periods, the writer SHOULD decay toward a slower heartbeat-like cadence;
 active payload SHOULD reset the cadence.
 
+`shared.stealth_shaper` optionally changes the idle padding budget and timing
+model. It does not alter the encrypted frame format and does not rate-limit
+real DATA payloads.
+
 `selected_stealth_frame_size` is chosen per authenticated session. If
 `shared.stealth.frame_size_candidates` is empty, the transport uses
 `shared.stealth.frame_size`. Otherwise both peers deterministically select one

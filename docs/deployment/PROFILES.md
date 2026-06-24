@@ -21,7 +21,8 @@ Available profiles:
 - `low-latency`: smaller chunks, TCP_NODELAY, tighter pacing, and fewer lanes
   for interactive requests.
 - `stealth`: fixed-size stealth frames, per-session frame-size diversification
-  candidates, modest jitter, and more frequent frame key updates.
+  candidates, modest jitter, budgeted idle padding, Poisson idle timing, and
+  more frequent frame key updates.
 - `server-safe`: conservative remote defaults with private-IP denial, common
   web ports, capped stream/connection limits, and bounded tarpit pressure.
 
@@ -33,6 +34,23 @@ local and remote, run `scripts/bench-throughput.sh` for several rounds, and then
 copy only the proven knobs into the real deployment config. Keep `stealth` as
 the censorship-resistance default when packet shape matters more than raw bulk
 throughput.
+
+For stealth deployments, the built-in profile enables:
+
+```toml
+[shared.stealth_shaper]
+enabled = true
+mode = "web"
+idle_noise = "poisson"
+padding_budget_bps = 16384
+min_delay_ms = 20
+max_delay_ms = 80
+idle_max_delay_ms = 1000
+```
+
+Increase `padding_budget_bps` only after measuring the extra traffic cost. Use
+`mode = "stream"` for long-lived media-like flows where steadier timing is more
+important than idle quietness.
 
 ## Client Import Profiles
 

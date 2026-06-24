@@ -205,6 +205,39 @@ authenticated session picks one data frame size deterministically.
 
 `tick_ms`: Base stealth pacing tick.
 
+### shared.stealth_shaper
+
+Optional traffic shaper for `profile = "stealth"`. It is disabled by default
+unless the built-in `--profile stealth` overlay is applied.
+
+```toml
+[shared.stealth_shaper]
+enabled = true
+mode = "web"
+idle_noise = "poisson"
+padding_budget_bps = 16384
+min_delay_ms = 20
+max_delay_ms = 80
+idle_max_delay_ms = 1000
+```
+
+`enabled`: Enable stealth idle-padding budget and shaped tick timing.
+
+`mode`: `web`, `stream`, or `custom`. `web` slows the idle cadence as a
+connection stays quiet. `stream` keeps a tighter steady cadence. `custom` uses
+the configured delay window without idle decay.
+
+`idle_noise`: `off`, `uniform`, or `poisson`. `poisson` is the default for
+less regular idle timing.
+
+`padding_budget_bps`: Maximum idle padding bytes per second. `0` disables idle
+padding while the shaper is enabled. Real data frames are never charged against
+this budget.
+
+`min_delay_ms` / `max_delay_ms`: Active stealth tick delay range.
+
+`idle_max_delay_ms`: Upper bound after `web` idle decay.
+
 ### local
 
 `server`: Remote endpoint in `host:port` form.

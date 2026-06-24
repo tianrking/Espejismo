@@ -93,6 +93,11 @@ warmup after handshake completion, then emits data or padding on a paced
 schedule. Idle padding decays toward slower heartbeat-like intervals and active
 payload resets the cadence.
 
+When `[shared.stealth_shaper].enabled = true`, idle padding is token-budgeted
+and the stealth tick is sampled from the configured timing model. This applies
+only to padding and cadence decisions; real DATA frames are not charged against
+the idle padding budget.
+
 `selected_stealth_frame_size` is resolved per authenticated session. If
 `shared.stealth.frame_size_candidates` is empty, transport uses
 `shared.stealth.frame_size`. Otherwise the session key material deterministically
