@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.1.3
+
+`v0.1.3` is a transport-mode and benchmark release for the `v0.1.x` line.
 
 ### Added
 
@@ -29,6 +31,8 @@
 - `--profile auto-throughput` for measured high-BDP TCP paths, using the exact
   normal-frame payload cap, larger buffers/windows, a lower HTTP bulk threshold,
   and a wider bulk-lane pool.
+- `docs/testing/V0.1.3_HK2_RK_MODE_MATRIX.md` with real HK2/RK measurements
+  for TCP, stealth, WebSocket, HTTP/2, and port hopping modes.
 
 ### Changed
 
@@ -44,6 +48,10 @@
 - HTTP proxy requests with a known `Content-Length` now forward exactly that
   request body and then switch to response copy, avoiding upload stalls when
   clients keep the HTTP connection open while waiting for a response.
+- HTTP/2 underlay now exposes configurable stream window, connection window,
+  and frame-size settings. The HK2/RK benchmark moved from failed 2-10 Mbit/s
+  h2 proxy runs to successful 55-85 Mbit/s download and 75/239 Mbit/s upload
+  runs with the v0.1.3 defaults.
 
 ## v0.1.2
 

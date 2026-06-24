@@ -296,6 +296,12 @@ pub struct Http2UnderlayConfig {
     pub path: String,
     #[serde(default)]
     pub authority: Option<String>,
+    #[serde(default = "default_http2_initial_stream_window_bytes")]
+    pub initial_stream_window_bytes: u32,
+    #[serde(default = "default_http2_initial_connection_window_bytes")]
+    pub initial_connection_window_bytes: u32,
+    #[serde(default = "default_http2_max_frame_bytes")]
+    pub max_frame_bytes: u32,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -659,6 +665,19 @@ impl Default for Http2UnderlayConfig {
         Self {
             path: default_http2_path(),
             authority: None,
+            initial_stream_window_bytes: default_http2_initial_stream_window_bytes(),
+            initial_connection_window_bytes: default_http2_initial_connection_window_bytes(),
+            max_frame_bytes: default_http2_max_frame_bytes(),
+        }
+    }
+}
+
+impl From<&Http2UnderlayConfig> for crate::underlay::Http2UnderlayOptions {
+    fn from(value: &Http2UnderlayConfig) -> Self {
+        Self {
+            initial_stream_window_bytes: value.initial_stream_window_bytes,
+            initial_connection_window_bytes: value.initial_connection_window_bytes,
+            max_frame_bytes: value.max_frame_bytes,
         }
     }
 }

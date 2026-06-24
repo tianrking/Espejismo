@@ -444,6 +444,7 @@ async fn probe_remote_handshake(runtime: &LocalRuntime) -> Result<()> {
                     upstream,
                     &authority,
                     &runtime.underlay.http2.path,
+                    (&runtime.underlay.http2).into(),
                 )
                 .await?,
             )

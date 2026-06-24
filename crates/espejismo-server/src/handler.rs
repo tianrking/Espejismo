@@ -47,7 +47,12 @@ pub(crate) async fn handle_peer(
     if settings.underlay.mode == UnderlayMode::Http2
         && should_accept_http2(&mut inbound, &settings).await?
     {
-        let http2 = accept_http2_underlay(inbound, &settings.underlay.http2.path).await?;
+        let http2 = accept_http2_underlay(
+            inbound,
+            &settings.underlay.http2.path,
+            (&settings.underlay.http2).into(),
+        )
+        .await?;
         return handle_websocket_peer(http2, runtime, settings, replay, metrics).await;
     }
 

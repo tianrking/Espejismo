@@ -555,9 +555,13 @@ impl TransportConnector for TcpTransportConnector {
                         .authority
                         .clone()
                         .unwrap_or_else(|| target.endpoint.clone());
-                    let stream =
-                        connect_http2_underlay(stream, &authority, &self.underlay.http2.path)
-                            .await?;
+                    let stream = connect_http2_underlay(
+                        stream,
+                        &authority,
+                        &self.underlay.http2.path,
+                        (&self.underlay.http2).into(),
+                    )
+                    .await?;
                     Ok(Box::new(stream) as Box<dyn espejismo_core::TransportStream>)
                 }
             }

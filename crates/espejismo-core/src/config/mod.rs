@@ -291,6 +291,22 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
             config.shared.underlay.http2.path.starts_with('/'),
             "shared.underlay.http2.path must start with '/'"
         );
+        anyhow::ensure!(
+            config.shared.underlay.http2.initial_stream_window_bytes >= 65_535,
+            "shared.underlay.http2.initial_stream_window_bytes must be >= 65535"
+        );
+        anyhow::ensure!(
+            config.shared
+                .underlay
+                .http2
+                .initial_connection_window_bytes
+                >= config.shared.underlay.http2.initial_stream_window_bytes,
+            "shared.underlay.http2.initial_connection_window_bytes must be >= initial_stream_window_bytes"
+        );
+        anyhow::ensure!(
+            (16_384..=16_777_215).contains(&config.shared.underlay.http2.max_frame_bytes),
+            "shared.underlay.http2.max_frame_bytes must be between 16384 and 16777215"
+        );
     }
     if config.shared.port_hopping.enabled {
         anyhow::ensure!(

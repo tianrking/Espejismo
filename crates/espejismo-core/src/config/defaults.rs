@@ -281,6 +281,18 @@ pub(super) fn default_http2_path() -> String {
     "/espejismo".to_string()
 }
 
+pub(super) fn default_http2_initial_stream_window_bytes() -> u32 {
+    8 * 1024 * 1024
+}
+
+pub(super) fn default_http2_initial_connection_window_bytes() -> u32 {
+    16 * 1024 * 1024
+}
+
+pub(super) fn default_http2_max_frame_bytes() -> u32 {
+    64 * 1024
+}
+
 pub(super) fn default_port_hopping_window_secs() -> u64 {
     300
 }

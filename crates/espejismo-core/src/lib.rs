@@ -63,6 +63,6 @@ pub use transport::{
 pub use underlay::{
     accept_http2_underlay, accept_websocket_underlay, connect_http2_underlay,
     connect_websocket_underlay, default_websocket_max_frame_bytes, http2_preface_matches,
-    websocket_upgrade_header_matches, WebSocketRole, HTTP2_PREFACE,
+    websocket_upgrade_header_matches, Http2UnderlayOptions, WebSocketRole, HTTP2_PREFACE,
 };
 pub use updater::{check_for_update, default_release_url, UpdateInfo};

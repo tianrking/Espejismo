@@ -1,6 +1,6 @@
 # Implementation Status
 
-Current release target: `v0.1.2`.
+Current release target: `v0.1.3`.
 
 ## Implemented
 

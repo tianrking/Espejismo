@@ -254,6 +254,9 @@ max_frame_bytes = 1048576
 
 [shared.underlay.http2]
 path = "/espejismo"
+initial_stream_window_bytes = 8388608
+initial_connection_window_bytes = 16777216
+max_frame_bytes = 65536
 # authority = "example.com"
 ```
 
@@ -272,6 +275,15 @@ the configured `local.server` authority.
 use the configured `local.server` authority. The HTTP/2 underlay uses cleartext
 prior-knowledge h2 on the configured TCP endpoint; put it behind TLS/ALPN at a
 reverse proxy if you need browser-like public HTTPS termination.
+
+`http2.initial_stream_window_bytes`: Per-stream HTTP/2 flow-control window.
+Use at least `8388608` for high-latency throughput tests.
+
+`http2.initial_connection_window_bytes`: Connection-level HTTP/2 flow-control
+window. It must be greater than or equal to `initial_stream_window_bytes`.
+
+`http2.max_frame_bytes`: Maximum HTTP/2 frame payload. Valid range is `16384`
+to `16777215`; `65536` is the v0.1.3 throughput-oriented default.
 
 ### shared.port_hopping
 

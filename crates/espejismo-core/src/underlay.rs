@@ -14,6 +14,23 @@ const IO_BUFFER: usize = 16 * 1024;
 const DEFAULT_WEBSOCKET_MAX_FRAME: usize = 1024 * 1024;
 pub const HTTP2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
+#[derive(Clone, Copy, Debug)]
+pub struct Http2UnderlayOptions {
+    pub initial_stream_window_bytes: u32,
+    pub initial_connection_window_bytes: u32,
+    pub max_frame_bytes: u32,
+}
+
+impl Default for Http2UnderlayOptions {
+    fn default() -> Self {
+        Self {
+            initial_stream_window_bytes: 8 * 1024 * 1024,
+            initial_connection_window_bytes: 16 * 1024 * 1024,
+            max_frame_bytes: 64 * 1024,
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WebSocketRole {
     Client,
@@ -120,11 +137,17 @@ pub async fn connect_http2_underlay<S>(
     stream: S,
     authority: &str,
     path: &str,
+    options: Http2UnderlayOptions,
 ) -> Result<DuplexStream>
 where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
-    let (mut client, connection) = h2::client::handshake(stream).await?;
+    let (mut client, connection) = h2::client::Builder::new()
+        .initial_window_size(options.initial_stream_window_bytes)
+        .initial_connection_window_size(options.initial_connection_window_bytes)
+        .max_frame_size(options.max_frame_bytes)
+        .handshake(stream)
+        .await?;
     tokio::spawn(async move {
         if let Err(err) = connection.await {
             debug!(error = %err, "http2 underlay client connection stopped");
@@ -147,11 +170,20 @@ where
     Ok(spawn_http2_io(send_stream, response.into_body()))
 }
 
-pub async fn accept_http2_underlay<S>(stream: S, expected_path: &str) -> Result<DuplexStream>
+pub async fn accept_http2_underlay<S>(
+    stream: S,
+    expected_path: &str,
+    options: Http2UnderlayOptions,
+) -> Result<DuplexStream>
 where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
-    let mut connection = h2::server::handshake(stream).await?;
+    let mut connection = h2::server::Builder::new()
+        .initial_window_size(options.initial_stream_window_bytes)
+        .initial_connection_window_size(options.initial_connection_window_bytes)
+        .max_frame_size(options.max_frame_bytes)
+        .handshake(stream)
+        .await?;
     let Some(request) = connection.accept().await else {
         bail!("http2 underlay connection closed before request");
     };
@@ -559,13 +591,22 @@ mod tests {
     async fn http2_underlay_roundtrips_binary_bytes() {
         let (client, server) = duplex(64 * 1024);
         let server_task = tokio::spawn(async move {
-            super::accept_http2_underlay(server, "/espejismo")
-                .await
-                .unwrap()
-        });
-        let mut client = connect_http2_underlay(client, "example.com", "/espejismo")
+            super::accept_http2_underlay(
+                server,
+                "/espejismo",
+                super::Http2UnderlayOptions::default(),
+            )
             .await
-            .unwrap();
+            .unwrap()
+        });
+        let mut client = connect_http2_underlay(
+            client,
+            "example.com",
+            "/espejismo",
+            super::Http2UnderlayOptions::default(),
+        )
+        .await
+        .unwrap();
         let mut server = server_task.await.unwrap();
 
         client.write_all(b"hello over h2").await.unwrap();
@@ -583,9 +624,13 @@ mod tests {
     async fn http2_underlay_carries_crypto_handshake() {
         let (client, server) = duplex(64 * 1024);
         let server_task = tokio::spawn(async move {
-            let mut server = super::accept_http2_underlay(server, "/espejismo")
-                .await
-                .unwrap();
+            let mut server = super::accept_http2_underlay(
+                server,
+                "/espejismo",
+                super::Http2UnderlayOptions::default(),
+            )
+            .await
+            .unwrap();
             crate::crypto::accept_handshake(
                 &mut server,
                 &crate::crypto::HandshakeConfig::new(
@@ -598,9 +643,14 @@ mod tests {
             .await
             .unwrap()
         });
-        let mut client = connect_http2_underlay(client, "example.com", "/espejismo")
-            .await
-            .unwrap();
+        let mut client = connect_http2_underlay(
+            client,
+            "example.com",
+            "/espejismo",
+            super::Http2UnderlayOptions::default(),
+        )
+        .await
+        .unwrap();
         let client_keys = crate::crypto::connect_handshake(
             &mut client,
             &crate::crypto::HandshakeConfig::new(
