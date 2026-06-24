@@ -150,6 +150,12 @@ async fn handle_http_client_inner(
         let copy_started = Instant::now();
         if let Some(content_length) = target.content_length {
             let remaining = content_length.saturating_sub(target.prebuffer_body_bytes as u64);
+            debug!(
+                content_length,
+                prebuffer_body_bytes = target.prebuffer_body_bytes,
+                remaining_body_bytes = remaining,
+                "HTTP proxy forwarding fixed-length request body"
+            );
             client_to_remote = client_to_remote.saturating_add(
                 copy_exact_request_body(local, &mut stream, remaining, idle).await?,
             );
@@ -236,6 +242,10 @@ where
         writer.write_all(&buf[..n]).await?;
         copied += n as u64;
         remaining -= n as u64;
+        debug!(
+            chunk_bytes = n,
+            copied, remaining, "HTTP proxy request body chunk forwarded"
+        );
     }
     Ok(copied)
 }
