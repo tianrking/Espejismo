@@ -485,11 +485,11 @@ fn lane_score(lane: &TunnelLane) -> u64 {
     lane.health
         .try_lock()
         .map(|health| {
-            let penalty = u64::from(health.last_error.is_some()) * 1_000;
+            let penalty = u64::from(health.last_error.is_some()) * 1_000_000_000;
             let load = health
                 .active_streams
                 .saturating_add(health.pending_stream_opens);
-            load * 10 + health.last_open_latency_ms + penalty
+            load * 1_000_000 + health.last_open_latency_ms + penalty
         })
         .unwrap_or(u64::MAX / 2)
 }
@@ -527,4 +527,35 @@ fn unix_now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{lane_score, LaneHealth, LaneKind, TunnelLane};
+    use tokio::sync::Mutex;
+
+    fn lane_with_health(health: LaneHealth) -> TunnelLane {
+        TunnelLane {
+            id: 0,
+            kind: LaneKind::Bulk,
+            control: Mutex::new(None),
+            connect_lock: Mutex::new(()),
+            health: Mutex::new(health),
+        }
+    }
+
+    #[test]
+    fn lane_score_prefers_idle_lane_over_lower_latency_loaded_lane() {
+        let idle = lane_with_health(LaneHealth {
+            last_open_latency_ms: 500,
+            ..LaneHealth::default()
+        });
+        let loaded = lane_with_health(LaneHealth {
+            pending_stream_opens: 1,
+            last_open_latency_ms: 1,
+            ..LaneHealth::default()
+        });
+
+        assert!(lane_score(&idle) < lane_score(&loaded));
+    }
 }
