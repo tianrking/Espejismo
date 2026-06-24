@@ -4,16 +4,41 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use socket2::{Domain, Protocol, SockAddr, SockRef, Socket, TcpKeepalive, Type};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::{lookup_host, TcpListener, TcpSocket, TcpStream};
 
 use crate::config::TcpConfig;
 
 pub async fn connect_tcp_stream(authority: &str, options: &TcpConfig) -> Result<TcpStream> {
-    let stream = TcpStream::connect(authority)
+    let mut last_error = None;
+    for addr in lookup_host(authority)
         .await
-        .with_context(|| format!("connect {authority}"))?;
-    apply_tcp_options(&stream, options)
-        .with_context(|| format!("apply TCP options to {authority}"))?;
+        .with_context(|| format!("resolve {authority}"))?
+    {
+        match connect_tcp_addr(addr, options).await {
+            Ok(stream) => return Ok(stream),
+            Err(err) => last_error = Some(err),
+        }
+    }
+    match last_error {
+        Some(err) => Err(err).with_context(|| format!("connect {authority}")),
+        None => anyhow::bail!("resolve {authority}: no addresses"),
+    }
+}
+
+async fn connect_tcp_addr(addr: SocketAddr, options: &TcpConfig) -> Result<TcpStream> {
+    let socket = if addr.is_ipv4() {
+        TcpSocket::new_v4()
+    } else {
+        TcpSocket::new_v6()
+    }
+    .with_context(|| format!("create TCP socket {addr}"))?;
+    apply_tcp_socket_options(&socket, options)
+        .with_context(|| format!("apply pre-connect TCP options to {addr}"))?;
+    let stream = socket
+        .connect(addr)
+        .await
+        .with_context(|| format!("connect {addr}"))?;
+    apply_tcp_options(&stream, options).with_context(|| format!("apply TCP options to {addr}"))?;
     Ok(stream)
 }
 
@@ -56,6 +81,20 @@ fn apply_socket_buffer_options(socket: &Socket, options: &TcpConfig) -> io::Resu
     }
     if options.recv_buffer_bytes > 0 {
         socket.set_recv_buffer_size(options.recv_buffer_bytes)?;
+    }
+    Ok(())
+}
+
+fn apply_tcp_socket_options(socket: &TcpSocket, options: &TcpConfig) -> io::Result<()> {
+    socket.set_nodelay(options.nodelay)?;
+    if options.keepalive_secs > 0 {
+        socket.set_keepalive(true)?;
+    }
+    if options.send_buffer_bytes > 0 {
+        socket.set_send_buffer_size(options.send_buffer_bytes as u32)?;
+    }
+    if options.recv_buffer_bytes > 0 {
+        socket.set_recv_buffer_size(options.recv_buffer_bytes as u32)?;
     }
     Ok(())
 }

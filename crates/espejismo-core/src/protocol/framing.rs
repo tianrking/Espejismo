@@ -156,9 +156,6 @@ impl FrameOptions {
             let capacity = self.stealth_payload_capacity().unwrap_or(1);
             return (capacity, capacity);
         }
-        if !self.randomize_chunks {
-            return (DATA_CHUNK, DATA_CHUNK);
-        }
         let stealth_capacity = self
             .stealth_payload_capacity()
             .unwrap_or(DEFAULT_STEALTH_FRAME_SIZE);
@@ -172,6 +169,9 @@ impl FrameOptions {
         };
         let min = requested_min.clamp(1, NORMAL_PAYLOAD_CAPACITY);
         let max = policy_max.clamp(min, NORMAL_PAYLOAD_CAPACITY);
+        if !self.randomize_chunks {
+            return (max, max);
+        }
         (min, max)
     }
 
@@ -743,6 +743,20 @@ mod tests {
             max_chunk: 128 * 1024,
             ..FrameOptions::default()
         };
+        assert_eq!(
+            options.normalized_chunk_bounds(),
+            (NORMAL_PAYLOAD_CAPACITY, NORMAL_PAYLOAD_CAPACITY)
+        );
+    }
+
+    #[test]
+    fn fixed_chunk_bounds_use_selected_policy_max() {
+        let options = FrameOptions {
+            chunk_policy: ChunkPolicy::Bulk,
+            randomize_chunks: false,
+            ..FrameOptions::default()
+        };
+
         assert_eq!(
             options.normalized_chunk_bounds(),
             (NORMAL_PAYLOAD_CAPACITY, NORMAL_PAYLOAD_CAPACITY)

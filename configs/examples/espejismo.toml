@@ -7,7 +7,10 @@ jitter_ms = 0
 padding_chance_percent = 35
 backpressure_threshold_ms = 40
 backpressure_cooldown_ms = 1000
-tunnel_buffer = 1048576
+# Duplex buffer between the mux and the encrypted frame pump. Keep this at
+# least as large as the mux window (shared.mux.native_initial_window_bytes)
+# so the pump never starves the mux under bulk transfer.
+tunnel_buffer = 2097152
 idle_timeout_secs = 300
 max_streams = 256
 max_physical_connections = 1024
@@ -27,13 +30,20 @@ nodelay = true
 keepalive_secs = 30
 heartbeat_secs = 30
 user_timeout_ms = 30000
-send_buffer_bytes = 1048576
-recv_buffer_bytes = 1048576
-# congestion_control = "bbr"
+# Size sockets to the bandwidth-delay product so one lane can fill a high-RTT
+# link. ~2 MiB sustains ~80 Mbit/s at 200 ms RTT; raise for faster links.
+send_buffer_bytes = 2097152
+recv_buffer_bytes = 2097152
+# BBR recovers throughput far better than CUBIC on lossy/long-haul paths.
+# Linux and FreeBSD only (ignored elsewhere); needs the bbr kernel module.
+congestion_control = "bbr"
 
 [shared.mux]
 mode = "yamux"
-native_initial_window_bytes = 1048576
+# Per-stream flow-control window. Per-stream throughput is roughly
+# window / RTT, so high-RTT links need a large window. Now honored by BOTH
+# yamux and native modes. ~2 MiB ~= 80 Mbit/s at 200 ms RTT.
+native_initial_window_bytes = 2097152
 native_stream_buffer_frames = 128
 native_send_queue_frames = 64
 native_idle_timeout_secs = 300
