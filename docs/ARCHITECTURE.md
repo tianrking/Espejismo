@@ -82,6 +82,12 @@ handshake. Espejismo bytes are then carried inside real WebSocket binary frames:
 client-to-server frames are masked, server-to-client frames are unmasked, and
 the encrypted frame codec remains unchanged above the underlay.
 
+When `[shared.underlay].mode = "http2"`, the client uses cleartext HTTP/2
+prior knowledge and opens a POST stream on the configured path. The request
+body carries client-to-remote bytes and the response body carries
+remote-to-client bytes. This keeps the same Espejismo crypto and mux layers
+above a real HTTP/2 stream abstraction.
+
 `spawn_frame_transport` bridges the frame codec into a Tokio `DuplexStream`.
 This gives upper layers a normal `AsyncRead + AsyncWrite` object while keeping
 AEAD, padding, jitter, and fail-fast behavior inside the protocol core.

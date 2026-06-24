@@ -286,6 +286,12 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
             "shared.underlay.websocket.max_frame_bytes must be >= 1024"
         );
     }
+    if config.shared.underlay.mode == crate::config::UnderlayMode::Http2 {
+        anyhow::ensure!(
+            config.shared.underlay.http2.path.starts_with('/'),
+            "shared.underlay.http2.path must start with '/'"
+        );
+    }
     let egress_policy: crate::egress::EgressPolicy = config.remote.egress.clone().into();
     egress_policy.upstream_proxy()?;
     Ok(config)
@@ -671,6 +677,19 @@ mod tests {
         "#;
         let err = parse_config(config).unwrap_err().to_string();
         assert!(err.contains("websocket.path"), "{err}");
+    }
+
+    #[test]
+    fn rejects_invalid_http2_underlay_path() {
+        let config = r#"
+            [shared.underlay]
+            mode = "http2"
+
+            [shared.underlay.http2]
+            path = "espejismo"
+        "#;
+        let err = parse_config(config).unwrap_err().to_string();
+        assert!(err.contains("http2.path"), "{err}");
     }
 
     #[test]

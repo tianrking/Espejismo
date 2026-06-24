@@ -32,9 +32,11 @@ and bounded public-side resource use.
 The default production underlay is TCP. When `[shared.underlay].mode =
 "websocket"`, peers first complete a standard HTTP/1.1 WebSocket Upgrade on the
 configured path, then carry the same Espejismo handshake and encrypted frame
-bytes inside WebSocket binary frames. Multiplexing and transport adapters sit
-above the encrypted frame transport so underlays reuse the same handshake, frame
-codec, request prefaces, and policy layer.
+bytes inside WebSocket binary frames. When `[shared.underlay].mode = "http2"`,
+peers use cleartext HTTP/2 prior knowledge and a POST stream on the configured
+path. Multiplexing and transport adapters sit above the encrypted frame
+transport so underlays reuse the same handshake, frame codec, request prefaces,
+and policy layer.
 
 ## Numeric Encoding
 

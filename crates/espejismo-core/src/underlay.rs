@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use anyhow::{bail, ensure, Context, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use bytes::Bytes;
 use rand::RngCore;
 use sha1::{Digest, Sha1};
 use tokio::io::{duplex, split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
@@ -11,6 +12,7 @@ const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
 const HEADER_LIMIT: usize = 16 * 1024;
 const IO_BUFFER: usize = 16 * 1024;
 const DEFAULT_WEBSOCKET_MAX_FRAME: usize = 1024 * 1024;
+pub const HTTP2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WebSocketRole {
@@ -114,6 +116,67 @@ pub fn websocket_upgrade_header_matches(header: &[u8], expected_path: &str) -> b
         .unwrap_or(false)
 }
 
+pub async fn connect_http2_underlay<S>(
+    stream: S,
+    authority: &str,
+    path: &str,
+) -> Result<DuplexStream>
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    let (mut client, connection) = h2::client::handshake(stream).await?;
+    tokio::spawn(async move {
+        if let Err(err) = connection.await {
+            debug!(error = %err, "http2 underlay client connection stopped");
+        }
+    });
+    let request = http::Request::builder()
+        .method("POST")
+        .uri(path)
+        .header("scheme", "http")
+        .header("authority", authority)
+        .header("content-type", "application/octet-stream")
+        .body(())?;
+    let (response, send_stream) = client.send_request(request, false)?;
+    let response = response.await?;
+    ensure!(
+        response.status().is_success(),
+        "http2 underlay request failed with {}",
+        response.status()
+    );
+    Ok(spawn_http2_io(send_stream, response.into_body()))
+}
+
+pub async fn accept_http2_underlay<S>(stream: S, expected_path: &str) -> Result<DuplexStream>
+where
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+{
+    let mut connection = h2::server::handshake(stream).await?;
+    let Some(request) = connection.accept().await else {
+        bail!("http2 underlay connection closed before request");
+    };
+    let (request, mut respond) = request?;
+    ensure!(
+        request.method() == http::Method::POST && request.uri().path() == expected_path,
+        "invalid http2 underlay request"
+    );
+    let response = http::Response::builder().status(200).body(())?;
+    let send_stream = respond.send_response(response, false)?;
+    tokio::spawn(async move {
+        while let Some(request) = connection.accept().await {
+            if let Err(err) = request {
+                debug!(error = %err, "http2 underlay server connection stopped");
+                break;
+            }
+        }
+    });
+    Ok(spawn_http2_io(send_stream, request.into_body()))
+}
+
+pub fn http2_preface_matches(prefix: &[u8]) -> bool {
+    prefix.starts_with(HTTP2_PREFACE)
+}
+
 fn spawn_websocket_io<S>(stream: S, role: WebSocketRole, max_frame_bytes: usize) -> DuplexStream
 where
     S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
@@ -161,6 +224,63 @@ where
                 }
                 Err(err) => {
                     debug!(error = %err, "websocket app reader stopped");
+                    break;
+                }
+            }
+        }
+    });
+
+    app_stream
+}
+
+fn spawn_http2_io(
+    mut send_stream: h2::SendStream<Bytes>,
+    mut recv_stream: h2::RecvStream,
+) -> DuplexStream {
+    let (app_stream, pump_stream) = duplex(IO_BUFFER * 8);
+    let (mut app_reader, mut app_writer) = split(pump_stream);
+
+    tokio::spawn(async move {
+        loop {
+            match recv_stream.data().await {
+                Some(Ok(chunk)) => {
+                    let len = chunk.len();
+                    if app_writer.write_all(&chunk).await.is_err() {
+                        break;
+                    }
+                    let _ = recv_stream.flow_control().release_capacity(len);
+                }
+                Some(Err(err)) => {
+                    debug!(error = %err, "http2 underlay reader stopped");
+                    let _ = app_writer.shutdown().await;
+                    break;
+                }
+                None => {
+                    let _ = app_writer.shutdown().await;
+                    break;
+                }
+            }
+        }
+    });
+
+    tokio::spawn(async move {
+        let mut buf = vec![0_u8; IO_BUFFER];
+        loop {
+            match app_reader.read(&mut buf).await {
+                Ok(0) => {
+                    let _ = send_stream.send_data(Bytes::new(), true);
+                    break;
+                }
+                Ok(n) => {
+                    if let Err(err) =
+                        send_stream.send_data(Bytes::copy_from_slice(&buf[..n]), false)
+                    {
+                        debug!(error = %err, "http2 underlay writer stopped");
+                        break;
+                    }
+                }
+                Err(err) => {
+                    debug!(error = %err, "http2 app reader stopped");
                     break;
                 }
             }
@@ -344,7 +464,10 @@ pub fn default_websocket_max_frame_bytes() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{connect_websocket_underlay, websocket_accept, websocket_upgrade_header_matches};
+    use super::{
+        connect_http2_underlay, connect_websocket_underlay, http2_preface_matches,
+        websocket_accept, websocket_upgrade_header_matches, HTTP2_PREFACE,
+    };
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
 
     #[test]
@@ -406,6 +529,76 @@ mod tests {
             .unwrap()
         });
         let mut client = connect_websocket_underlay(client, "example.com", "/espejismo", 64 * 1024)
+            .await
+            .unwrap();
+        let client_keys = crate::crypto::connect_handshake(
+            &mut client,
+            &crate::crypto::HandshakeConfig::new(
+                b"test-secret-that-is-long-enough".to_vec(),
+                30,
+                128,
+                4,
+            ),
+        )
+        .await
+        .unwrap();
+        let server_keys = server_task.await.unwrap();
+        assert_eq!(
+            client_keys.stealth_selector(),
+            server_keys.stealth_selector()
+        );
+    }
+
+    #[test]
+    fn http2_preface_matcher_requires_standard_preface() {
+        assert!(http2_preface_matches(HTTP2_PREFACE));
+        assert!(!http2_preface_matches(b"GET / HTTP/1.1\r\n"));
+    }
+
+    #[tokio::test]
+    async fn http2_underlay_roundtrips_binary_bytes() {
+        let (client, server) = duplex(64 * 1024);
+        let server_task = tokio::spawn(async move {
+            super::accept_http2_underlay(server, "/espejismo")
+                .await
+                .unwrap()
+        });
+        let mut client = connect_http2_underlay(client, "example.com", "/espejismo")
+            .await
+            .unwrap();
+        let mut server = server_task.await.unwrap();
+
+        client.write_all(b"hello over h2").await.unwrap();
+        let mut received = vec![0_u8; "hello over h2".len()];
+        server.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, b"hello over h2");
+
+        server.write_all(b"reply").await.unwrap();
+        let mut reply = [0_u8; 5];
+        client.read_exact(&mut reply).await.unwrap();
+        assert_eq!(&reply, b"reply");
+    }
+
+    #[tokio::test]
+    async fn http2_underlay_carries_crypto_handshake() {
+        let (client, server) = duplex(64 * 1024);
+        let server_task = tokio::spawn(async move {
+            let mut server = super::accept_http2_underlay(server, "/espejismo")
+                .await
+                .unwrap();
+            crate::crypto::accept_handshake(
+                &mut server,
+                &crate::crypto::HandshakeConfig::new(
+                    b"test-secret-that-is-long-enough".to_vec(),
+                    30,
+                    128,
+                    4,
+                ),
+            )
+            .await
+            .unwrap()
+        });
+        let mut client = connect_http2_underlay(client, "example.com", "/espejismo")
             .await
             .unwrap();
         let client_keys = crate::crypto::connect_handshake(

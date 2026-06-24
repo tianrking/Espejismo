@@ -245,15 +245,19 @@ raw TCP.
 
 ```toml
 [shared.underlay]
-mode = "websocket"
+mode = "websocket" # tcp, websocket, or http2
 
 [shared.underlay.websocket]
 path = "/espejismo"
 max_frame_bytes = 1048576
 # host = "example.com"
+
+[shared.underlay.http2]
+path = "/espejismo"
+# authority = "example.com"
 ```
 
-`mode`: `tcp` or `websocket`.
+`mode`: `tcp`, `websocket`, or `http2`.
 
 `websocket.path`: HTTP Upgrade request path. Client and server must match.
 
@@ -261,6 +265,13 @@ max_frame_bytes = 1048576
 
 `websocket.host`: Optional client-side Host header override. Leave unset to use
 the configured `local.server` authority.
+
+`http2.path`: HTTP/2 request path. Client and server must match.
+
+`http2.authority`: Optional client-side `:authority` override. Leave unset to
+use the configured `local.server` authority. The HTTP/2 underlay uses cleartext
+prior-knowledge h2 on the configured TCP endpoint; put it behind TLS/ALPN at a
+reverse proxy if you need browser-like public HTTPS termination.
 
 ### local
 

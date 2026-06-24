@@ -429,6 +429,22 @@ async fn probe_remote_handshake(runtime: &LocalRuntime) -> Result<()> {
                 .await?,
             )
         }
+        espejismo_core::UnderlayMode::Http2 => {
+            let authority = runtime
+                .underlay
+                .http2
+                .authority
+                .clone()
+                .unwrap_or_else(|| runtime.server.clone());
+            Box::new(
+                espejismo_core::connect_http2_underlay(
+                    upstream,
+                    &authority,
+                    &runtime.underlay.http2.path,
+                )
+                .await?,
+            )
+        }
     };
     tokio::time::timeout(
         Duration::from_secs(10),

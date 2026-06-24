@@ -276,3 +276,7 @@ pub(super) fn default_stealth_shaper_idle_max_delay_ms() -> u64 {
 pub(super) fn default_websocket_path() -> String {
     "/espejismo".to_string()
 }
+
+pub(super) fn default_http2_path() -> String {
+    "/espejismo".to_string()
+}

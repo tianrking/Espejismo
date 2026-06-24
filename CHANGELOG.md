@@ -20,6 +20,9 @@
 - Optional WebSocket underlay (`[shared.underlay].mode = "websocket"`) for
   carrying the existing Espejismo crypto/mux stream inside real WebSocket binary
   frames.
+- Optional HTTP/2 underlay (`[shared.underlay].mode = "http2"`) using
+  cleartext prior-knowledge h2 streams for the existing Espejismo crypto/mux
+  stream.
 - `--profile auto-throughput` for measured high-BDP TCP paths, using the exact
   normal-frame payload cap, larger buffers/windows, a lower HTTP bulk threshold,
   and a wider bulk-lane pool.

@@ -3,10 +3,10 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use espejismo_core::{
-    accept_handshake_with_users, accept_websocket_underlay, read_tunnel_request,
-    spawn_frame_transport, websocket_upgrade_header_matches, AuthenticatedSession, EgressPolicy,
-    Metrics, ReplayCache, TrafficEvent, TrafficObserver, TransportStream, TunnelRequest,
-    UnderlayMode,
+    accept_handshake_with_users, accept_http2_underlay, accept_websocket_underlay,
+    http2_preface_matches, read_tunnel_request, spawn_frame_transport,
+    websocket_upgrade_header_matches, AuthenticatedSession, EgressPolicy, Metrics, ReplayCache,
+    TrafficEvent, TrafficObserver, TransportStream, TunnelRequest, UnderlayMode,
 };
 use futures::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
@@ -43,6 +43,12 @@ pub(crate) async fn handle_peer(
         )
         .await?;
         return handle_websocket_peer(websocket, runtime, settings, replay, metrics).await;
+    }
+    if settings.underlay.mode == UnderlayMode::Http2
+        && should_accept_http2(&mut inbound, &settings).await?
+    {
+        let http2 = accept_http2_underlay(inbound, &settings.underlay.http2.path).await?;
+        return handle_websocket_peer(http2, runtime, settings, replay, metrics).await;
     }
 
     if should_route_to_http_fallback(&mut inbound, &settings.fallback_http).await? {
@@ -259,6 +265,19 @@ async fn should_accept_websocket(
         &buf[..n],
         &settings.underlay.websocket.path,
     ))
+}
+
+async fn should_accept_http2(
+    stream: &mut TcpStream,
+    settings: &crate::RemoteSettings,
+) -> Result<bool> {
+    let mut buf = vec![0_u8; espejismo_core::HTTP2_PREFACE.len()];
+    let n = match timeout(settings.fallback_http.probe_timeout, stream.peek(&mut buf)).await {
+        Ok(Ok(n)) => n,
+        Ok(Err(err)) => return Err(err.into()),
+        Err(_) => return Ok(false),
+    };
+    Ok(http2_preface_matches(&buf[..n]))
 }
 
 async fn handle_mux_stream(

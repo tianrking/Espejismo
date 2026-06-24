@@ -262,6 +262,8 @@ pub struct UnderlayConfig {
     pub mode: UnderlayMode,
     #[serde(default)]
     pub websocket: WebSocketUnderlayConfig,
+    #[serde(default)]
+    pub http2: Http2UnderlayConfig,
 }
 
 #[derive(Clone, Copy, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
@@ -271,6 +273,8 @@ pub enum UnderlayMode {
     Tcp,
     #[serde(rename = "websocket", alias = "web_socket")]
     WebSocket,
+    #[serde(rename = "http2", alias = "h2")]
+    Http2,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -281,6 +285,14 @@ pub struct WebSocketUnderlayConfig {
     pub max_frame_bytes: usize,
     #[serde(default)]
     pub host: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Http2UnderlayConfig {
+    #[serde(default = "default_http2_path")]
+    pub path: String,
+    #[serde(default)]
+    pub authority: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -594,6 +606,7 @@ impl Default for UnderlayConfig {
         Self {
             mode: UnderlayMode::Tcp,
             websocket: WebSocketUnderlayConfig::default(),
+            http2: Http2UnderlayConfig::default(),
         }
     }
 }
@@ -604,6 +617,15 @@ impl Default for WebSocketUnderlayConfig {
             path: default_websocket_path(),
             max_frame_bytes: crate::underlay::default_websocket_max_frame_bytes(),
             host: None,
+        }
+    }
+}
+
+impl Default for Http2UnderlayConfig {
+    fn default() -> Self {
+        Self {
+            path: default_http2_path(),
+            authority: None,
         }
     }
 }

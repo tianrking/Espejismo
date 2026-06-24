@@ -6,10 +6,10 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use espejismo_core::{
-    connect_handshake, connect_tcp_stream, connect_websocket_underlay, spawn_frame_transport,
-    FrameOptions, HandshakeConfig, Metrics, RuntimeState, StreamPriority, TcpConfig,
-    TransportConnector, TransportTarget, TunnelLaneSnapshot, TunnelPoolConfig, UnderlayConfig,
-    UnderlayMode,
+    connect_handshake, connect_http2_underlay, connect_tcp_stream, connect_websocket_underlay,
+    spawn_frame_transport, FrameOptions, HandshakeConfig, Metrics, RuntimeState, StreamPriority,
+    TcpConfig, TransportConnector, TransportTarget, TunnelLaneSnapshot, TunnelPoolConfig,
+    UnderlayConfig, UnderlayMode,
 };
 use futures::StreamExt;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -529,6 +529,18 @@ impl TransportConnector for TcpTransportConnector {
                         self.underlay.websocket.max_frame_bytes,
                     )
                     .await?;
+                    Ok(Box::new(stream) as Box<dyn espejismo_core::TransportStream>)
+                }
+                UnderlayMode::Http2 => {
+                    let authority = self
+                        .underlay
+                        .http2
+                        .authority
+                        .clone()
+                        .unwrap_or_else(|| target.endpoint.clone());
+                    let stream =
+                        connect_http2_underlay(stream, &authority, &self.underlay.http2.path)
+                            .await?;
                     Ok(Box::new(stream) as Box<dyn espejismo_core::TransportStream>)
                 }
             }

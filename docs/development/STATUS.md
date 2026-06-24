@@ -47,6 +47,9 @@ Current release target: `v0.1.2`.
 - Optional WebSocket physical underlay that performs HTTP/1.1 Upgrade and then
   carries the existing Espejismo crypto/mux stream inside binary WebSocket
   frames.
+- Optional cleartext HTTP/2 prior-knowledge physical underlay that carries the
+  same Espejismo crypto/mux stream inside one bidirectional h2 request/response
+  body pair.
 - Local tunnel pool with configurable interactive and bulk physical TCP lanes,
   health-scored stream placement, per-lane reconnect/error/latency/byte status,
   maximum connection age rotation for new streams, and logical stream muxing
