@@ -38,6 +38,9 @@ For a remote handshake-only check:
 cargo run --bin espejismo-local -- --config ./espejismo.toml --probe-server
 ```
 
+For the live HK2 to RK throughput tuning record, see
+[`THROUGHPUT_TUNING_HK2_RK.md`](./THROUGHPUT_TUNING_HK2_RK.md).
+
 ## Unit Coverage
 
 Current unit tests cover:
