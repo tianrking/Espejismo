@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -62,6 +63,8 @@ struct TunnelLane {
     control: Mutex<Option<MuxControl>>,
     connect_lock: Mutex<()>,
     health: Mutex<LaneHealth>,
+    inflight_client_to_remote: AtomicU64,
+    inflight_remote_to_client: AtomicU64,
 }
 
 pub(crate) struct TunnelManager {
@@ -99,6 +102,8 @@ pub(crate) struct TunnelManagerConfig {
 pub(crate) struct TunnelStream {
     inner: MuxStream,
     lane_id: usize,
+    lane: Arc<TunnelLane>,
+    runtime_state: RuntimeState,
 }
 
 pub(crate) struct MeteredTunnelStream {
@@ -202,7 +207,16 @@ impl AsyncRead for MeteredTunnelStream {
         let result = Pin::new(&mut self.inner).poll_read(cx, buf);
         if let Poll::Ready(Ok(())) = &result {
             let read = buf.filled().len().saturating_sub(before) as u64;
-            self.remote_to_client = self.remote_to_client.saturating_add(read);
+            if read > 0 {
+                self.remote_to_client = self.remote_to_client.saturating_add(read);
+                self.inner
+                    .lane
+                    .inflight_remote_to_client
+                    .fetch_add(read, Ordering::Relaxed);
+                self.inner
+                    .runtime_state
+                    .add_tunnel_lane_bytes(self.inner.lane_id, 0, read);
+            }
         }
         result
     }
@@ -216,7 +230,17 @@ impl AsyncWrite for MeteredTunnelStream {
     ) -> Poll<std::io::Result<usize>> {
         let result = Pin::new(&mut self.inner).poll_write(cx, buf);
         if let Poll::Ready(Ok(written)) = &result {
-            self.client_to_remote = self.client_to_remote.saturating_add(*written as u64);
+            if *written > 0 {
+                let written = *written as u64;
+                self.client_to_remote = self.client_to_remote.saturating_add(written);
+                self.inner
+                    .lane
+                    .inflight_client_to_remote
+                    .fetch_add(written, Ordering::Relaxed);
+                self.inner
+                    .runtime_state
+                    .add_tunnel_lane_bytes(self.inner.lane_id, written, 0);
+            }
         }
         result
     }
@@ -268,6 +292,8 @@ impl TunnelManager {
                     control: Mutex::new(None),
                     connect_lock: Mutex::new(()),
                     health: Mutex::new(LaneHealth::default()),
+                    inflight_client_to_remote: AtomicU64::new(0),
+                    inflight_remote_to_client: AtomicU64::new(0),
                 })
             })
             .collect();
@@ -302,7 +328,12 @@ impl TunnelManager {
         };
         let lane_id = lane.id;
         match self.open_stream_on_lane(lane.clone(), priority).await {
-            Ok(inner) => Ok(TunnelStream { inner, lane_id }),
+            Ok(inner) => Ok(TunnelStream {
+                inner,
+                lane_id,
+                lane,
+                runtime_state: self.runtime_state.clone(),
+            }),
             Err(err) => {
                 self.release_lane_reservation(&lane).await;
                 Err(err)
@@ -318,6 +349,8 @@ impl TunnelManager {
         elapsed: Duration,
     ) {
         if let Some(lane) = self.lanes.iter().find(|lane| lane.id == lane_id) {
+            saturating_atomic_sub(&lane.inflight_client_to_remote, client_to_remote);
+            saturating_atomic_sub(&lane.inflight_remote_to_client, remote_to_client);
             let mut health = lane.health.lock().await;
             health.bytes_client_to_remote = health
                 .bytes_client_to_remote
@@ -533,6 +566,8 @@ impl TunnelManager {
     }
 
     fn publish_lane(&self, lane: &TunnelLane, health: &LaneHealth, state: &str) {
+        let inflight_client_to_remote = lane.inflight_client_to_remote.load(Ordering::Relaxed);
+        let inflight_remote_to_client = lane.inflight_remote_to_client.load(Ordering::Relaxed);
         self.runtime_state.update_tunnel_lane(TunnelLaneSnapshot {
             id: lane.id,
             lane: lane.kind.as_str().to_string(),
@@ -542,8 +577,12 @@ impl TunnelManager {
             pending_stream_opens: health.pending_stream_opens,
             streams_opened: health.streams_opened,
             stream_open_failures: health.stream_open_failures,
-            bytes_client_to_remote: health.bytes_client_to_remote,
-            bytes_remote_to_client: health.bytes_remote_to_client,
+            bytes_client_to_remote: health
+                .bytes_client_to_remote
+                .saturating_add(inflight_client_to_remote),
+            bytes_remote_to_client: health
+                .bytes_remote_to_client
+                .saturating_add(inflight_remote_to_client),
             recent_client_to_remote_bps: health.recent_client_to_remote_bps,
             recent_remote_to_client_bps: health.recent_remote_to_client_bps,
             adaptive_score: lane_score_from_health(health),
@@ -636,6 +675,12 @@ fn ewma_bps(previous: u64, sample: u64) -> u64 {
             .saturating_add(sample)
             .saturating_div(4)
     }
+}
+
+fn saturating_atomic_sub(value: &AtomicU64, amount: u64) {
+    let _ = value.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+        Some(current.saturating_sub(amount))
+    });
 }
 
 fn hopped_endpoint(endpoint: &str, port_hopping: &PortHoppingConfig) -> String {
@@ -738,6 +783,8 @@ mod tests {
             control: Mutex::new(None),
             connect_lock: Mutex::new(()),
             health: Mutex::new(health),
+            inflight_client_to_remote: Default::default(),
+            inflight_remote_to_client: Default::default(),
         }
     }
 

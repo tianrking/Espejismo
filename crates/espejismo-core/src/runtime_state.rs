@@ -105,6 +105,28 @@ impl RuntimeState {
             inner.tunnel_lanes.sort_by_key(|lane| lane.id);
         }
     }
+
+    pub fn add_tunnel_lane_bytes(
+        &self,
+        lane_id: usize,
+        client_to_remote: u64,
+        remote_to_client: u64,
+    ) {
+        let mut inner = lock_runtime_state(&self.inner);
+        if let Some(existing) = inner
+            .tunnel_lanes
+            .iter_mut()
+            .find(|existing| existing.id == lane_id)
+        {
+            existing.bytes_client_to_remote = existing
+                .bytes_client_to_remote
+                .saturating_add(client_to_remote);
+            existing.bytes_remote_to_client = existing
+                .bytes_remote_to_client
+                .saturating_add(remote_to_client);
+            existing.last_activity_unix_secs = Some(unix_now_secs());
+        }
+    }
 }
 
 fn lock_runtime_state(state: &Mutex<RuntimeStateSnapshot>) -> MutexGuard<'_, RuntimeStateSnapshot> {
@@ -127,4 +149,41 @@ fn unix_now_secs() -> u64 {
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_secs()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{RuntimeState, TunnelLaneSnapshot};
+
+    #[test]
+    fn lane_byte_updates_are_incremental() {
+        let state = RuntimeState::default();
+        state.update_tunnel_lane(TunnelLaneSnapshot {
+            id: 7,
+            lane: "bulk".to_string(),
+            state: "connected".to_string(),
+            bytes_client_to_remote: 10,
+            bytes_remote_to_client: 20,
+            ..TunnelLaneSnapshot::default()
+        });
+
+        state.add_tunnel_lane_bytes(7, 5, 9);
+
+        let lane = state
+            .snapshot()
+            .tunnel_lanes
+            .into_iter()
+            .find(|lane| lane.id == 7)
+            .unwrap();
+        assert_eq!(lane.bytes_client_to_remote, 15);
+        assert_eq!(lane.bytes_remote_to_client, 29);
+        assert!(lane.last_activity_unix_secs.is_some());
+    }
+
+    #[test]
+    fn lane_byte_updates_ignore_unknown_lanes() {
+        let state = RuntimeState::default();
+        state.add_tunnel_lane_bytes(99, 5, 9);
+        assert!(state.snapshot().tunnel_lanes.is_empty());
+    }
 }

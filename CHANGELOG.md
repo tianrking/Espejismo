@@ -9,6 +9,9 @@
   suffixes) now use bulk tunnel lanes even when the request has no
   `Content-Length`. Large HTTP uploads still use
   `local.http_bulk_threshold_bytes`.
+- Per-lane admin byte counters now update while streams are still active,
+  instead of waiting for long downloads or uploads to finish before publishing
+  lane byte movement.
 
 ## v0.1.4
 

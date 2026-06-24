@@ -362,8 +362,9 @@ Bulk lane 1: streams=1, c2r=139, r2c=1,048,679, recent_r2c=6,212,990 bps
 This proves the plain HTTP `.bin` classifier moves completed download response
 bytes onto a bulk lane. A larger `/16m.bin` probe was intentionally stopped
 after 60 seconds on this live path and exposed a separate observability gap:
-in-progress stream byte counters are still only committed to admin snapshots
-after the stream completes.
+older builds only committed per-lane byte counters to admin snapshots after the
+stream completed. The follow-up live-counter change makes active stream bytes
+visible in the lane snapshot as they move.
 
 Native mux did not outperform Yamux in this run:
 

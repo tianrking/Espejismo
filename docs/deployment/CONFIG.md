@@ -361,7 +361,9 @@ download paths that look like archives, installers, images, packages, or media)
 and then score candidate physical lanes by current load, pending opens,
 stream-open failure ratio, last error state, mux RTT trend, open latency, and
 recent EWMA throughput. The admin endpoint exposes the score and recent bps
-fields per lane; lower scores are healthier.
+fields per lane; lower scores are healthier. Per-lane byte counters include
+bytes from active in-progress streams, so a long download or upload should be
+visible before the stream closes.
 
 Suggested desktop/browser baseline:
 
