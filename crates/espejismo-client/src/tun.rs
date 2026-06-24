@@ -153,8 +153,10 @@ async fn handle_tun_tcp(
                     write_tcp_connect_with_priority(&mut tunnel_stream, &authority, priority)
                         .await?;
                     let copy_started = Instant::now();
-                    idle_copy_bidirectional(&mut local_stream, &mut tunnel_stream, idle).await?;
+                    let copy_result =
+                        idle_copy_bidirectional(&mut local_stream, &mut tunnel_stream, idle).await;
                     copy_elapsed = copy_started.elapsed();
+                    copy_result?;
                     anyhow::Ok(())
                 }
                 .await;

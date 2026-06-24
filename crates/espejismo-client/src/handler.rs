@@ -56,8 +56,9 @@ async fn handle_socks5_client_inner(
                 write_tcp_connect_with_priority(&mut stream, &target.authority(), priority).await?;
                 request_elapsed = request_started.elapsed();
                 let copy_started = Instant::now();
-                idle_copy_bidirectional(local, &mut stream, idle).await?;
+                let copy_result = idle_copy_bidirectional(local, &mut stream, idle).await;
                 copy_elapsed = copy_started.elapsed();
+                copy_result?;
                 anyhow::Ok(())
             }
             .await;
@@ -145,7 +146,7 @@ async fn handle_http_client_inner(
             prebuffer_elapsed = prebuffer_started.elapsed();
         }
         let copy_started = Instant::now();
-        if let Some(content_length) = target.content_length {
+        let copy_result = if let Some(content_length) = target.content_length {
             let remaining = content_length.saturating_sub(target.prebuffer_body_bytes as u64);
             debug!(
                 content_length,
@@ -159,12 +160,15 @@ async fn handle_http_client_inner(
                 request_bytes,
                 response_bytes, "HTTP fixed-length copy completed"
             );
+            Ok::<_, std::io::Error>(())
         } else {
             let (request_bytes, response_bytes) =
                 idle_copy_bidirectional(local, &mut stream, idle).await?;
             debug!(request_bytes, response_bytes, "HTTP idle copy completed");
-        }
+            Ok::<_, std::io::Error>(())
+        };
         copy_elapsed = copy_started.elapsed();
+        copy_result?;
         anyhow::Ok(())
     }
     .await;
