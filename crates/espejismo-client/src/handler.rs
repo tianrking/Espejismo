@@ -183,36 +183,6 @@ fn http_stream_priority(content_length: Option<u64>, bulk_threshold_bytes: u64) 
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::http_stream_priority;
-    use espejismo_core::StreamPriority;
-
-    #[test]
-    fn large_http_request_uses_bulk_priority() {
-        assert_eq!(
-            http_stream_priority(Some(1_048_576), 1_048_576),
-            StreamPriority::Bulk
-        );
-    }
-
-    #[test]
-    fn missing_or_small_http_length_stays_interactive() {
-        assert_eq!(
-            http_stream_priority(None, 1_048_576),
-            StreamPriority::Interactive
-        );
-        assert_eq!(
-            http_stream_priority(Some(1024), 1_048_576),
-            StreamPriority::Interactive
-        );
-        assert_eq!(
-            http_stream_priority(Some(1024), 0),
-            StreamPriority::Interactive
-        );
-    }
-}
-
 fn throughput_bps(bytes: u64, elapsed: Duration) -> u64 {
     let nanos = elapsed.as_nanos();
     if nanos == 0 {
@@ -272,4 +242,34 @@ async fn relay_udp_packet(
         .await;
     result?;
     Ok(response)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::http_stream_priority;
+    use espejismo_core::StreamPriority;
+
+    #[test]
+    fn large_http_request_uses_bulk_priority() {
+        assert_eq!(
+            http_stream_priority(Some(1_048_576), 1_048_576),
+            StreamPriority::Bulk
+        );
+    }
+
+    #[test]
+    fn missing_or_small_http_length_stays_interactive() {
+        assert_eq!(
+            http_stream_priority(None, 1_048_576),
+            StreamPriority::Interactive
+        );
+        assert_eq!(
+            http_stream_priority(Some(1024), 1_048_576),
+            StreamPriority::Interactive
+        );
+        assert_eq!(
+            http_stream_priority(Some(1024), 0),
+            StreamPriority::Interactive
+        );
+    }
 }
