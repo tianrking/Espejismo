@@ -366,6 +366,20 @@ older builds only committed per-lane byte counters to admin snapshots after the
 stream completed. The follow-up live-counter change makes active stream bytes
 visible in the lane snapshot as they move.
 
+Focused live-counter validation on `b09813a`:
+
+```text
+HK2 client build: /root/Espejismo at b09813a
+Request: start /16m.bin through the local HTTP proxy, sample admin after 5 s
+Admin sample while stream was still active:
+  active_streams=1, stream_opened=1
+  bulk lane 1: active=1, streams=1, c2r=140, r2c=4,368,488, recent_r2c=0
+```
+
+This proves active stream bytes are now visible before completion. `recent_r2c`
+stays completion-based because it is the EWMA throughput sample used by the lane
+scorer after each stream finishes.
+
 Native mux did not outperform Yamux in this run:
 
 | Mux | Upload 4 x 128 MiB |
