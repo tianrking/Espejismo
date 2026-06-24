@@ -156,12 +156,10 @@ async fn handle_http_client_inner(
                 remaining_body_bytes = remaining,
                 "HTTP proxy forwarding fixed-length request body"
             );
-            client_to_remote = client_to_remote.saturating_add(
-                copy_exact_request_body(local, &mut stream, remaining, idle).await?,
-            );
-            stream.flush().await?;
-            stream.shutdown().await?;
-            remote_to_client = copy_response_until_close(&mut stream, local, idle).await?;
+            let (request_bytes, response_bytes) =
+                copy_fixed_length_http(local, &mut stream, remaining, idle).await?;
+            client_to_remote = client_to_remote.saturating_add(request_bytes);
+            remote_to_client = response_bytes;
         } else {
             let (request_bytes, response_bytes) =
                 idle_copy_bidirectional(local, &mut stream, idle).await?;
@@ -248,6 +246,29 @@ where
         );
     }
     Ok(copied)
+}
+
+async fn copy_fixed_length_http<L, T>(
+    local: &mut L,
+    tunnel: &mut T,
+    remaining: u64,
+    idle: Duration,
+) -> std::io::Result<(u64, u64)>
+where
+    L: AsyncRead + AsyncWrite + Unpin,
+    T: AsyncRead + AsyncWrite + Unpin,
+{
+    let (mut local_reader, mut local_writer) = tokio::io::split(local);
+    let (mut tunnel_reader, mut tunnel_writer) = tokio::io::split(tunnel);
+    let request = async {
+        let bytes =
+            copy_exact_request_body(&mut local_reader, &mut tunnel_writer, remaining, idle).await?;
+        tunnel_writer.flush().await?;
+        tunnel_writer.shutdown().await?;
+        Ok::<_, std::io::Error>(bytes)
+    };
+    let response = copy_response_until_close(&mut tunnel_reader, &mut local_writer, idle);
+    tokio::try_join!(request, response)
 }
 
 async fn write_all_chunked<W>(writer: &mut W, data: &[u8]) -> std::io::Result<()>
@@ -337,7 +358,9 @@ async fn relay_udp_packet(
 
 #[cfg(test)]
 mod tests {
-    use super::{copy_exact_request_body, http_stream_priority, write_all_chunked};
+    use super::{
+        copy_exact_request_body, copy_fixed_length_http, http_stream_priority, write_all_chunked,
+    };
     use espejismo_core::StreamPriority;
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
     use tokio::time::Duration;
@@ -395,5 +418,36 @@ mod tests {
         let mut received = Vec::new();
         peer.read_to_end(&mut received).await.unwrap();
         assert_eq!(received, data);
+    }
+
+    #[tokio::test]
+    async fn fixed_length_http_copy_reads_response_without_client_close() {
+        let (mut local, mut client) = duplex(512 * 1024);
+        let (mut tunnel, mut remote) = duplex(512 * 1024);
+        let client_task = tokio::spawn(async move {
+            client.write_all(&vec![3_u8; 256 * 1024]).await.unwrap();
+            let mut response = Vec::new();
+            client.read_to_end(&mut response).await.unwrap();
+            response
+        });
+        let remote_task = tokio::spawn(async move {
+            let mut body = vec![0_u8; 256 * 1024];
+            remote.read_exact(&mut body).await.unwrap();
+            remote
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+            remote.shutdown().await.unwrap();
+        });
+
+        let copied =
+            copy_fixed_length_http(&mut local, &mut tunnel, 256 * 1024, Duration::from_secs(1))
+                .await
+                .unwrap();
+        let response = client_task.await.unwrap();
+        remote_task.await.unwrap();
+        assert_eq!(copied.0, 256 * 1024);
+        assert!(copied.1 > 0);
+        assert!(response.starts_with(b"HTTP/1.1 200 OK"));
     }
 }
