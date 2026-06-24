@@ -283,7 +283,7 @@ Use at least `8388608` for high-latency throughput tests.
 window. It must be greater than or equal to `initial_stream_window_bytes`.
 
 `http2.max_frame_bytes`: Maximum HTTP/2 frame payload. Valid range is `16384`
-to `16777215`; `65536` is the v0.1.3 throughput-oriented default.
+to `16777215`; `65536` is the current throughput-oriented default.
 
 ### shared.port_hopping
 

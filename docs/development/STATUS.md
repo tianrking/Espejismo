@@ -1,6 +1,6 @@
 # Implementation Status
 
-Current release target: `v0.1.3`.
+Current release target: `v0.1.4`.
 
 ## Implemented
 
@@ -56,6 +56,12 @@ Current release target: `v0.1.3`.
   health-scored stream placement, per-lane reconnect/error/latency/byte status,
   maximum connection age rotation for new streams, and logical stream muxing
   wrapped behind a replaceable module.
+- Adaptive lane scoring with active stream load, pending opens, stream-open
+  failure ratio, last error state, mux RTT trend, open latency, and recent EWMA
+  throughput.
+- Metered tunnel stream counters for SOCKS5, HTTP proxy, and TUN paths so
+  admin snapshots and benchmark tunnel-cost reports use actual tunnel
+  reads/writes, including fixed-length HTTP upload bodies.
 - Remote physical connection limits and stream/request read timeouts bound
   connection-flood and slow-request resource usage.
 - Native mux beta with OPEN, DATA, WINDOW_UPDATE, FIN, RST, PING, and GOAWAY

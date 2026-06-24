@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.1.4
+
+`v0.1.4` is an adaptive lane scheduling and benchmark-observability release for
+the `v0.1.x` line.
 
 ### Added
 
