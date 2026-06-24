@@ -258,6 +258,59 @@ frame/mux overhead, and the Python upload sink. The P4 case is now much closer
 to the raw link and is the better model for browser/TUN workloads with multiple
 flows.
 
+### Adaptive Lane Scoring and Metered Lane Counters
+
+Commit `16fc542` adds adaptive lane scoring from active streams, pending opens,
+stream-open failures, last error state, open latency, RTT trend, and recent
+EWMA throughput. It also measures lane bytes from actual tunnel stream
+`poll_read` / `poll_write` calls, which fixes the earlier HTTP upload
+observability gap where fixed-length request bodies were not visible in
+per-lane counters.
+
+HK2 to RK was retested with the Rust benchmark source/sink, `auto-throughput`,
+one interactive lane, six bulk lanes, four-way parallelism, and five adjacent
+rounds:
+
+| Test | Direct Median | Espejismo Median | Median Efficiency | Notes |
+| --- | ---: | ---: | ---: | --- |
+| Download 256 MiB, single stream | 84.9 Mbit/s | 87.7 Mbit/s | 103% | Direction is capped by the RK to HK2 path and varies by window. |
+| Download 4 x 256 MiB | 90.8 Mbit/s | 88.5 Mbit/s | 97% | One round dipped to 63.7 Mbit/s, so mean efficiency was lower. |
+| Upload 128 MiB, single stream | 225.8 Mbit/s | 214.8 Mbit/s | 95% | Single-stream upload gap is now much smaller than the earlier 54% run. |
+| Upload 4 x 128 MiB | 466.8 Mbit/s | 459.6 Mbit/s | 101% | Proxy P4 tracked raw-link variance closely and sometimes beat same-window direct. |
+
+Aggregate spread from the five-round run:
+
+| Test | Proxy Median | Proxy Min | Proxy Max | Stddev |
+| --- | ---: | ---: | ---: | ---: |
+| proxy-download-p1 | 87.7 Mbit/s | 79.1 | 88.2 | 3.5 |
+| proxy-download-pN | 88.5 Mbit/s | 63.7 | 90.1 | 10.0 |
+| proxy-upload-p1 | 214.8 Mbit/s | 164.3 | 215.5 | 20.1 |
+| proxy-upload-pN | 459.6 Mbit/s | 434.8 | 475.7 | 14.0 |
+
+The final admin snapshot showed the adaptive counters working on real traffic:
+
+| Lane | Class | Streams | Client to Remote | Remote to Client | Recent C2R bps | Recent R2C bps | Score |
+| ---: | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| 0 | interactive | 25 | 3,525 | 6,710,889,025 | 11 | 25,040,753 | 0 |
+| 1 | bulk | 1 | 1,048,790 | 108 | 7,172,320 | 738 | 25,327 |
+| 2 | bulk | 10 | 1,342,179,660 | 1,100 | 163,224,425 | 132 | 0 |
+| 3 | bulk | 5 | 671,089,830 | 550 | 122,134,293 | 98 | 0 |
+| 4 | bulk | 5 | 671,089,830 | 550 | 127,378,945 | 103 | 0 |
+| 5 | bulk | 5 | 671,089,830 | 550 | 126,468,391 | 102 | 0 |
+
+The `Tunnel Cost` table in the same run now reports upload primary tunnel bytes
+at 100% of curl application upload bytes plus only the expected protocol
+overhead. This proves the benchmark can separate raw-link movement from
+Espejismo overhead instead of hiding upload bodies from lane accounting.
+
+Latest artifacts on HK2:
+
+```text
+/tmp/espejismo-bench-results/20260624T0955-16fc542-adaptive-metered/summary.md
+/tmp/espejismo-bench-results/20260624T0955-16fc542-adaptive-metered/results.jsonl
+/tmp/espejismo-bench-results/20260624T0955-16fc542-adaptive-metered/admin-round-5-after.json
+```
+
 ## What Changed in Efficiency
 
 | Area | Before | After |
@@ -266,6 +319,8 @@ flows.
 | Bulk chunk config | Larger configured values were clamped to 64 KiB | `max_chunk` can tune 64 KiB, 128 KiB, or 256 KiB-class frames |
 | HTTP upload lane priority | Always interactive | Large `Content-Length` requests can use bulk lanes |
 | Lane selection | Preferred lanes could still lose to lower-score opposite lanes | Preferred lane class is tried first |
+| Lane score | Load and open latency only | Load, pending opens, failure ratio, errors, RTT trend, open latency, and recent throughput |
+| Lane byte metrics | Fixed-length upload bodies could be invisible until helper return paths lined up | Actual tunnel stream reads/writes drive counters and throughput EWMA |
 | Best observed proxy P4 upload | 372.4 Mbit/s | 491.8 Mbit/s |
 
 ## Conclusions
@@ -290,10 +345,8 @@ Keep `shared.mux.mode = "yamux"` for production.
 
 - Use the Rust `espejismo-bench-http` source/sink for future HK2/RK runs to
   remove Python server overhead from upload tests.
-- Use admin snapshots to compare adaptive lane score, recent bps, RTT trend,
-  active streams, and pending opens during each multi-round benchmark.
 - Test under controlled loss and latency using Linux `tc netem`.
-- Run repeated harness rounds so benchmark summaries report median, min, max,
-  and standard deviation across several adjacent windows.
+- Add explicit benchmark cases for SOCKS5 and TUN traffic classification, not
+  only HTTP proxy uploads and downloads.
 - Keep stealth deployments on smaller fixed-size frames; use large bulk frames
   only for throughput-oriented profiles.
