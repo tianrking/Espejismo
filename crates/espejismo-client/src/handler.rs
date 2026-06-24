@@ -154,18 +154,24 @@ async fn handle_http_client_inner(
                 remaining_body_bytes = remaining,
                 "HTTP proxy forwarding fixed-length request body"
             );
-            let (request_bytes, response_bytes) =
-                copy_fixed_length_http(local, &mut stream, remaining, idle).await?;
-            debug!(
-                request_bytes,
-                response_bytes, "HTTP fixed-length copy completed"
-            );
-            Ok::<_, std::io::Error>(())
+            match copy_fixed_length_http(local, &mut stream, remaining, idle).await {
+                Ok((request_bytes, response_bytes)) => {
+                    debug!(
+                        request_bytes,
+                        response_bytes, "HTTP fixed-length copy completed"
+                    );
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            }
         } else {
-            let (request_bytes, response_bytes) =
-                idle_copy_bidirectional(local, &mut stream, idle).await?;
-            debug!(request_bytes, response_bytes, "HTTP idle copy completed");
-            Ok::<_, std::io::Error>(())
+            match idle_copy_bidirectional(local, &mut stream, idle).await {
+                Ok((request_bytes, response_bytes)) => {
+                    debug!(request_bytes, response_bytes, "HTTP idle copy completed");
+                    Ok(())
+                }
+                Err(err) => Err(err),
+            }
         };
         copy_elapsed = copy_started.elapsed();
         copy_result?;
