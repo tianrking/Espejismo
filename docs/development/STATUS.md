@@ -1,6 +1,6 @@
 # Implementation Status
 
-Current release target: `v0.1.4`.
+Current release target: `v0.1.5`.
 
 ## Implemented
 
@@ -62,6 +62,8 @@ Current release target: `v0.1.4`.
 - Metered tunnel stream counters for SOCKS5, HTTP proxy, and TUN paths so
   admin snapshots and benchmark tunnel-cost reports use actual tunnel
   reads/writes, including fixed-length HTTP upload bodies.
+- Active-stream per-lane byte counters so long transfers are visible in admin
+  snapshots before they finish.
 - Remote physical connection limits and stream/request read timeouts bound
   connection-flood and slow-request resource usage.
 - Native mux beta with OPEN, DATA, WINDOW_UPDATE, FIN, RST, PING, and GOAWAY

@@ -2,7 +2,7 @@
 
 [Español](README_ES.md) | [Configuration](docs/deployment/CONFIG.md) | [TUN Mode](docs/deployment/TUN.md) | [Protocol](docs/PROTOCOL.md) | [HK2/RK Benchmarks](docs/testing/V0.1.3_HK2_RK_MODE_MATRIX.md)
 
-![Release](https://img.shields.io/badge/release-v0.1.4-0b7285)
+![Release](https://img.shields.io/badge/release-v0.1.5-0b7285)
 ![Rust](https://img.shields.io/badge/rust-native-9a3412)
 ![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20windows-1f6feb)
 ![Ingress](https://img.shields.io/badge/ingress-socks5%20%7C%20http%20%7C%20tun-2f9e44)
@@ -15,7 +15,7 @@ and release archives that can be installed with a single command.
 
 ## Technical Profile
 
-| Layer | What ships in `v0.1.4` |
+| Layer | What ships in `v0.1.5` |
 | --- | --- |
 | Client ingress | SOCKS5, HTTP proxy, and native TUN capture with configurable UDP controls |
 | Remote egress | Authenticated TCP listener with configurable outbound policy |
@@ -40,10 +40,14 @@ chaining. UDP chaining requires SOCKS5.
 client machine and exposes local SOCKS5/HTTP proxy ports or a native TUN
 interface for system-level IPv4 traffic capture.
 
-In `v0.1.4`, TUN mode routes desktop TCP/UDP flows through interactive tunnel
+In `v0.1.5`, TUN mode routes desktop TCP/UDP flows through interactive tunnel
 lanes by default and blocks UDP/443 locally unless configured otherwise, so
 browsers fall back from QUIC to TCP HTTPS instead of accumulating long UDP
 timeouts.
+
+`v0.1.5` also tightens lane observability and scheduling inputs: plain HTTP
+download-looking `GET` paths use bulk lanes, and admin per-lane byte counters
+include bytes from streams that are still active.
 
 For live HK2 to RK mode data, including TCP, stealth, WebSocket, HTTP/2, and
 port hopping, see [v0.1.3 HK2/RK mode matrix](docs/testing/V0.1.3_HK2_RK_MODE_MATRIX.md).
@@ -68,7 +72,7 @@ Installer inputs:
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `ESPEJISMO_VERSION` | `latest` | Release tag such as `v0.1.4` |
+| `ESPEJISMO_VERSION` | `latest` | Release tag such as `v0.1.5` |
 | `ESPEJISMO_PACKAGE` | `full` | `full` for client+server, `server` for remote only |
 | `ESPEJISMO_INSTALL_DIR` | `$HOME/.espejismo` | Extraction directory |
 | `ESPEJISMO_REPO` | `tianrking/Espejismo` | GitHub repository |

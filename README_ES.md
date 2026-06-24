@@ -2,7 +2,7 @@
 
 [English](README.md) | [Configuracion](docs/deployment/CONFIG.md) | [Modo TUN](docs/deployment/TUN.md) | [Protocolo](docs/PROTOCOL.md) | [Benchmarks HK2/RK](docs/testing/V0.1.3_HK2_RK_MODE_MATRIX.md)
 
-![Release](https://img.shields.io/badge/release-v0.1.4-0b7285)
+![Release](https://img.shields.io/badge/release-v0.1.5-0b7285)
 ![Rust](https://img.shields.io/badge/rust-native-9a3412)
 ![Plataformas](https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20windows-1f6feb)
 ![Entrada](https://img.shields.io/badge/ingress-socks5%20%7C%20http%20%7C%20tun-2f9e44)
@@ -15,7 +15,7 @@ paquetes de release instalables con un solo comando.
 
 ## Perfil Tecnico
 
-| Capa | Que incluye `v0.1.4` |
+| Capa | Que incluye `v0.1.5` |
 | --- | --- |
 | Entrada local | SOCKS5, proxy HTTP y captura TUN nativa con controles UDP configurables |
 | Salida remota | Listener TCP autenticado con politica de egress configurable |
@@ -40,10 +40,14 @@ TCP. El encadenamiento UDP requiere SOCKS5.
 maquina cliente y expone puertos SOCKS5/HTTP locales o una interfaz TUN nativa
 para captura IPv4 a nivel de sistema.
 
-En `v0.1.4`, el modo TUN envia los flujos TCP/UDP de escritorio por lanes
+En `v0.1.5`, el modo TUN envia los flujos TCP/UDP de escritorio por lanes
 interactivas por defecto y bloquea UDP/443 localmente salvo que se configure lo
 contrario, haciendo que los navegadores vuelvan de QUIC a HTTPS sobre TCP en
 lugar de acumular timeouts UDP largos.
+
+`v0.1.5` tambien mejora la observabilidad y las senales del scheduler: los
+`GET` HTTP planos que parecen descargas usan lanes bulk, y los contadores por
+lane del admin incluyen bytes de streams que siguen activos.
 
 Para datos reales HK2 a RK por modo, incluyendo TCP, stealth, WebSocket,
 HTTP/2 y port hopping, vea [matriz v0.1.3 HK2/RK](docs/testing/V0.1.3_HK2_RK_MODE_MATRIX.md).
@@ -68,7 +72,7 @@ Variables del instalador:
 
 | Variable | Valor por defecto | Uso |
 | --- | --- | --- |
-| `ESPEJISMO_VERSION` | `latest` | Tag de release, por ejemplo `v0.1.4` |
+| `ESPEJISMO_VERSION` | `latest` | Tag de release, por ejemplo `v0.1.5` |
 | `ESPEJISMO_PACKAGE` | `full` | `full` para cliente+servidor, `server` solo remoto |
 | `ESPEJISMO_INSTALL_DIR` | `$HOME/.espejismo` | Directorio de extraccion |
 | `ESPEJISMO_REPO` | `tianrking/Espejismo` | Repositorio GitHub |

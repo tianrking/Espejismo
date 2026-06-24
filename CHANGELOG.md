@@ -1,6 +1,9 @@
 # Changelog
 
-## Unreleased
+## v0.1.5
+
+`v0.1.5` is a lane-classification and live-observability patch release for the
+adaptive scheduler introduced in `v0.1.4`.
 
 ### Changed
 
