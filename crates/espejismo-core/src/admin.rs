@@ -13,7 +13,7 @@ use tokio::time::{timeout, Duration};
 use tracing::{debug, info};
 
 use crate::metrics::Metrics;
-use crate::runtime_state::RuntimeState;
+use crate::runtime_state::{RuntimeState, RuntimeStateSnapshot};
 
 const ADMIN_HEADER_TIMEOUT: Duration = Duration::from_secs(15);
 const ADMIN_BODY_TIMEOUT: Duration = Duration::from_secs(15);
@@ -133,7 +133,11 @@ async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<(
             write_response(&mut stream, 200, "application/json", &body).await?;
         }
         ("GET", "/metrics") => {
-            let body = state.metrics.render_prometheus(&state.role);
+            let mut body = state.metrics.render_prometheus(&state.role);
+            body.push_str(&render_runtime_prometheus(
+                &state.role,
+                &state.runtime.snapshot(),
+            ));
             write_response(
                 &mut stream,
                 200,
@@ -271,9 +275,141 @@ async fn write_response(
     Ok(())
 }
 
+fn render_runtime_prometheus(role: &str, snapshot: &RuntimeStateSnapshot) -> String {
+    let mut out = String::new();
+    out.push_str(
+        "# HELP espejismo_tunnel_lane_active_streams Active logical streams on a local tunnel lane.\n",
+    );
+    out.push_str("# TYPE espejismo_tunnel_lane_active_streams gauge\n");
+    out.push_str(
+        "# HELP espejismo_tunnel_lane_streams_opened Total logical streams opened on a local tunnel lane.\n",
+    );
+    out.push_str("# TYPE espejismo_tunnel_lane_streams_opened counter\n");
+    out.push_str(
+        "# HELP espejismo_tunnel_lane_stream_open_failures Total stream open failures on a local tunnel lane.\n",
+    );
+    out.push_str("# TYPE espejismo_tunnel_lane_stream_open_failures counter\n");
+    out.push_str(
+        "# HELP espejismo_tunnel_lane_bytes_client_to_remote Total bytes sent from client to remote by lane.\n",
+    );
+    out.push_str("# TYPE espejismo_tunnel_lane_bytes_client_to_remote counter\n");
+    out.push_str(
+        "# HELP espejismo_tunnel_lane_bytes_remote_to_client Total bytes sent from remote to client by lane.\n",
+    );
+    out.push_str("# TYPE espejismo_tunnel_lane_bytes_remote_to_client counter\n");
+    out.push_str("# HELP espejismo_tunnel_lane_reconnect_count Total reconnects by lane.\n");
+    out.push_str("# TYPE espejismo_tunnel_lane_reconnect_count counter\n");
+    out.push_str(
+        "# HELP espejismo_tunnel_lane_last_open_latency_ms Last stream open latency by lane.\n",
+    );
+    out.push_str("# TYPE espejismo_tunnel_lane_last_open_latency_ms gauge\n");
+    out.push_str("# HELP espejismo_tunnel_lane_last_mux_rtt_ms Last mux ping RTT by lane.\n");
+    out.push_str("# TYPE espejismo_tunnel_lane_last_mux_rtt_ms gauge\n");
+    out.push_str("# HELP espejismo_tunnel_lane_session_age_secs Current lane session age.\n");
+    out.push_str("# TYPE espejismo_tunnel_lane_session_age_secs gauge\n");
+    out.push_str(
+        "# HELP espejismo_tunnel_lane_last_activity_unix_secs Last lane activity time as Unix seconds.\n",
+    );
+    out.push_str("# TYPE espejismo_tunnel_lane_last_activity_unix_secs gauge\n");
+
+    for lane in &snapshot.tunnel_lanes {
+        let labels = format!(
+            "role=\"{}\",lane_id=\"{}\",lane_kind=\"{}\",state=\"{}\"",
+            escape_label_value(role),
+            lane.id,
+            escape_label_value(&lane.lane),
+            escape_label_value(&lane.state)
+        );
+        push_metric(
+            &mut out,
+            "espejismo_tunnel_lane_active_streams",
+            &labels,
+            lane.active_streams,
+        );
+        push_metric(
+            &mut out,
+            "espejismo_tunnel_lane_streams_opened",
+            &labels,
+            lane.streams_opened,
+        );
+        push_metric(
+            &mut out,
+            "espejismo_tunnel_lane_stream_open_failures",
+            &labels,
+            lane.stream_open_failures,
+        );
+        push_metric(
+            &mut out,
+            "espejismo_tunnel_lane_bytes_client_to_remote",
+            &labels,
+            lane.bytes_client_to_remote,
+        );
+        push_metric(
+            &mut out,
+            "espejismo_tunnel_lane_bytes_remote_to_client",
+            &labels,
+            lane.bytes_remote_to_client,
+        );
+        push_metric(
+            &mut out,
+            "espejismo_tunnel_lane_reconnect_count",
+            &labels,
+            lane.reconnect_count,
+        );
+        push_metric(
+            &mut out,
+            "espejismo_tunnel_lane_last_open_latency_ms",
+            &labels,
+            lane.last_open_latency_ms,
+        );
+        if let Some(rtt) = lane.last_mux_rtt_ms {
+            push_metric(
+                &mut out,
+                "espejismo_tunnel_lane_last_mux_rtt_ms",
+                &labels,
+                rtt,
+            );
+        }
+        if let Some(age) = lane.session_age_secs {
+            push_metric(
+                &mut out,
+                "espejismo_tunnel_lane_session_age_secs",
+                &labels,
+                age,
+            );
+        }
+        if let Some(activity) = lane.last_activity_unix_secs {
+            push_metric(
+                &mut out,
+                "espejismo_tunnel_lane_last_activity_unix_secs",
+                &labels,
+                activity,
+            );
+        }
+    }
+    out
+}
+
+fn push_metric(out: &mut String, name: &str, labels: &str, value: u64) {
+    out.push_str(name);
+    out.push('{');
+    out.push_str(labels);
+    out.push_str("} ");
+    out.push_str(&value.to_string());
+    out.push('\n');
+}
+
+fn escape_label_value(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('\n', "\\n")
+        .replace('"', "\\\"")
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{authorized, content_length};
+    use super::{authorized, content_length, render_runtime_prometheus};
+    use crate::runtime_state::{RuntimeStateSnapshot, TunnelLaneSnapshot};
 
     #[test]
     fn authorization_accepts_bearer_and_legacy_header() {
@@ -302,5 +438,43 @@ mod tests {
     #[test]
     fn content_length_rejects_invalid_values() {
         assert!(content_length(&["Content-Length: nope"]).is_err());
+    }
+
+    #[test]
+    fn runtime_prometheus_includes_lane_counters() {
+        let body = render_runtime_prometheus(
+            "local",
+            &RuntimeStateSnapshot {
+                started_at_unix_secs: 1,
+                config_applied_unix_secs: 1,
+                tunnel_state: "connected".to_string(),
+                tunnel_reconnect_count: 1,
+                consecutive_failures: 0,
+                recent_errors: Vec::new(),
+                egress_policy_version: 1,
+                tunnel_lanes: vec![TunnelLaneSnapshot {
+                    id: 2,
+                    lane: "bulk".to_string(),
+                    state: "connected".to_string(),
+                    reconnect_count: 3,
+                    active_streams: 4,
+                    streams_opened: 5,
+                    stream_open_failures: 1,
+                    bytes_client_to_remote: 6,
+                    bytes_remote_to_client: 7,
+                    last_open_latency_ms: 8,
+                    last_mux_rtt_ms: Some(9),
+                    mux_rtt_trend_ms: vec![9],
+                    session_age_secs: Some(10),
+                    last_activity_unix_secs: Some(11),
+                    last_error: None,
+                    last_error_unix_secs: None,
+                }],
+            },
+        );
+        assert!(body.contains(
+            "espejismo_tunnel_lane_streams_opened{role=\"local\",lane_id=\"2\",lane_kind=\"bulk\",state=\"connected\"} 5"
+        ));
+        assert!(body.contains("espejismo_tunnel_lane_last_mux_rtt_ms"));
     }
 }

@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::pin::Pin;
 use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use espejismo_core::{
@@ -39,13 +39,17 @@ impl LaneKind {
 struct LaneHealth {
     reconnect_count: u64,
     active_streams: u64,
+    streams_opened: u64,
+    stream_open_failures: u64,
     bytes_client_to_remote: u64,
     bytes_remote_to_client: u64,
     last_open_latency_ms: u64,
     last_mux_rtt_ms: Option<u64>,
     mux_rtt_trend_ms: VecDeque<u64>,
     connected_at: Option<Instant>,
+    last_activity_unix_secs: Option<u64>,
     last_error: Option<String>,
+    last_error_unix_secs: Option<u64>,
 }
 
 struct TunnelLane {
@@ -234,6 +238,7 @@ impl TunnelManager {
                 .bytes_remote_to_client
                 .saturating_add(remote_to_client);
             health.active_streams = health.active_streams.saturating_sub(1);
+            health.last_activity_unix_secs = Some(unix_now_secs());
             self.publish_lane(lane, &health, "connected");
         }
     }
@@ -350,7 +355,9 @@ impl TunnelManager {
             }
             health.reconnect_count = health.reconnect_count.saturating_add(1);
             health.connected_at = Some(Instant::now());
+            health.last_activity_unix_secs = Some(unix_now_secs());
             health.last_error = None;
+            health.last_error_unix_secs = None;
             self.publish_lane(&lane, &health, "connected");
         }
         let mut frames = self.frames.clone();
@@ -381,6 +388,7 @@ impl TunnelManager {
             while health.mux_rtt_trend_ms.len() > 16 {
                 health.mux_rtt_trend_ms.pop_front();
             }
+            health.last_activity_unix_secs = Some(unix_now_secs());
             self.publish_lane(&lane, &health, "connected");
         }
         Ok(control)
@@ -402,14 +410,20 @@ impl TunnelManager {
     async fn record_open_success(&self, lane: &Arc<TunnelLane>, elapsed: Duration) {
         let mut health = lane.health.lock().await;
         health.active_streams = health.active_streams.saturating_add(1);
+        health.streams_opened = health.streams_opened.saturating_add(1);
         health.last_open_latency_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
+        health.last_activity_unix_secs = Some(unix_now_secs());
         health.last_error = None;
+        health.last_error_unix_secs = None;
         self.publish_lane(lane, &health, "connected");
     }
 
     async fn record_lane_error(&self, lane: &Arc<TunnelLane>, error: String) {
         let mut health = lane.health.lock().await;
+        health.stream_open_failures = health.stream_open_failures.saturating_add(1);
+        health.last_activity_unix_secs = Some(unix_now_secs());
         health.last_error = Some(error.clone());
+        health.last_error_unix_secs = Some(unix_now_secs());
         self.publish_lane(lane, &health, "degraded");
         self.runtime_state.record_error(error);
     }
@@ -421,6 +435,8 @@ impl TunnelManager {
             state: state.to_string(),
             reconnect_count: health.reconnect_count,
             active_streams: health.active_streams,
+            streams_opened: health.streams_opened,
+            stream_open_failures: health.stream_open_failures,
             bytes_client_to_remote: health.bytes_client_to_remote,
             bytes_remote_to_client: health.bytes_remote_to_client,
             last_open_latency_ms: health.last_open_latency_ms,
@@ -429,7 +445,9 @@ impl TunnelManager {
             session_age_secs: health
                 .connected_at
                 .map(|connected_at| connected_at.elapsed().as_secs()),
+            last_activity_unix_secs: health.last_activity_unix_secs,
             last_error: health.last_error.clone(),
+            last_error_unix_secs: health.last_error_unix_secs,
         });
     }
 }
@@ -470,4 +488,11 @@ async fn apply_reconnect_backoff(runtime_state: &RuntimeState) {
     let exponent = failures.min(6) as u32;
     let delay = Duration::from_millis(250_u64.saturating_mul(1_u64 << exponent));
     tokio::time::sleep(delay).await;
+}
+
+fn unix_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
 }

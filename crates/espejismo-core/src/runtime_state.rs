@@ -23,13 +23,17 @@ pub struct TunnelLaneSnapshot {
     pub state: String,
     pub reconnect_count: u64,
     pub active_streams: u64,
+    pub streams_opened: u64,
+    pub stream_open_failures: u64,
     pub bytes_client_to_remote: u64,
     pub bytes_remote_to_client: u64,
     pub last_open_latency_ms: u64,
     pub last_mux_rtt_ms: Option<u64>,
     pub mux_rtt_trend_ms: Vec<u64>,
     pub session_age_secs: Option<u64>,
+    pub last_activity_unix_secs: Option<u64>,
     pub last_error: Option<String>,
+    pub last_error_unix_secs: Option<u64>,
 }
 
 #[derive(Clone, Debug)]

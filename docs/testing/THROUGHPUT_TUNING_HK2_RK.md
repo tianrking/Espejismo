@@ -25,6 +25,36 @@ RK server host
 The test port set was temporary and separate from the long-running production
 service ports.
 
+## Reproducible Benchmark Harness
+
+Use `scripts/bench-throughput.sh` from HK2 to capture direct-link and
+Espejismo-link performance in the same window:
+
+```bash
+ESPEJISMO_PROXY_URL=http://127.0.0.1:16681 \
+ESPEJISMO_DIRECT_DOWNLOAD_URL=http://<rk-public-ip>:18082/256m.bin \
+ESPEJISMO_PROXY_DOWNLOAD_URL=http://127.0.0.1:18082/256m.bin \
+ESPEJISMO_DIRECT_UPLOAD_URL=http://<rk-public-ip>:18083/upload \
+ESPEJISMO_PROXY_UPLOAD_URL=http://127.0.0.1:18083/upload \
+ESPEJISMO_UPLOAD_FILE=/tmp/espejismo-upload-128m.bin \
+ESPEJISMO_PARALLEL=4 \
+ESPEJISMO_ADMIN_URL=http://127.0.0.1:9090/status \
+ESPEJISMO_ADMIN_TOKEN=change-me-admin-token \
+scripts/bench-throughput.sh
+```
+
+The harness records:
+
+- direct download and upload, single stream and parallel streams;
+- proxied download and upload, single stream and parallel streams;
+- raw curl timings and byte counts;
+- `results.jsonl` for later comparison;
+- `summary.md` for human review;
+- optional admin snapshots before and after the run.
+
+This is the right way to compare future tuning changes because the direct tests
+and proxied tests run in the same measurement window.
+
 ## Baseline Link
 
 The physical path is asymmetric and noisy:
@@ -215,10 +245,11 @@ Keep `shared.mux.mode = "yamux"` for production.
 
 ## Follow-Up Work
 
-- Add structured per-lane counters to the admin runtime snapshot:
-  active streams, bytes sent, bytes received, priority, and lane kind.
-- Add a reproducible benchmark helper that runs direct, proxy single-stream, and
-  proxy parallel tests in one command.
+- Use the benchmark harness for every future throughput change and archive the
+  resulting `summary.md` plus `results.jsonl`.
+- Track lane counters from `/status` or `/metrics` during benchmarks: active
+  streams, streams opened, stream open failures, last activity, RTT, session
+  age, bytes sent, bytes received, and lane kind.
 - Add a non-Python test sink such as `iperf3`-style HTTP body discard or a small
   Rust sink to remove Python server overhead from upload tests.
 - Test under controlled loss and latency using Linux `tc netem`.
