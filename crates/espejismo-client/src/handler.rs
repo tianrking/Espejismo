@@ -152,6 +152,7 @@ async fn handle_http_client_inner(
                 copy_exact_request_body(local, &mut stream, remaining, idle).await?,
             );
             stream.flush().await?;
+            stream.shutdown().await?;
             remote_to_client = copy_response_until_close(&mut stream, local, idle).await?;
         } else {
             let (request_bytes, response_bytes) =
