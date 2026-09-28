@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+- README "Why Espejismo" section, architecture data-flow diagram
+  (docs/architecture.svg), benchmark summary (docs/testing/BENCHMARKS.md)
+- Positioning doc (docs/POSITIONING.md) and OSS reference list
+  (docs/research/REFERENCES.md)
+- Adaptive throughput config helper: applies the auto-throughput profile
+  (BDP-sized buffers, mux window up to 16 MiB) when measured RTT >= 100 ms
+- Yamux bulk integrity test extended from 1 MiB to 64 MiB
+- Known-issues doc and GitHub issue templates
+
+
 ## v0.1.5
 
 `v0.1.5` is a lane-classification and live-observability patch release for the
