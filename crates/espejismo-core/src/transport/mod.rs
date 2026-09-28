@@ -761,7 +761,8 @@ mod tests {
         let mut server_stream = session_b.next().await.unwrap().unwrap();
         tokio::spawn(async move { while session_b.next().await.is_some() {} });
 
-        let total: usize = 1024 * 1024;
+        // Exercise flow control and stream shutdown at the reported transfer size.
+        let total: usize = 64 * 1024 * 1024;
         let writer = tokio::spawn(async move {
             let mut sent = 0usize;
             let mut buf = vec![0u8; 8192];
