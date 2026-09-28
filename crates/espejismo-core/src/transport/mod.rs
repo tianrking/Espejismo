@@ -3,7 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rand::Rng;
 use tokio::io::{duplex, split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::time::{sleep, timeout};
@@ -117,11 +117,12 @@ where
                 tokio::select! {
                     r = ra => {
                         match r {
-                            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => {
+                            Ok(Ok(0)) | Err(_) => {
                                 a_done = true;
                                 let _ = b.shutdown().await;
                                 if b_done { break; }
                             }
+                            Ok(Err(err)) => return Err(err).context("read relay input stream"),
                             Ok(Ok(n)) => {
                                 meter.account(n as u64).await?;
                                 total_a += n as u64;
@@ -132,11 +133,12 @@ where
                     }
                     r = rb => {
                         match r {
-                            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => {
+                            Ok(Ok(0)) | Err(_) => {
                                 b_done = true;
                                 let _ = a.shutdown().await;
                                 if a_done { break; }
                             }
+                            Ok(Err(err)) => return Err(err).context("read relay egress stream"),
                             Ok(Ok(n)) => {
                                 meter.account(n as u64).await?;
                                 total_b += n as u64;
@@ -148,7 +150,8 @@ where
                 }
             }
             (Some(ra), None) => match ra.await {
-                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(0)) | Err(_) => break,
+                Ok(Err(err)) => return Err(err).context("read relay input stream"),
                 Ok(Ok(n)) => {
                     meter.account(n as u64).await?;
                     total_a += n as u64;
@@ -156,7 +159,8 @@ where
                 }
             },
             (None, Some(rb)) => match rb.await {
-                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(0)) | Err(_) => break,
+                Ok(Err(err)) => return Err(err).context("read relay egress stream"),
                 Ok(Ok(n)) => {
                     meter.account(n as u64).await?;
                     total_b += n as u64;
@@ -510,11 +514,16 @@ fn throughput_bps(bytes: u64, elapsed: Duration) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{idle_copy_bidirectional, stealth_tick_delay, StealthPaddingBudget};
+    use super::{
+        idle_copy_bidirectional, metered_idle_copy_bidirectional, stealth_tick_delay,
+        NoopCopyMeter, StealthPaddingBudget,
+    };
     use crate::protocol::framing::{
         FrameOptions, StealthIdleNoise, StealthShaperMode, DEFAULT_STEALTH_FRAME_SIZE,
     };
-    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::{duplex, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
     use tokio::time::Duration;
 
     #[test]
@@ -577,6 +586,56 @@ mod tests {
 
         let copied = task.await.unwrap().unwrap();
         assert_eq!(copied.0, 4);
+    }
+
+    struct ReadErrorStream;
+
+    impl AsyncRead for ReadErrorStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "injected connection reset",
+            )))
+        }
+    }
+
+    impl AsyncWrite for ReadErrorStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_copy_bidirectional_reports_read_errors() {
+        let mut failing = ReadErrorStream;
+        let (mut peer, _peer_end) = duplex(64);
+        let mut meter = NoopCopyMeter;
+
+        let error = metered_idle_copy_bidirectional(
+            &mut failing,
+            &mut peer,
+            Duration::from_secs(1),
+            &mut meter,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("read relay input stream"));
+        assert!(format!("{error:#}").contains("injected connection reset"));
     }
 
     // Isolates spawn_frame_transport (encrypted duplex + pumps) with NO mux on
