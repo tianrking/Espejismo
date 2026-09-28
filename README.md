@@ -13,6 +13,10 @@ through an authenticated remote egress server. It keeps the operational model
 small: one server binary, one local client binary, one TOML configuration file,
 and release archives that can be installed with a single command.
 
+## Why Espejismo
+
+Espejismo is a native Rust encrypted tunnel that refuses to impersonate TLS, QUIC, or any other protocol — instead it relies on authenticated encrypted chaos: masked metadata, dynamic handshake windows, padding, and silent rejection of unauthenticated probes. It keeps the operational model deliberately small: one server binary, one client binary, one TOML configuration file. If you want a tunnel you can read, audit, and understand (start with `docs/PROTOCOL.md`), it may be for you; if you want protocol camouflage or a multi-protocol suite, it is not.
+
 ## Technical Profile
 
 | Layer | What ships in `v0.1.5` |

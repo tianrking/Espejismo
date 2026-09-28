@@ -1,5 +1,7 @@
 # Espejismo Architecture
 
+![Data flow](architecture.svg)
+
 ## Goals
 
 Espejismo is a native Rust encrypted transport for public and untrusted
