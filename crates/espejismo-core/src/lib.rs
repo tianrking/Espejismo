@@ -19,11 +19,12 @@ pub mod updater;
 pub use admin::{spawn_admin_server, AdminAction, AdminState};
 pub use cli_support::{apply_log_overrides, print_update_check, report_config_check, LogOverrides};
 pub use config::{
-    apply_named_profile, config_to_toml, encode_config_base64, load_config, load_config_base64,
-    parse_config, AdminConfig, ConfigInput, EgressConfig, EspejismoConfig, FrameOptionOverrides,
-    HandshakeWindowConfig, Http2UnderlayConfig, LogConfig, LogFormat, MuxConfig, MuxMode,
-    ObfuscationConfig, PacingConfig, PortHoppingConfig, ProbeDefenseMode, TcpConfig,
-    TunnelPoolConfig, UnderlayConfig, UnderlayMode, WebSocketUnderlayConfig,
+    apply_adaptive_throughput, apply_named_profile, config_to_toml, encode_config_base64,
+    load_config, load_config_base64, parse_config, AdminConfig, ConfigInput, EgressConfig,
+    EspejismoConfig, FrameOptionOverrides, HandshakeWindowConfig, Http2UnderlayConfig, LogConfig,
+    LogFormat, MuxConfig, MuxMode, ObfuscationConfig, PacingConfig, PortHoppingConfig,
+    ProbeDefenseMode, TcpConfig, TunnelPoolConfig, UnderlayConfig, UnderlayMode,
+    WebSocketUnderlayConfig,
 };
 pub use crypto::{
     accept_handshake, accept_handshake_with_replay, accept_handshake_with_users, connect_handshake,

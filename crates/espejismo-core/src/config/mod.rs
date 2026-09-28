@@ -455,6 +455,31 @@ pub fn apply_named_profile(config: &mut EspejismoConfig, name: &str) -> Result<(
     Ok(())
 }
 
+/// Apply throughput settings scaled to a measured round-trip time.
+///
+/// RTT alone cannot determine path bandwidth, so this prototype estimates BDP
+/// using a fixed 500 Mbit/s target and bounds memory growth.
+pub fn apply_adaptive_throughput(
+    config: &mut EspejismoConfig,
+    rtt: std::time::Duration,
+) -> Result<()> {
+    if rtt < std::time::Duration::from_millis(100) {
+        return Ok(());
+    }
+
+    apply_named_profile(config, "auto-throughput")?;
+
+    let bdp_bytes = (500_000_000u128 * rtt.as_nanos() / 8_000_000_000u128)
+        .clamp(1024 * 1024, 16 * 1024 * 1024) as usize;
+    config.shared.mux.native_initial_window_bytes =
+        config.shared.mux.native_initial_window_bytes.max(bdp_bytes);
+    config.shared.tunnel_buffer = config
+        .shared
+        .tunnel_buffer
+        .max(bdp_bytes.saturating_mul(2).min(32 * 1024 * 1024));
+    Ok(())
+}
+
 pub fn example_config() -> String {
     let config = EspejismoConfig {
         shared: SharedConfig {
@@ -487,8 +512,8 @@ pub fn encode_config_base64(toml: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        apply_named_profile, config_to_toml, encode_config_base64, example_config,
-        load_config_base64, parse_config,
+        apply_adaptive_throughput, apply_named_profile, config_to_toml, encode_config_base64,
+        example_config, load_config_base64, parse_config, EspejismoConfig,
     };
 
     #[test]
@@ -683,6 +708,23 @@ mod tests {
 
         let err = apply_named_profile(&mut config, "unknown").unwrap_err();
         assert!(err.to_string().contains("unknown profile"));
+    }
+
+    #[test]
+    fn adaptive_throughput_scales_buffers_from_rtt() {
+        let mut config = EspejismoConfig::default();
+        apply_adaptive_throughput(&mut config, std::time::Duration::from_millis(250)).unwrap();
+        assert_eq!(
+            config.shared.mux.native_initial_window_bytes,
+            16 * 1024 * 1024
+        );
+        assert_eq!(config.shared.tunnel_buffer, 31_250_000);
+        assert_eq!(config.local.tunnel_pool.bulk_lanes, 6);
+
+        let mut short_rtt = EspejismoConfig::default();
+        let before = short_rtt.shared.tunnel_buffer;
+        apply_adaptive_throughput(&mut short_rtt, std::time::Duration::from_millis(50)).unwrap();
+        assert_eq!(short_rtt.shared.tunnel_buffer, before);
     }
 
     #[test]
