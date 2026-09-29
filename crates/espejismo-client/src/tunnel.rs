@@ -41,6 +41,7 @@ impl LaneKind {
 #[derive(Default)]
 struct LaneHealth {
     reconnect_count: u64,
+    consecutive_failures: u32,
     active_streams: u64,
     pending_stream_opens: u64,
     streams_opened: u64,
@@ -445,7 +446,7 @@ impl TunnelManager {
 
     async fn connect_lane(&self, lane: Arc<TunnelLane>) -> Result<MuxControl> {
         self.runtime_state.set_tunnel_state("connecting");
-        apply_reconnect_backoff(&self.runtime_state).await;
+        apply_reconnect_backoff(&lane).await;
         let tcp_start = Instant::now();
         let mut upstream = match timeout(
             LANE_CONNECT_TIMEOUT,
@@ -490,6 +491,7 @@ impl TunnelManager {
                 self.metrics.inc_session_rotation();
             }
             health.reconnect_count = health.reconnect_count.saturating_add(1);
+            health.consecutive_failures = 0;
             health.connected_at = Some(Instant::now());
             health.last_activity_unix_secs = Some(unix_now_secs());
             health.last_error = None;
@@ -568,6 +570,7 @@ impl TunnelManager {
 
     async fn record_lane_error(&self, lane: &Arc<TunnelLane>, error: String) {
         let mut health = lane.health.lock().await;
+        health.consecutive_failures = health.consecutive_failures.saturating_add(1);
         health.stream_open_failures = health.stream_open_failures.saturating_add(1);
         health.last_activity_unix_secs = Some(unix_now_secs());
         health.last_error = Some(error.clone());
@@ -778,14 +781,25 @@ impl TransportConnector for TcpTransportConnector {
     }
 }
 
-async fn apply_reconnect_backoff(runtime_state: &RuntimeState) {
-    let failures = runtime_state.snapshot().consecutive_failures;
+fn reconnect_backoff(lane_id: usize, failures: u32) -> Duration {
     if failures == 0 {
-        return;
+        return Duration::ZERO;
     }
-    let exponent = failures.min(6) as u32;
-    let delay = Duration::from_millis(250_u64.saturating_mul(1_u64 << exponent));
-    tokio::time::sleep(delay).await;
+    let exponent = failures.min(6);
+    let base_ms = 250_u64.saturating_mul(1_u64 << exponent);
+    // Deterministic per-lane spread avoids synchronized retries without adding
+    // randomness or allowing a failure on one lane to change another's delay.
+    let spread_percent = (lane_id as u64).wrapping_mul(37) % 21;
+    Duration::from_millis(
+        base_ms
+            .saturating_add(base_ms * spread_percent / 100)
+            .min(16_000),
+    )
+}
+
+async fn apply_reconnect_backoff(lane: &TunnelLane) {
+    let failures = lane.health.lock().await.consecutive_failures;
+    tokio::time::sleep(reconnect_backoff(lane.id, failures)).await;
 }
 
 fn unix_now_secs() -> u64 {
@@ -799,7 +813,9 @@ fn unix_now_secs() -> u64 {
 mod tests {
     use std::time::Duration;
 
-    use super::{lane_score, update_recent_throughput, LaneHealth, LaneKind, TunnelLane};
+    use super::{
+        lane_score, reconnect_backoff, update_recent_throughput, LaneHealth, LaneKind, TunnelLane,
+    };
     use tokio::sync::Mutex;
 
     fn lane_with_health(health: LaneHealth) -> TunnelLane {
@@ -827,6 +843,14 @@ mod tests {
         });
 
         assert!(lane_score(&idle) < lane_score(&loaded));
+    }
+
+    #[test]
+    fn reconnect_backoff_is_bounded_and_spread_by_lane() {
+        assert_eq!(reconnect_backoff(0, 0), Duration::ZERO);
+        assert_eq!(reconnect_backoff(0, 1), Duration::from_millis(500));
+        assert!(reconnect_backoff(0, 99) <= Duration::from_millis(16_000));
+        assert_ne!(reconnect_backoff(1, 3), reconnect_backoff(2, 3));
     }
 
     #[test]
