@@ -221,3 +221,41 @@ issue remains un-reproduced and unattributed; this in-memory run provides no
 evidence about public-route latency, loss, or MTU behavior. Reproduction on the
 TCP test and failing public route still requires an environment that permits
 loopback binding and access to both peers.
+
+## Round 010 — repeat reproduction on de
+
+### Scope and reference
+
+The current revision still carries the vendored Yamux writer wakeup fix and
+the one-way transfer regression described above. The Yamux protocol reference
+identifies receive-window updates as necessary to continue beyond the current
+window ([HashiCorp Yamux protocol spec](https://github.com/hashicorp/yamux/blob/master/spec.md)).
+This round repeats the encrypted 64 MiB regression and the vendored library
+tests; it does not change implementation, window sizing, protocol, or project
+positioning. Since there is no proposed performance change, expected throughput
+gain is **not applicable** and no speedup is claimed.
+
+### Verification
+
+Commands run on 2026-09-29:
+
+```sh
+cargo test -p espejismo-core encrypted_transport_with_yamux_mux_preserves_bulk_integrity --offline -- --nocapture
+cargo test -p tokio-yamux --lib --offline
+cargo test -p tokio-yamux --test window_update_deadlock --offline -- --nocapture
+```
+
+Results:
+
+- The encrypted Yamux regression **passed**, validating all 67,108,864 bytes
+  and clean shutdown in **41.24 s**. This is a single correctness run, not a
+  benchmark or a before/after performance comparison.
+- All **23 tokio-yamux library tests passed** in **30.10 s**.
+- The one-way TCP regression again could not start: binding
+  `127.0.0.1:0` returned OS `PermissionDenied` before exercising Yamux.
+
+The local encrypted Yamux reproduction remains resolved at this revision. The
+TCP integration case still needs an environment that permits loopback binds,
+and the separate de → jp curl exit 18 remains unreproduced and unattributed;
+this in-memory result says nothing about public-route latency, loss, or MTU.
+No production changes or throughput improvement are claimed.
