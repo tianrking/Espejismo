@@ -85,3 +85,11 @@ To re-vendor a newer upstream release: copy the new release over this
 directory, re-apply the `recv_frames_wake_blocking` change and the CI
 hygiene changes described above, and run `cargo test -p tokio-yamux` plus
 the workspace test suite.
+
+## Audit 2026-09-29 (0.3.18 diff)
+Automated diff of vendored src/ against crates.io tokio-yamux 0.3.18:
+- session.rs: 2 cfg-attribute tightenings (generic-timer vs tokio-timer), CI hygiene only.
+- stream.rs: all changes are pure additions (recv_frames_wake_blocking,
+  will_wake-gated re-drain in poll_write, regression tests); zero upstream
+  lines removed or altered.
+- Conclusion: vendored copy is 0.3.18 plus the documented stall fix.
