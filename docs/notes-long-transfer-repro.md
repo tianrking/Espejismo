@@ -136,3 +136,50 @@ Update at merge time: the diagnostic was committed as e92d373, and the test is
 now `#[ignore]`d (cf9e754) until the window-update stall is fixed, so CI stays
 green. Reproduce locally with
 `cargo test -p espejismo-core -- --ignored bulk_integrity`.
+
+## Round 008 — post-fix reproduction on de
+
+### Current source state
+
+The current `main` includes the vendored Yamux writer wakeup fix and its focused
+one-way 8 MiB / 1 MiB-window regression (`crates/tokio-yamux/VENDOR.md`,
+`crates/tokio-yamux/tests/window_update_deadlock.rs`). The end-to-end encrypted
+64 MiB test is active again (not ignored) and uses a 120 second deadline with
+byte counters. This supersedes the earlier pre-fix “still stalled” result above:
+that result described the earlier source state, before the vendored fix was
+present. The task rechecked the current revision rather than making another
+window or timeout change.
+
+### Reproduction and verification
+
+Command:
+
+```sh
+cargo test -p espejismo-core encrypted_transport_with_yamux_mux_preserves_bulk_integrity -- --nocapture
+```
+
+Result on 2026-09-29: **passed**, transferring and validating all 67,108,864
+bytes in **40.66 s**. There was no hang, and the test verified the complete byte
+pattern and clean stream shutdown. This confirms the local encrypted + Yamux
+loopback reproducer is resolved at this revision; it does not establish that
+the separate de → jp curl exit 18 issue is resolved, because the loopback has
+no real-network latency, loss, or MTU variation.
+
+This is a correctness reproduction, not a before/after throughput experiment.
+The observed 40.66 s is a single run, not a throughput improvement claim, and
+no production tuning was made. Re-run the targeted test on another machine if
+comparing performance; retain the same payload, runtime, and mux configuration.
+
+Yamux verification:
+
+```sh
+cargo test -p tokio-yamux
+cargo test -p tokio-yamux --lib
+```
+
+All **23 library unit tests passed**. The package-wide command then failed only
+in `tests/window_update_deadlock.rs` before exercising the transfer: its
+`TcpListener::bind("127.0.0.1:0")` returned OS `PermissionDenied` in this
+restricted environment. The TCP integration regression therefore remains
+unverified here; the 64 MiB in-memory encrypted transport reproduction above
+did pass.
