@@ -297,3 +297,42 @@ test provides no evidence about public-route latency, loss, or MTU. No
 throughput gain or public-route stability improvement is claimed. Reproduction
 on the TCP case and failing public route still needs a host with loopback bind
 permission and access to both peers.
+
+## Round 013 — repeat reproduction on de
+
+### Scope and reference
+
+This round repeats the encrypted 64 MiB Yamux integrity case and vendored
+Yamux checks at the current `main` revision. Yamux receive-window updates are
+required for progress beyond the current receive window ([HashiCorp Yamux
+protocol spec](https://github.com/hashicorp/yamux/blob/master/spec.md)). The
+writer wakeup fix remains the implementation under verification; no source,
+window, or timeout changes were made. This stays within the existing native
+encrypted TCP/Yamux positioning. No throughput gain is expected or claimed.
+
+### Verification
+
+Commands run on 2026-09-29:
+
+```sh
+cargo test -p espejismo-core encrypted_transport_with_yamux_mux_preserves_bulk_integrity --offline -- --nocapture
+cargo test -p tokio-yamux --lib --offline
+cargo test -p tokio-yamux --test window_update_deadlock --offline -- --nocapture
+```
+
+Results:
+
+- The encrypted 64 MiB integrity case **passed**, validating all 67,108,864
+  bytes and clean shutdown in **42.13 s**. This is a correctness run, not a
+  throughput benchmark or before/after comparison.
+- All **23 tokio-yamux library tests passed** in **30.20 s**.
+- The TCP integration test did not reach the transfer: binding
+  `127.0.0.1:0` returned OS `PermissionDenied` immediately in this sandbox.
+
+There is no regression in the runnable local encrypted reproducer. The
+loopback TCP regression remains unverified here, and the independent de → jp
+curl exit 18 remains unreproduced and unattributed. These results do not
+establish behavior under real-route latency, loss, or MTU variation. No
+production performance change or public-route reliability improvement is
+claimed; the next useful evidence still requires loopback bind permission and
+access to both ends of the failing route.
