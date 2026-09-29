@@ -614,10 +614,14 @@ impl AsyncWrite for StreamHandle {
             // A window update can arrive after the first non-blocking drain
             // but before the writer is parked. Re-drain after registering the
             // writer so that update cannot be left queued with no live poller.
-            let recv_res = if self.readable_wake.is_some() {
-                self.recv_frames_wake()
-            } else {
+            let reader_is_current_task = self
+                .readable_wake
+                .as_ref()
+                .is_some_and(|waker| waker.will_wake(cx.waker()));
+            let recv_res = if reader_is_current_task || self.readable_wake.is_none() {
                 self.recv_frames_wake_blocking(cx)
+            } else {
+                self.recv_frames_wake()
             };
             if let Err(Error::UnexpectedFlag | Error::RecvWindowExceeded | Error::InvalidMsgType) =
                 recv_res
@@ -1331,6 +1335,41 @@ mod test {
             let mut write_cx = Context::from_waker(&writer_waker);
             assert!(matches!(
                 Pin::new(&mut stream).poll_write(&mut write_cx, b"ping"),
+                Poll::Ready(Ok(4))
+            ));
+            assert!(stream.send_window() > 0);
+        });
+    }
+
+    #[test]
+    fn test_poll_write_registers_same_task_waker_when_reader_is_parked() {
+        let rt = rt();
+        rt.block_on(async {
+            let (mut frame_sender, frame_receiver) = channel(128);
+            let (unbound_sender, _unbound_receiver) = unbounded();
+            let mut stream = StreamHandle::new(
+                1,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                INITIAL_STREAM_WINDOW,
+            );
+            stream.send_window = 0;
+
+            let task_fw = Arc::new(FlagWaker::default());
+            let task_waker = waker_ref(&task_fw);
+            let mut cx = Context::from_waker(&task_waker);
+            let mut storage = [0; 1];
+            let mut read_buf = ReadBuf::new(&mut storage);
+            assert!(Pin::new(&mut stream).poll_read(&mut cx, &mut read_buf).is_pending());
+
+            assert!(Pin::new(&mut stream).poll_write(&mut cx, b"ping").is_pending());
+            frame_sender
+                .try_send(Frame::new_window_update(Flags::default(), 1, 65535))
+                .unwrap();
+            assert!(task_fw.woken(), "the blocking drain must register this task's waker");
+            assert!(matches!(
+                Pin::new(&mut stream).poll_write(&mut cx, b"ping"),
                 Poll::Ready(Ok(4))
             ));
             assert!(stream.send_window() > 0);
