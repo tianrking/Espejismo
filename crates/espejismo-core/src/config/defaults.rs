@@ -210,7 +210,7 @@ pub(super) fn default_max_physical_connections() -> u32 {
 }
 
 pub(super) fn default_native_mux_initial_window_bytes() -> usize {
-    1024 * 1024
+    8 * 1024 * 1024
 }
 
 pub(super) fn default_native_mux_stream_buffer_frames() -> usize {

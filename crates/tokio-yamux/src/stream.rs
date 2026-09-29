@@ -1361,13 +1361,24 @@ mod test {
             let mut cx = Context::from_waker(&task_waker);
             let mut storage = [0; 1];
             let mut read_buf = ReadBuf::new(&mut storage);
-            assert!(Pin::new(&mut stream).poll_read(&mut cx, &mut read_buf).is_pending());
+            assert!(
+                Pin::new(&mut stream)
+                    .poll_read(&mut cx, &mut read_buf)
+                    .is_pending()
+            );
 
-            assert!(Pin::new(&mut stream).poll_write(&mut cx, b"ping").is_pending());
+            assert!(
+                Pin::new(&mut stream)
+                    .poll_write(&mut cx, b"ping")
+                    .is_pending()
+            );
             frame_sender
                 .try_send(Frame::new_window_update(Flags::default(), 1, 65535))
                 .unwrap();
-            assert!(task_fw.woken(), "the blocking drain must register this task's waker");
+            assert!(
+                task_fw.woken(),
+                "the blocking drain must register this task's waker"
+            );
             assert!(matches!(
                 Pin::new(&mut stream).poll_write(&mut cx, b"ping"),
                 Poll::Ready(Ok(4))

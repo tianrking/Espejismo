@@ -4,13 +4,12 @@
 //! time. Both are mux-agnostic, so Yamux (which has no mux-level ping) gets a
 //! usable RTT source without vendored changes.
 //!
-//! A smoothed estimate feeds a two-threshold hysteresis state machine: the
-//! boost engages after sustained high RTT and releases after sustained low
-//! RTT, so values don't flap near the threshold. Only tunables the operator
-//! left at their defaults are raised, and only by lifting them to the BDP
-//! floor. New values apply to subsequently established sessions; already
-//! connected sessions keep draining with the parameters they were created
-//! with.
+//! The mux window is recomputed without an RTT gate from every smoothed RTT
+//! sample, while tunnel and TCP buffer boosts retain a two-threshold
+//! hysteresis gate. Only tunables the operator left at their defaults are
+//! raised, and only by lifting them to the BDP floor. New values apply to
+//! subsequently established sessions; already connected sessions keep
+//! draining with the parameters they were created with.
 
 use std::time::Duration;
 
@@ -78,6 +77,13 @@ impl AdaptiveThroughput {
             self.smoothed_rtt_ms = RTT_ALPHA * ms + (1.0 - RTT_ALPHA) * self.smoothed_rtt_ms;
         }
 
+        if self.eligibility.mux_window {
+            let floor =
+                adaptive_throughput_floor(Duration::from_secs_f64(self.smoothed_rtt_ms / 1000.0));
+            self.mux.native_initial_window_bytes =
+                self.baseline_mux_window.max(floor.mux_window_bytes);
+        }
+
         if self.smoothed_rtt_ms > ENGAGE_RTT_MS {
             self.above_engage = self.above_engage.saturating_add(1);
             self.below_release = 0;
@@ -98,12 +104,6 @@ impl AdaptiveThroughput {
     fn engage(&mut self) {
         let floor =
             adaptive_throughput_floor(Duration::from_secs_f64(self.smoothed_rtt_ms / 1000.0));
-        if self.eligibility.mux_window {
-            self.mux.native_initial_window_bytes = self
-                .mux
-                .native_initial_window_bytes
-                .max(floor.mux_window_bytes);
-        }
         if self.eligibility.tunnel_buffer {
             self.tunnel_buffer = self.tunnel_buffer.max(floor.tunnel_buffer);
         }
@@ -122,7 +122,6 @@ impl AdaptiveThroughput {
     }
 
     fn release(&mut self) {
-        self.mux.native_initial_window_bytes = self.baseline_mux_window;
         self.tunnel_buffer = self.baseline_tunnel_buffer;
         if self.eligibility.tcp_buffers {
             self.tcp.send_buffer_bytes = self.baseline_tcp_send;
@@ -163,26 +162,28 @@ mod tests {
         let mux = MuxRuntimeConfig {
             mode: espejismo_core::config::MuxMode::Yamux,
             max_streams: 256,
-            native_initial_window_bytes: 1024 * 1024,
+            native_initial_window_bytes: 8 * 1024 * 1024,
             native_stream_buffer_frames: 128,
             native_send_queue_frames: 64,
             native_idle_timeout: Duration::from_secs(300),
             native_drain_timeout: Duration::from_secs(30),
         };
-        let eligibility = AdaptiveEligibility::from_tunables(1024 * 1024, 1024 * 1024, 0, 0);
+        let eligibility = AdaptiveEligibility::from_tunables(1024 * 1024, 8 * 1024 * 1024, 0, 0);
         assert!(eligibility.tunnel_buffer && eligibility.mux_window && eligibility.tcp_buffers);
         AdaptiveThroughput::new(mux, 1024 * 1024, TcpConfig::default(), eligibility)
     }
 
     #[test]
-    fn low_rtt_never_engages() {
+    fn low_rtt_raises_window_without_engaging_buffer_boost() {
         let mut st = test_state();
-        for _ in 0..10 {
-            st.observe_rtt(Duration::from_millis(30));
-        }
+        st.observe_rtt(Duration::from_millis(200));
         assert!(!st.boost_active());
         assert_eq!(st.tunnel_buffer(), 1024 * 1024);
-        assert_eq!(st.mux().native_initial_window_bytes, 1024 * 1024);
+        assert_eq!(st.mux().native_initial_window_bytes, 25_000_000);
+
+        let mut clamped = test_state();
+        clamped.observe_rtt(Duration::from_secs(10));
+        assert_eq!(clamped.mux().native_initial_window_bytes, 64 * 1024 * 1024);
     }
 
     #[test]
@@ -196,7 +197,7 @@ mod tests {
         assert!(st.boost_active());
         // BDP at ~300 ms smoothed: well above the 1 MiB baseline.
         assert!(st.tunnel_buffer() > 1024 * 1024);
-        assert!(st.mux().native_initial_window_bytes > 1024 * 1024);
+        assert!(st.mux().native_initial_window_bytes > 8 * 1024 * 1024);
         assert_eq!(st.tcp().send_buffer_bytes, 4 * 1024 * 1024);
     }
 
@@ -232,7 +233,7 @@ mod tests {
         }
         assert!(!st.boost_active());
         assert_eq!(st.tunnel_buffer(), 1024 * 1024);
-        assert_eq!(st.mux().native_initial_window_bytes, 1024 * 1024);
+        assert!(st.mux().native_initial_window_bytes >= 8 * 1024 * 1024);
         assert_eq!(st.tcp().send_buffer_bytes, 0);
     }
 
@@ -270,5 +271,14 @@ mod tests {
         assert!(st.tunnel_buffer() > 1024 * 1024);
         assert_eq!(st.mux().native_initial_window_bytes, 2 * 1024 * 1024);
         assert_eq!(st.tcp().send_buffer_bytes, 512 * 1024);
+    }
+
+    #[test]
+    fn falling_rtt_never_lowers_window_below_baseline() {
+        let mut st = test_state();
+        for rtt in [500, 300, 200, 100, 50, 20, 10] {
+            st.observe_rtt(Duration::from_millis(rtt));
+            assert!(st.mux().native_initial_window_bytes >= 8 * 1024 * 1024);
+        }
     }
 }

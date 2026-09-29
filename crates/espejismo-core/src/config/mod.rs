@@ -468,12 +468,12 @@ pub struct AdaptiveThroughputFloor {
     pub tcp_buffer_bytes: usize,
 }
 
-/// Estimate bandwidth-delay product using a fixed 500 Mbit/s target rate.
-/// RTT alone cannot determine path bandwidth; the result is clamped to bound
-/// memory growth.
+/// Estimate bandwidth-delay product using a fixed 1 Gbit/s target rate.
+/// RTT alone cannot determine path bandwidth; the result is clamped to 1 MiB
+/// through 64 MiB to bound memory growth.
 pub fn adaptive_throughput_floor(rtt: std::time::Duration) -> AdaptiveThroughputFloor {
-    let bdp_bytes = (500_000_000u128 * rtt.as_nanos() / 8_000_000_000u128)
-        .clamp(1024 * 1024, 16 * 1024 * 1024) as usize;
+    let bdp_bytes = (1_000_000_000u128 * rtt.as_nanos() / 8_000_000_000u128)
+        .clamp(1024 * 1024, 64 * 1024 * 1024) as usize;
     AdaptiveThroughputFloor {
         tunnel_buffer: bdp_bytes.saturating_mul(2).min(32 * 1024 * 1024),
         mux_window_bytes: bdp_bytes,
@@ -797,9 +797,9 @@ mod tests {
     fn adaptive_throughput_scales_buffers_from_rtt() {
         let mut config = EspejismoConfig::default();
         apply_adaptive_throughput(&mut config, std::time::Duration::from_millis(250)).unwrap();
-        // BDP at 500 Mbit/s * 250 ms = 15_625_000 bytes.
-        assert_eq!(config.shared.mux.native_initial_window_bytes, 15_625_000);
-        assert_eq!(config.shared.tunnel_buffer, 31_250_000);
+        // BDP at 1 Gbit/s * 250 ms = 31_250_000 bytes.
+        assert_eq!(config.shared.mux.native_initial_window_bytes, 31_250_000);
+        assert_eq!(config.shared.tunnel_buffer, 32 * 1024 * 1024);
         assert_eq!(config.shared.tcp.send_buffer_bytes, 4 * 1024 * 1024);
         assert_eq!(config.shared.tcp.recv_buffer_bytes, 4 * 1024 * 1024);
         // Narrowed: pool sizing and obfuscation are no longer touched.
@@ -840,11 +840,24 @@ mod tests {
     fn adaptive_throughput_floor_is_bounded() {
         // Very high RTT clamps the floor instead of growing without bound.
         let floor = adaptive_throughput_floor(std::time::Duration::from_secs(10));
-        assert_eq!(floor.mux_window_bytes, 16 * 1024 * 1024);
+        assert_eq!(floor.mux_window_bytes, 64 * 1024 * 1024);
         assert_eq!(floor.tunnel_buffer, 32 * 1024 * 1024);
-        // Very low RTT still yields the minimum floor (caller gates on threshold).
-        let floor = adaptive_throughput_floor(std::time::Duration::from_millis(10));
+        // Very low RTT still yields the minimum floor: 1 ms at 1 Gbit/s is
+        // 125_000 bytes, below the 1 MiB clamp (caller gates on threshold).
+        let floor = adaptive_throughput_floor(std::time::Duration::from_millis(1));
         assert_eq!(floor.mux_window_bytes, 1024 * 1024);
+    }
+
+    #[test]
+    fn adaptive_throughput_floor_maps_one_gigabit_rtt() {
+        assert_eq!(
+            adaptive_throughput_floor(std::time::Duration::from_millis(100)).mux_window_bytes,
+            12_500_000
+        );
+        assert_eq!(
+            adaptive_throughput_floor(std::time::Duration::from_millis(50)).mux_window_bytes,
+            6_250_000
+        );
     }
 
     #[test]

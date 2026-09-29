@@ -7,7 +7,7 @@ padding at a 35% chance, a 1 MiB tunnel buffer, a 64 KiB pacing burst and 1 KiB
 minimum write, four maximum tunnel connections with one interactive and two bulk
 lanes, and a 1 MiB HTTP bulk threshold. TCP_NODELAY defaults on, while the TCP
 send and receive buffers are left to the OS. The native mux initial window is
-controlled by its default (currently 1 MiB).
+controlled by its default (currently 8 MiB).
 
 `auto-throughput` switches padding and jitter off, uses bulk framing with fixed
 chunks from 64 KiB to the 262,127-byte normal payload limit, a 1 MiB pacing
@@ -33,7 +33,7 @@ reduce efficiency, but they are less likely to explain a two-order-of-magnitude
 gap than a window/queue that is below path BDP.
 
 RTT by itself does not determine BDP: bandwidth must also be estimated or
-configured. The prototype therefore assumes a 500 Mbit/s target, computes a
+configured. The prototype therefore assumes a 1 Gbit/s target, computes a
 bounded BDP from a caller-supplied RTT sample, and uses it as a minimum for the
 native mux window and twice the BDP as a minimum for the tunnel buffer. A later
 runtime change should collect multiple handshake or transport RTT samples and
@@ -46,8 +46,8 @@ should not be treated as a precise network measurement.
 `apply_adaptive_throughput` is a deterministic config helper, not automatic
 runtime sampling. It starts from the existing `auto-throughput` settings only
 at RTTs of 100 ms or more, then raises the native mux window and tunnel buffer
-to at least the estimated BDP, bounded at 16 MiB and 32 MiB respectively. The
-prototype assumes a 500 Mbit/s target (for example, 250 ms estimates about
-15.6 MB of BDP); actual bandwidth estimation is a follow-up. This
-keeps short-RTT configurations untouched and leaves deployment-specific
-bandwidth estimation and sample filtering for a follow-up.
+to at least the estimated BDP, bounded at 64 MiB and 32 MiB respectively. The
+helper assumes a 1 Gbit/s target (for example, 250 ms estimates 31.25 MB of
+BDP). In the client runtime, each RTT sample updates an eligible mux window
+without an RTT gate; tunnel and TCP buffer boosts still use the 150 ms engage
+and 80 ms release hysteresis. Actual bandwidth estimation remains a follow-up.
