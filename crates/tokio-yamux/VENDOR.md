@@ -43,6 +43,11 @@ when the application actually reads from the stream.
     `writeable_wake`) — preserves the 0.3.18 reader fix;
   - no read task → blocking drain (writer registers itself, so a later
     window update wakes it directly) — fixes the one-way stall.
+- When the send window is empty, `poll_write` registers its write waker and
+  drains inbound frames again before returning `Pending`. This closes the
+  check-then-park race where a window update arrives just after a
+  non-blocking drain; the re-drain remains non-blocking while a reader owns
+  the channel waker.
 - Invariant: the last task to park owns `frame_receiver`'s waker, and in
   every case at least one live task processes inbound window updates.
 
@@ -53,7 +58,9 @@ when the application actually reads from the stream.
   without the fix; completes without it.
 - The crate's own unit tests, in particular
   `test_write_side_does_not_overwrite_read_waker` and
-  `test_window_update_wakes_write_via_read_path`, still pass.
+  `test_window_update_wakes_write_via_read_path`, still pass; a deterministic
+  unit test injects a window update at write-waker registration to cover the
+  re-drain race.
 
 ## Additional vendored changes (workspace CI hygiene)
 

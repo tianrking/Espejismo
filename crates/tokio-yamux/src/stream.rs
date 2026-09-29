@@ -611,7 +611,34 @@ impl AsyncWrite for StreamHandle {
             // register writer context waker
             // when write buf become empty, it can wake the upper layer to write the message again
             self.writeable_wake = Some(cx.waker().clone());
-            return Poll::Pending;
+            // A window update can arrive after the first non-blocking drain
+            // but before the writer is parked. Re-drain after registering the
+            // writer so that update cannot be left queued with no live poller.
+            let recv_res = if self.readable_wake.is_some() {
+                self.recv_frames_wake()
+            } else {
+                self.recv_frames_wake_blocking(cx)
+            };
+            if let Err(Error::UnexpectedFlag | Error::RecvWindowExceeded | Error::InvalidMsgType) =
+                recv_res
+            {
+                self.send_go_away();
+            }
+            match self.state {
+                StreamState::Reset => return Poll::Ready(Err(io::ErrorKind::BrokenPipe.into())),
+                StreamState::LocalClosing | StreamState::Closed => {
+                    return Poll::Ready(Err(io::Error::new(
+                        io::ErrorKind::BrokenPipe,
+                        "The local is closed and data cannot be written.",
+                    )));
+                }
+                _ => (),
+            }
+            if self.send_window > 0 {
+                self.writeable_wake = None;
+            } else {
+                return Poll::Pending;
+            }
         }
         // Allow n = 0, send an empty frame to remote
         let n = ::std::cmp::min(self.send_window as usize, buf.len());
@@ -724,10 +751,10 @@ mod test {
         io::ErrorKind,
         pin::Pin,
         sync::{
-            Arc,
+            Arc, Mutex,
             atomic::{AtomicBool, Ordering},
         },
-        task::{Context, Poll},
+        task::{Context, Poll, RawWaker, RawWakerVTable, Waker},
     };
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
 
@@ -1237,6 +1264,76 @@ mod test {
                 matches!(r, Poll::Ready(Ok(4))),
                 "poll_write must now succeed after window was restored"
             );
+        });
+    }
+
+    // Put a WINDOW_UPDATE into the channel exactly when poll_write registers
+    // its write waker: after the initial drain and before the re-drain.
+    #[test]
+    fn test_poll_write_redrains_window_update_before_parking() {
+        let rt = rt();
+        rt.block_on(async {
+            let (frame_sender, frame_receiver) = channel(128);
+            let (unbound_sender, _unbound_receiver) = unbounded();
+            let mut stream = StreamHandle::new(
+                1,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                INITIAL_STREAM_WINDOW,
+            );
+            stream.send_window = 0;
+
+            // Keep readable_wake set so poll_write uses the non-blocking path,
+            // preserving the reader's registration in frame_receiver.
+            let read_fw = Arc::new(FlagWaker::default());
+            let read_waker_ref = waker_ref(&read_fw);
+            let mut read_cx = Context::from_waker(&read_waker_ref);
+            let mut read_storage = [0; 1];
+            let mut read_buf = ReadBuf::new(&mut read_storage);
+            assert!(
+                Pin::new(&mut stream)
+                    .poll_read(&mut read_cx, &mut read_buf)
+                    .is_pending()
+            );
+
+            struct EnqueueOnClone(Mutex<Option<futures::channel::mpsc::Sender<Frame>>>);
+            #[allow(unsafe_op_in_unsafe_fn)]
+            unsafe fn clone_waker(data: *const ()) -> RawWaker {
+                let arc = Arc::<EnqueueOnClone>::from_raw(data.cast());
+                if let Some(mut sender) = arc.0.lock().unwrap().take() {
+                    // The first clone is the writeable_wake registration, which
+                    // occurs between the two drains.
+                    let _ = sender.try_send(Frame::new_window_update(Flags::default(), 1, 65535));
+                }
+                let cloned = arc.clone();
+                let _ = Arc::into_raw(arc);
+                RawWaker::new(Arc::into_raw(cloned).cast(), &VTABLE)
+            }
+            #[allow(unsafe_op_in_unsafe_fn)]
+            unsafe fn wake_waker(data: *const ()) {
+                drop(Arc::<EnqueueOnClone>::from_raw(data.cast()));
+            }
+            unsafe fn wake_by_ref_waker(_data: *const ()) {}
+            #[allow(unsafe_op_in_unsafe_fn)]
+            unsafe fn drop_waker(data: *const ()) {
+                drop(Arc::<EnqueueOnClone>::from_raw(data.cast()));
+            }
+            static VTABLE: RawWakerVTable =
+                RawWakerVTable::new(clone_waker, wake_waker, wake_by_ref_waker, drop_waker);
+
+            let writer_waker = unsafe {
+                Waker::from_raw(RawWaker::new(
+                    Arc::into_raw(Arc::new(EnqueueOnClone(Mutex::new(Some(frame_sender))))).cast(),
+                    &VTABLE,
+                ))
+            };
+            let mut write_cx = Context::from_waker(&writer_waker);
+            assert!(matches!(
+                Pin::new(&mut stream).poll_write(&mut write_cx, b"ping"),
+                Poll::Ready(Ok(4))
+            ));
+            assert!(stream.send_window() > 0);
         });
     }
 
