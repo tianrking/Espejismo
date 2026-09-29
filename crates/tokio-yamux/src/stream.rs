@@ -158,11 +158,9 @@ impl StreamHandle {
         // Update our window
         self.recv_window += delta;
         let frame = Frame::new_window_update(flags, self.id, delta);
-        let r = self
-            .unbound_event_sender
+        self.unbound_event_sender
             .unbounded_send(StreamEvent::Frame(frame))
-            .map_err(|_| Error::SessionShutdown);
-        r
+            .map_err(|_| Error::SessionShutdown)
     }
 
     fn send_data(&mut self, data: &[u8]) -> Result<(), Error> {

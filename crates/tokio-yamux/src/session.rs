@@ -726,7 +726,7 @@ where
 }
 
 mod timer {
-    #[cfg(feature = "generic-timer")]
+    #[cfg(all(feature = "generic-timer", not(feature = "tokio-timer")))]
     pub use generic_time::{Interval, interval};
     #[cfg(feature = "tokio-timer")]
     pub use inter::{Interval, interval};
@@ -772,7 +772,7 @@ mod timer {
     #[cfg(all(target_family = "wasm", not(target_os = "unknown")))]
     pub use wasm_mock::Instant;
 
-    #[cfg(feature = "generic-timer")]
+    #[cfg(all(feature = "generic-timer", not(feature = "tokio-timer")))]
     mod generic_time {
         use futures::{Future, Stream};
         use futures_timer::Delay;

@@ -121,11 +121,8 @@ fn run_client() {
             .collect::<Vec<_>>();
 
         tokio::spawn(async move {
-            loop {
-                match session.next().await {
-                    Some(res) => warn!("res: {:?}", res),
-                    None => break,
-                }
+            while let Some(res) = session.next().await {
+                warn!("res: {:?}", res);
             }
             warn!("{:?} broken", sa);
         });

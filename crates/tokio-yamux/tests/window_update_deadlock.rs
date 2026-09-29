@@ -20,9 +20,10 @@ const WINDOW: u32 = 1024 * 1024;
 const TOTAL: usize = 8 * 1024 * 1024;
 
 fn cfg() -> Config {
-    let mut c = Config::default();
-    c.max_stream_window_size = WINDOW;
-    c
+    Config {
+        max_stream_window_size: WINDOW,
+        ..Default::default()
+    }
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]

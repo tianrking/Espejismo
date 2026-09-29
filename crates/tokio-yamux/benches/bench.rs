@@ -48,11 +48,8 @@ fn get_handle() -> &'static mut StreamHandle {
                 let stream = session.open_stream().unwrap();
 
                 tokio::spawn(async move {
-                    loop {
-                        match session.next().await {
-                            Some(res) => log::warn!("res: {:?}", res),
-                            None => break,
-                        }
+                    while let Some(res) = session.next().await {
+                        log::warn!("res: {:?}", res);
                     }
                     log::warn!("{:?} broken", sa);
                 });

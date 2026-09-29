@@ -55,8 +55,26 @@ when the application actually reads from the stream.
   `test_write_side_does_not_overwrite_read_waker` and
   `test_window_update_wakes_write_via_read_path`, still pass.
 
+## Additional vendored changes (workspace CI hygiene)
+
+Beyond the window-update fix, the vendored copy carries small changes so
+the crate passes the workspace CI (`cargo clippy -- -D warnings` and
+`--all-features`):
+
+- `src/stream.rs`: return the send result directly instead of via a `let`
+  binding (clippy `let_and_return`).
+- `benches/bench.rs`, `examples/throughput_test.rs`: `loop { match .. }`
+  rewritten as `while let` (clippy `while_let_on_iterator`-style lint).
+- `tests/window_update_deadlock.rs`: struct-update syntax for
+  `Config { ..Default::default() }` (clippy `field_reassign_with_default`).
+- `src/session.rs`: the `generic-timer` and `tokio-timer` features are now
+  mutually exclusive (`tokio-timer` wins when both are enabled). Upstream
+  never supported `--all-features` (both timer backends define `Interval`);
+  the workspace CI runs clippy with `--all-features`, so this was required.
+
 ## Updating
 
 To re-vendor a newer upstream release: copy the new release over this
-directory, re-apply the `recv_frames_wake_blocking` change described
-above, and run `cargo test -p tokio-yamux` plus the workspace test suite.
+directory, re-apply the `recv_frames_wake_blocking` change and the CI
+hygiene changes described above, and run `cargo test -p tokio-yamux` plus
+the workspace test suite.
