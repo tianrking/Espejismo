@@ -183,3 +183,41 @@ in `tests/window_update_deadlock.rs` before exercising the transfer: its
 restricted environment. The TCP integration regression therefore remains
 unverified here; the 64 MiB in-memory encrypted transport reproduction above
 did pass.
+
+## Round 009 — repeat reproduction on de
+
+### Reference and scope
+
+The upstream Yamux protocol spec describes receive-window updates as the
+mechanism that lets a stream continue beyond its current receive window
+([HashiCorp Yamux protocol spec](https://github.com/hashicorp/yamux/blob/master/spec.md)).
+The vendored writer wakeup regression remains covered by both library tests and
+the one-way TCP integration test. This round only repeats the current
+reproducer; it does not change the TCP/Yamux transport, encrypted framing, or
+product positioning.
+
+### Reproduction and verification
+
+Commands:
+
+```sh
+cargo test -p espejismo-core encrypted_transport_with_yamux_mux_preserves_bulk_integrity --offline -- --nocapture
+cargo test -p tokio-yamux --lib --offline
+cargo test -p tokio-yamux --test window_update_deadlock --offline -- --nocapture
+```
+
+Results on 2026-09-29:
+
+- The encrypted 64 MiB integrity test **passed**, validating all
+  67,108,864 bytes in **40.17 s**. This is a single correctness run, not a
+  before/after throughput comparison.
+- All **23 tokio-yamux library tests passed** in **30.20 s**.
+- The focused TCP integration test could not start: binding
+  `127.0.0.1:0` returned OS `PermissionDenied` before exercising the transfer.
+
+No production change or throughput improvement is claimed. The local encrypted
+Yamux loopback hang remains resolved at this revision. The de → jp curl exit 18
+issue remains un-reproduced and unattributed; this in-memory run provides no
+evidence about public-route latency, loss, or MTU behavior. Reproduction on the
+TCP test and failing public route still requires an environment that permits
+loopback binding and access to both peers.
