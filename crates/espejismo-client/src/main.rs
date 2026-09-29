@@ -20,6 +20,7 @@ use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tracing::{debug, info};
 
+mod adaptive;
 mod handler;
 mod mux;
 mod route;

@@ -455,10 +455,78 @@ pub fn apply_named_profile(config: &mut EspejismoConfig, name: &str) -> Result<(
     Ok(())
 }
 
-/// Apply throughput settings scaled to a measured round-trip time.
+/// BDP-derived minimums for the throughput-critical tunables on high-RTT
+/// paths. Computed from a measured RTT; the caller decides which fields are
+/// eligible (not explicitly configured) before applying.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdaptiveThroughputFloor {
+    /// Minimum frame-transport buffer bytes.
+    pub tunnel_buffer: usize,
+    /// Minimum mux stream window bytes.
+    pub mux_window_bytes: usize,
+    /// Minimum TCP socket buffer bytes (0 = leave to the OS).
+    pub tcp_buffer_bytes: usize,
+}
+
+/// Estimate bandwidth-delay product using a fixed 500 Mbit/s target rate.
+/// RTT alone cannot determine path bandwidth; the result is clamped to bound
+/// memory growth.
+pub fn adaptive_throughput_floor(rtt: std::time::Duration) -> AdaptiveThroughputFloor {
+    let bdp_bytes = (500_000_000u128 * rtt.as_nanos() / 8_000_000_000u128)
+        .clamp(1024 * 1024, 16 * 1024 * 1024) as usize;
+    AdaptiveThroughputFloor {
+        tunnel_buffer: bdp_bytes.saturating_mul(2).min(32 * 1024 * 1024),
+        mux_window_bytes: bdp_bytes,
+        tcp_buffer_bytes: 4 * 1024 * 1024,
+    }
+}
+
+/// Which throughput tunables the adaptive logic may raise. A tunable is
+/// eligible only while it still holds its default value, i.e. the operator
+/// did not explicitly configure it (via config file, profile, or CLI).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdaptiveEligibility {
+    pub tunnel_buffer: bool,
+    pub mux_window: bool,
+    pub tcp_buffers: bool,
+}
+
+impl AdaptiveEligibility {
+    /// Derive eligibility from the effective tunables. Used by the client at
+    /// startup, where only the decomposed values are available.
+    pub fn from_tunables(
+        tunnel_buffer: usize,
+        mux_window_bytes: usize,
+        tcp_send_buffer_bytes: usize,
+        tcp_recv_buffer_bytes: usize,
+    ) -> Self {
+        Self {
+            tunnel_buffer: tunnel_buffer == defaults::default_tunnel_buffer(),
+            mux_window: mux_window_bytes == defaults::default_native_mux_initial_window_bytes(),
+            // TCP socket buffers default to 0, meaning "leave to the OS".
+            tcp_buffers: tcp_send_buffer_bytes == 0 && tcp_recv_buffer_bytes == 0,
+        }
+    }
+
+    /// Derive eligibility from a full config.
+    pub fn from_config(config: &EspejismoConfig) -> Self {
+        Self::from_tunables(
+            config.shared.tunnel_buffer,
+            config.shared.mux.native_initial_window_bytes,
+            config.shared.tcp.send_buffer_bytes,
+            config.shared.tcp.recv_buffer_bytes,
+        )
+    }
+}
+
+/// Raise throughput tunables to BDP-derived minimums for a measured
+/// round-trip time.
 ///
-/// RTT alone cannot determine path bandwidth, so this prototype estimates BDP
-/// using a fixed 500 Mbit/s target and bounds memory growth.
+/// Only the bounded buffer/window floors are adjusted; unlike the
+/// `auto-throughput` named profile this does not touch obfuscation, pacing,
+/// or pool sizing. Values are only ever raised, never lowered, and fields
+/// the operator explicitly configured are left alone. RTT below 100 ms is
+/// treated as a low-latency path and changes nothing.
 pub fn apply_adaptive_throughput(
     config: &mut EspejismoConfig,
     rtt: std::time::Duration,
@@ -467,16 +535,30 @@ pub fn apply_adaptive_throughput(
         return Ok(());
     }
 
-    apply_named_profile(config, "auto-throughput")?;
-
-    let bdp_bytes = (500_000_000u128 * rtt.as_nanos() / 8_000_000_000u128)
-        .clamp(1024 * 1024, 16 * 1024 * 1024) as usize;
-    config.shared.mux.native_initial_window_bytes =
-        config.shared.mux.native_initial_window_bytes.max(bdp_bytes);
-    config.shared.tunnel_buffer = config
-        .shared
-        .tunnel_buffer
-        .max(bdp_bytes.saturating_mul(2).min(32 * 1024 * 1024));
+    let floor = adaptive_throughput_floor(rtt);
+    let eligible = AdaptiveEligibility::from_config(config);
+    if eligible.tunnel_buffer {
+        config.shared.tunnel_buffer = config.shared.tunnel_buffer.max(floor.tunnel_buffer);
+    }
+    if eligible.mux_window {
+        config.shared.mux.native_initial_window_bytes = config
+            .shared
+            .mux
+            .native_initial_window_bytes
+            .max(floor.mux_window_bytes);
+    }
+    if eligible.tcp_buffers {
+        config.shared.tcp.send_buffer_bytes = config
+            .shared
+            .tcp
+            .send_buffer_bytes
+            .max(floor.tcp_buffer_bytes);
+        config.shared.tcp.recv_buffer_bytes = config
+            .shared
+            .tcp
+            .recv_buffer_bytes
+            .max(floor.tcp_buffer_bytes);
+    }
     Ok(())
 }
 
@@ -511,9 +593,10 @@ pub fn encode_config_base64(toml: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::defaults;
     use super::{
-        apply_adaptive_throughput, apply_named_profile, config_to_toml, encode_config_base64,
-        example_config, load_config_base64, parse_config, EspejismoConfig,
+        adaptive_throughput_floor, apply_adaptive_throughput, apply_named_profile, config_to_toml,
+        encode_config_base64, example_config, load_config_base64, parse_config, EspejismoConfig,
     };
 
     #[test]
@@ -714,17 +797,54 @@ mod tests {
     fn adaptive_throughput_scales_buffers_from_rtt() {
         let mut config = EspejismoConfig::default();
         apply_adaptive_throughput(&mut config, std::time::Duration::from_millis(250)).unwrap();
-        assert_eq!(
-            config.shared.mux.native_initial_window_bytes,
-            16 * 1024 * 1024
-        );
+        // BDP at 500 Mbit/s * 250 ms = 15_625_000 bytes.
+        assert_eq!(config.shared.mux.native_initial_window_bytes, 15_625_000);
         assert_eq!(config.shared.tunnel_buffer, 31_250_000);
-        assert_eq!(config.local.tunnel_pool.bulk_lanes, 6);
+        assert_eq!(config.shared.tcp.send_buffer_bytes, 4 * 1024 * 1024);
+        assert_eq!(config.shared.tcp.recv_buffer_bytes, 4 * 1024 * 1024);
+        // Narrowed: pool sizing and obfuscation are no longer touched.
+        assert_eq!(
+            config.local.tunnel_pool.bulk_lanes,
+            defaults::default_tunnel_pool_bulk_lanes()
+        );
 
         let mut short_rtt = EspejismoConfig::default();
-        let before = short_rtt.shared.tunnel_buffer;
+        let before = short_rtt.clone();
         apply_adaptive_throughput(&mut short_rtt, std::time::Duration::from_millis(50)).unwrap();
-        assert_eq!(short_rtt.shared.tunnel_buffer, before);
+        assert_eq!(short_rtt.shared.tunnel_buffer, before.shared.tunnel_buffer);
+        assert_eq!(
+            short_rtt.shared.mux.native_initial_window_bytes,
+            before.shared.mux.native_initial_window_bytes
+        );
+    }
+
+    #[test]
+    fn adaptive_throughput_respects_explicit_config() {
+        let mut config = EspejismoConfig::default();
+        // Operator explicitly tuned these; adaptive must leave them alone.
+        config.shared.tunnel_buffer = 2 * 1024 * 1024;
+        config.shared.mux.native_initial_window_bytes = 2 * 1024 * 1024;
+        config.shared.tcp.send_buffer_bytes = 512 * 1024;
+        config.shared.tcp.recv_buffer_bytes = 512 * 1024;
+        apply_adaptive_throughput(&mut config, std::time::Duration::from_millis(250)).unwrap();
+        assert_eq!(config.shared.tunnel_buffer, 2 * 1024 * 1024);
+        assert_eq!(
+            config.shared.mux.native_initial_window_bytes,
+            2 * 1024 * 1024
+        );
+        assert_eq!(config.shared.tcp.send_buffer_bytes, 512 * 1024);
+        assert_eq!(config.shared.tcp.recv_buffer_bytes, 512 * 1024);
+    }
+
+    #[test]
+    fn adaptive_throughput_floor_is_bounded() {
+        // Very high RTT clamps the floor instead of growing without bound.
+        let floor = adaptive_throughput_floor(std::time::Duration::from_secs(10));
+        assert_eq!(floor.mux_window_bytes, 16 * 1024 * 1024);
+        assert_eq!(floor.tunnel_buffer, 32 * 1024 * 1024);
+        // Very low RTT still yields the minimum floor (caller gates on threshold).
+        let floor = adaptive_throughput_floor(std::time::Duration::from_millis(10));
+        assert_eq!(floor.mux_window_bytes, 1024 * 1024);
     }
 
     #[test]

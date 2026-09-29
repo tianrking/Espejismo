@@ -8,8 +8,8 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use anyhow::{Context, Result};
 use espejismo_core::{
     connect_handshake, connect_http2_underlay, connect_tcp_stream, connect_websocket_underlay,
-    spawn_frame_transport, split_authority, FrameOptions, HandshakeConfig, Metrics,
-    PortHoppingConfig, RuntimeState, StreamPriority, TcpConfig, TransportConnector,
+    spawn_frame_transport, split_authority, AdaptiveEligibility, FrameOptions, HandshakeConfig,
+    Metrics, PortHoppingConfig, RuntimeState, StreamPriority, TcpConfig, TransportConnector,
     TransportTarget, TunnelLaneSnapshot, TunnelPoolConfig, UnderlayConfig, UnderlayMode,
 };
 use futures::StreamExt;
@@ -18,6 +18,7 @@ use tokio::sync::{Mutex, RwLock};
 use tokio::time::timeout;
 use tracing::debug;
 
+use crate::adaptive::AdaptiveThroughput;
 use crate::mux::{client_session, MuxControl, MuxRuntimeConfig, MuxStream};
 
 const LANE_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -71,8 +72,7 @@ pub(crate) struct TunnelManager {
     server: String,
     handshake: HandshakeConfig,
     frames: FrameOptions,
-    mux: MuxRuntimeConfig,
-    tunnel_buffer: usize,
+    adaptive: Arc<Mutex<AdaptiveThroughput>>,
     max_reconnect_attempts: u32,
     max_connection_age: Duration,
     metrics: Metrics,
@@ -297,18 +297,29 @@ impl TunnelManager {
                 })
             })
             .collect();
+        let eligibility = AdaptiveEligibility::from_tunables(
+            config.tunnel_buffer,
+            config.mux.native_initial_window_bytes,
+            config.tcp.send_buffer_bytes,
+            config.tcp.recv_buffer_bytes,
+        );
+        let adaptive = Arc::new(Mutex::new(AdaptiveThroughput::new(
+            config.mux,
+            config.tunnel_buffer,
+            config.tcp,
+            eligibility,
+        )));
         Self {
             server: config.server,
             handshake: config.handshake,
             frames,
-            mux: config.mux,
-            tunnel_buffer: config.tunnel_buffer,
+            adaptive: adaptive.clone(),
             max_reconnect_attempts: config.pool.max_reconnect_attempts.max(1),
             max_connection_age: Duration::from_secs(config.pool.max_connection_age_secs.max(1)),
             metrics,
             runtime_state,
             connector: Arc::new(TcpTransportConnector {
-                options: config.tcp,
+                adaptive,
                 underlay: config.underlay,
             }),
             port_hopping: config.port_hopping,
@@ -435,6 +446,7 @@ impl TunnelManager {
     async fn connect_lane(&self, lane: Arc<TunnelLane>) -> Result<MuxControl> {
         self.runtime_state.set_tunnel_state("connecting");
         apply_reconnect_backoff(&self.runtime_state).await;
+        let tcp_start = Instant::now();
         let mut upstream = match timeout(
             LANE_CONNECT_TIMEOUT,
             self.connector.connect(TransportTarget {
@@ -456,6 +468,8 @@ impl TunnelManager {
             }
         };
         self.metrics.inc_active_physical();
+        let tcp_rtt = tcp_start.elapsed();
+        let handshake_start = Instant::now();
         let keys = match connect_handshake(&mut upstream, &self.handshake).await {
             Ok(keys) => {
                 self.metrics.inc_handshake_success();
@@ -486,8 +500,19 @@ impl TunnelManager {
         if frames.is_stealth() {
             frames.stealth_frame_size = frames.select_stealth_frame_size(keys.stealth_selector());
         }
-        let transport = spawn_frame_transport(upstream, keys, frames, self.tunnel_buffer);
-        let (control, mut session) = client_session(transport, self.mux);
+        let handshake_rtt = handshake_start.elapsed();
+        // Mux-agnostic RTT samples (TCP connect + handshake), so Yamux gets a
+        // usable RTT source without a mux-level ping. Updated tunables apply
+        // to this and subsequently established sessions; existing sessions
+        // keep draining with the parameters they were created with.
+        let (mux, tunnel_buffer) = {
+            let mut adaptive = self.adaptive.lock().await;
+            adaptive.observe_rtt(tcp_rtt);
+            adaptive.observe_rtt(handshake_rtt);
+            (adaptive.mux(), adaptive.tunnel_buffer())
+        };
+        let transport = spawn_frame_transport(upstream, keys, frames, tunnel_buffer);
+        let (control, mut session) = client_session(transport, mux);
         let metrics = self.metrics.clone();
         let runtime_state = self.runtime_state.clone();
         let lane_for_task = lane.clone();
@@ -699,7 +724,7 @@ fn hopped_endpoint(endpoint: &str, port_hopping: &PortHoppingConfig) -> String {
 
 #[derive(Clone)]
 struct TcpTransportConnector {
-    options: TcpConfig,
+    adaptive: Arc<Mutex<AdaptiveThroughput>>,
     underlay: UnderlayConfig,
 }
 
@@ -710,7 +735,8 @@ impl TransportConnector for TcpTransportConnector {
     ) -> espejismo_core::extension::BoxFutureResult<'a, Box<dyn espejismo_core::TransportStream>>
     {
         Box::pin(async move {
-            let stream = connect_tcp_stream(&target.endpoint, &self.options).await?;
+            let options = self.adaptive.lock().await.tcp();
+            let stream = connect_tcp_stream(&target.endpoint, &options).await?;
             match self.underlay.mode {
                 UnderlayMode::Tcp => {
                     Ok(Box::new(stream) as Box<dyn espejismo_core::TransportStream>)

@@ -773,11 +773,10 @@ mod tests {
 
     // Same full-stack shape as the native test above but exercising the yamux
     // path with the operator-tuned window (P1: config now maps to YamuxConfig).
+    // Regression test for the yamux window-update writer stall (fixed in
+    // crates/tokio-yamux, see its VENDOR.md): a one-way bulk transfer larger
+    // than the stream window must complete.
     #[tokio::test]
-    // Yamux window-update stall under investigation; reproduce locally with
-    // `cargo test -p espejismo-core -- --ignored bulk_integrity`.
-    // See docs/notes-long-transfer-repro.md.
-    #[ignore = "yamux window-update stall: transfer stops at window cap"]
     async fn encrypted_transport_with_yamux_mux_preserves_bulk_integrity() {
         use super::spawn_frame_transport;
         use crate::crypto::{accept_handshake, connect_handshake, HandshakeConfig};
@@ -849,8 +848,10 @@ mod tests {
         });
 
         let mut received = Vec::with_capacity(total);
+        // Full-stack (encrypted transport + pumps) throughput in test is
+        // ~1.7 MB/s, so 64 MiB needs ~40 s; allow generous headroom for CI.
         let read_result = tokio::time::timeout(
-            Duration::from_secs(15),
+            Duration::from_secs(120),
             client_stream.read_to_end(&mut received),
         )
         .await;
@@ -862,7 +863,7 @@ mod tests {
             sent.load(std::sync::atomic::Ordering::Relaxed)
         );
         read_result.unwrap().unwrap();
-        tokio::time::timeout(Duration::from_secs(15), writer)
+        tokio::time::timeout(Duration::from_secs(120), writer)
             .await
             .expect("Yamux bulk writer did not finish after receiver observed EOF")
             .unwrap();
