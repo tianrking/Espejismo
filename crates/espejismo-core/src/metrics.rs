@@ -324,7 +324,7 @@ fn metric(output: &mut String, role: &str, name: &str, value: u64) {
     output.push_str("espejismo_");
     output.push_str(name);
     output.push_str("{role=\"");
-    output.push_str(role);
+    push_label_value(output, role);
     output.push_str("\"} ");
     output.push_str(&value.to_string());
     output.push('\n');
@@ -334,9 +334,9 @@ fn user_metric(output: &mut String, role: &str, user: &str, name: &str, value: u
     output.push_str("espejismo_");
     output.push_str(name);
     output.push_str("{role=\"");
-    output.push_str(role);
+    push_label_value(output, role);
     output.push_str("\",user=\"");
-    output.push_str(&user.replace('"', "\\\""));
+    push_label_value(output, user);
     output.push_str("\"} ");
     output.push_str(&value.to_string());
     output.push('\n');
@@ -346,12 +346,26 @@ fn reason_metric(output: &mut String, role: &str, reason: &str, name: &str, valu
     output.push_str("espejismo_");
     output.push_str(name);
     output.push_str("{role=\"");
-    output.push_str(role);
+    push_label_value(output, role);
     output.push_str("\",reason=\"");
-    output.push_str(reason);
+    push_label_value(output, reason);
     output.push_str("\"} ");
     output.push_str(&value.to_string());
     output.push('\n');
+}
+
+// Prometheus text format requires backslash, quote, and line-feed escaping in
+// label values. Escape every label through the same path so unusual role names
+// and user supplied labels cannot split a sample into malformed exposition.
+fn push_label_value(output: &mut String, value: &str) {
+    for ch in value.chars() {
+        match ch {
+            '\\' => output.push_str("\\\\"),
+            '"' => output.push_str("\\\""),
+            '\n' => output.push_str("\\n"),
+            _ => output.push(ch),
+        }
+    }
 }
 
 fn sanitize_reason(reason: &str) -> String {
@@ -363,4 +377,19 @@ fn sanitize_reason(reason: &str) -> String {
         })
         .take(64)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prometheus_labels_escape_backslash_quote_and_newline() {
+        let metrics = Metrics::default();
+        metrics.inc_user_handshake_success("alice\"\\\nremote");
+        let rendered = metrics.render_prometheus("local\"\\\nrole");
+        assert!(rendered.contains("role=\"local\\\"\\\\\\nrole\""));
+        assert!(rendered.contains("user=\"alice\\\"\\\\\\nremote\""));
+        assert!(!rendered.contains("\nremote\""));
+    }
 }

@@ -50,3 +50,18 @@ The logger intentionally suppresses dependency frame-body dumps from crates such
 as `tokio_yamux`. Those logs can contain huge per-frame payload renderings and
 can dominate disk I/O during throughput tests. Use Espejismo module filters,
 for example `info,espejismo_core=debug`, when debugging application behavior.
+
+## Metrics
+
+The admin endpoint `GET /metrics` exposes Prometheus text format. Use the
+cumulative byte counters to graph traffic rates (Prometheus computes bytes/s):
+
+```promql
+rate(espejismo_bytes_client_to_remote_total[5m])
+rate(espejismo_bytes_remote_to_client_total[5m])
+```
+
+The current endpoint does not report transport retransmissions or live mux
+window occupancy. UDP reliability helpers are not wired into a production
+path, and mux windows are configured per stream; do not interpret the byte
+counters or configured window as retransmission/loss telemetry.
