@@ -31,112 +31,170 @@ use handler::{handle_http_client, handle_socks5_client};
 use tunnel::{TunnelManager, TunnelManagerConfig, TunnelService};
 
 #[derive(Parser, Clone, Debug)]
-#[command(name = "espejismo-local", version)]
+#[command(
+    name = "espejismo-local",
+    version,
+    about = "Local SOCKS5, HTTP, and TUN client for an Espejismo tunnel",
+    after_help = "Examples:\n  espejismo-local --config client.toml\n  espejismo-local --config client.toml --check-config\n  espejismo-local --import-profile 'espejismo://import/...' --write-config client.toml\n  espejismo-local --config client.toml --tun-enabled --tun-auto-route --tun-auto-dns"
+)]
 struct Args {
+    /// Load TOML settings from this file. Example: --config client.toml.
     #[arg(long)]
     config: Option<String>,
+    /// Load TOML settings from a base64-encoded string.
     #[arg(long)]
     config_base64: Option<String>,
+    /// Print a starter TOML configuration and exit.
     #[arg(long)]
     print_example_config: bool,
+    /// Print a base64-encoded starter configuration and exit.
     #[arg(long)]
     print_example_config_base64: bool,
+    /// Apply a built-in profile before CLI overrides, such as --profile balanced.
     #[arg(long)]
     profile: Option<String>,
+    /// Print the selected effective configuration as base64 and exit.
     #[arg(long)]
     print_config_base64: bool,
+    /// Print the selected effective configuration as TOML and exit.
     #[arg(long)]
     print_config: bool,
+    /// Write the selected effective configuration to a file and exit.
     #[arg(long)]
     write_config: Option<PathBuf>,
+    /// Decode a base64 configuration string to TOML and exit.
     #[arg(long)]
     decode_config_base64: Option<String>,
+    /// Validate configuration and local prerequisites, then exit.
     #[arg(long)]
     check_config: bool,
+    /// Run deployment diagnostics and profile advice, then exit.
     #[arg(long)]
     doctor: bool,
+    /// Connect to the configured server and complete a handshake, then exit.
     #[arg(long)]
     probe_server: bool,
+    /// Check the configured release metadata endpoint and exit.
     #[arg(long)]
     check_update: bool,
+    /// Override the release metadata URL used by --check-update.
     #[arg(long)]
     update_url: Option<String>,
+    /// Print a shareable client import URL and exit.
     #[arg(long)]
     print_client_profile: bool,
+    /// Set the name embedded in the exported client profile. Example: --profile-name laptop.
     #[arg(long, default_value = "default")]
     profile_name: String,
+    /// Import settings from an espejismo:// client profile URL.
     #[arg(long)]
     import_profile: Option<String>,
+    /// Override the local SOCKS5 listener address. Example: --socks5-listen 127.0.0.1:6680.
     #[arg(long)]
     socks5_listen: Option<SocketAddr>,
+    /// Override the local HTTP proxy listener address. Example: --http-listen 127.0.0.1:6681.
     #[arg(long)]
     http_listen: Option<SocketAddr>,
+    /// Enable the local TUN interface.
     #[arg(long)]
     tun_enabled: bool,
+    /// Set the TUN interface name. Example: --tun-name esptun0.
     #[arg(long)]
     tun_name: Option<String>,
+    /// Set the TUN IPv4 address.
     #[arg(long)]
     tun_address: Option<std::net::Ipv4Addr>,
+    /// Set the TUN IPv4 destination or peer address.
     #[arg(long)]
     tun_destination: Option<std::net::Ipv4Addr>,
+    /// Set the TUN IPv4 network prefix length, from 0 to 32.
     #[arg(long)]
     tun_prefix: Option<u8>,
+    /// Set the TUN interface MTU in bytes.
     #[arg(long)]
     tun_mtu: Option<u16>,
+    /// Install routes that send system traffic through the TUN interface.
     #[arg(long)]
     tun_auto_route: bool,
+    /// Configure system DNS to use the TUN DNS servers.
     #[arg(long)]
     tun_auto_dns: bool,
+    /// Remove routes and DNS changes left by a previous TUN run, then exit.
     #[arg(long)]
     tun_route_cleanup: bool,
+    /// Set comma-separated DNS server IP addresses for TUN mode. Example: --tun-dns 1.1.1.1,8.8.8.8.
     #[arg(long, value_delimiter = ',')]
     tun_dns: Vec<IpAddr>,
+    /// Disable UDP forwarding in TUN mode.
     #[arg(long)]
     tun_disable_udp: bool,
+    /// Set the idle timeout for TUN UDP flows, in seconds.
     #[arg(long)]
     tun_udp_timeout_secs: Option<u64>,
+    /// Comma-separated UDP destination ports to block in TUN mode. Example: --tun-udp-block-ports 443,5353.
     #[arg(long, value_delimiter = ',')]
     tun_udp_block_ports: Vec<u16>,
+    /// Override the remote server host and port. Example: --server remote.example.com:6690.
     #[arg(long)]
     server: Option<String>,
+    /// Override the pre-shared key; also read from ESPEJISMO_PSK when set.
     #[arg(long, env = "ESPEJISMO_PSK")]
     psk: Option<String>,
+    /// Override the allowed clock difference between peers, in seconds.
     #[arg(long)]
     clock_skew_secs: Option<i64>,
+    /// Set the maximum data-frame padding in bytes.
     #[arg(long)]
     max_padding: Option<usize>,
+    /// Set the maximum random frame delay in milliseconds.
     #[arg(long)]
     jitter_ms: Option<u64>,
+    /// Set the chance of adding padding, from 0 to 100 percent.
     #[arg(long)]
     padding_chance_percent: Option<u8>,
+    /// Set the backpressure detection threshold in milliseconds.
     #[arg(long)]
     backpressure_threshold_ms: Option<u64>,
+    /// Set the delay before retrying after backpressure, in milliseconds.
     #[arg(long)]
     backpressure_cooldown_ms: Option<u64>,
+    /// Set the maximum handshake padding in bytes.
     #[arg(long)]
     handshake_padding: Option<usize>,
+    /// Set the proof-of-work puzzle difficulty in bits.
     #[arg(long)]
     puzzle_bits: Option<u8>,
+    /// Set the per-tunnel I/O buffer size in bytes.
     #[arg(long)]
     tunnel_buffer: Option<usize>,
+    /// Set the minimum number of tunnel connections to keep available.
     #[arg(long)]
     tunnel_min_connections: Option<usize>,
+    /// Set the maximum number of concurrent tunnel connections.
     #[arg(long)]
     tunnel_max_connections: Option<usize>,
+    /// Set the number of connections reserved for interactive traffic.
     #[arg(long)]
     tunnel_interactive_lanes: Option<usize>,
+    /// Set the number of connections reserved for bulk traffic.
     #[arg(long)]
     tunnel_bulk_lanes: Option<usize>,
+    /// Set the logging filter, such as info, debug, or espejismo=trace.
     #[arg(long)]
     log_level: Option<String>,
+    /// Select human-readable or JSON log output. Example: --log-format json.
     #[arg(long)]
     log_format: Option<String>,
+    /// Append logs to this file. Example: --log-file ./client.log.
     #[arg(long)]
     log_file: Option<PathBuf>,
+    /// Disable ANSI color codes in terminal log output.
     #[arg(long)]
     no_log_ansi: bool,
+    /// Bind the local admin API to this address. Example: --admin-listen 127.0.0.1:9090.
     #[arg(long)]
     admin_listen: Option<SocketAddr>,
+    /// Set the bearer token required by the admin API.
     #[arg(long)]
     admin_token: Option<String>,
 }

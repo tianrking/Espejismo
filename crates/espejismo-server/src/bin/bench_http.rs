@@ -12,12 +12,16 @@ const DEFAULT_CHUNK_BYTES: usize = 256 * 1024;
 #[derive(Debug, Parser)]
 #[command(about = "Small Rust HTTP source/sink for Espejismo throughput tests")]
 struct Args {
+    /// Address for the benchmark HTTP listener. Example: --listen 0.0.0.0:18082.
     #[arg(long, default_value = "0.0.0.0:18082")]
     listen: SocketAddr,
+    /// Default response size for downloads without a size in the URL, in MiB.
     #[arg(long, default_value_t = 256)]
     default_download_mib: u64,
+    /// Maximum accepted upload size, in MiB.
     #[arg(long, default_value_t = 4096)]
     max_upload_mib: u64,
+    /// Buffer chunk size for benchmark transfers, in bytes.
     #[arg(long, default_value_t = DEFAULT_CHUNK_BYTES)]
     chunk_bytes: usize,
 }

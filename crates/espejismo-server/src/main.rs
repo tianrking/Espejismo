@@ -33,78 +33,119 @@ use handler::handle_peer;
 use limits::{UserLimitConfig, UserLimitRegistry};
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "espejismo-remote", version)]
+#[command(
+    name = "espejismo-remote",
+    version,
+    about = "Remote authenticated Espejismo tunnel endpoint",
+    after_help = "Examples:\n  espejismo-remote --config server.toml\n  espejismo-remote --config server.toml --check-config\n  espejismo-remote --listen 0.0.0.0:6690 --psk 'replace-with-a-long-secret'"
+)]
 pub(crate) struct Args {
+    /// Load TOML settings from this file. Example: --config server.toml.
     #[arg(long)]
     config: Option<String>,
+    /// Load TOML settings from a base64-encoded string.
     #[arg(long)]
     config_base64: Option<String>,
+    /// Print a starter TOML configuration and exit.
     #[arg(long)]
     print_example_config: bool,
+    /// Print a base64-encoded starter configuration and exit.
     #[arg(long)]
     print_example_config_base64: bool,
+    /// Apply a built-in profile before CLI overrides, such as --profile server-safe.
     #[arg(long)]
     profile: Option<String>,
+    /// Print the selected effective configuration as base64 and exit.
     #[arg(long)]
     print_config_base64: bool,
+    /// Print the selected effective configuration as TOML and exit.
     #[arg(long)]
     print_config: bool,
+    /// Write the selected effective configuration to a file and exit.
     #[arg(long)]
     write_config: Option<PathBuf>,
+    /// Decode a base64 configuration string to TOML and exit.
     #[arg(long)]
     decode_config_base64: Option<String>,
+    /// Validate configuration and server prerequisites, then exit.
     #[arg(long)]
     check_config: bool,
+    /// Run deployment diagnostics and profile advice, then exit.
     #[arg(long)]
     doctor: bool,
+    /// Check the configured release metadata endpoint and exit.
     #[arg(long)]
     check_update: bool,
+    /// Override the release metadata URL used by --check-update.
     #[arg(long)]
     update_url: Option<String>,
+    /// Override the tunnel listener address. Example: --listen 0.0.0.0:6690.
     #[arg(long)]
     listen: Option<SocketAddr>,
+    /// Override the pre-shared key; also read from ESPEJISMO_PSK when set.
     #[arg(long, env = "ESPEJISMO_PSK")]
     psk: Option<String>,
+    /// Override the allowed clock difference between peers, in seconds.
     #[arg(long)]
     clock_skew_secs: Option<i64>,
+    /// Set the maximum data-frame padding in bytes.
     #[arg(long)]
     max_padding: Option<usize>,
+    /// Set the maximum random frame delay in milliseconds.
     #[arg(long)]
     jitter_ms: Option<u64>,
+    /// Set the chance of adding padding, from 0 to 100 percent.
     #[arg(long)]
     padding_chance_percent: Option<u8>,
+    /// Set the backpressure detection threshold in milliseconds.
     #[arg(long)]
     backpressure_threshold_ms: Option<u64>,
+    /// Set the delay before retrying after backpressure, in milliseconds.
     #[arg(long)]
     backpressure_cooldown_ms: Option<u64>,
+    /// Set the handshake deadline in milliseconds.
     #[arg(long)]
     handshake_timeout_ms: Option<u64>,
+    /// Set the delay before rejecting an unsuccessful handshake, in milliseconds.
     #[arg(long)]
     reject_delay_ms: Option<u64>,
+    /// Set the maximum handshake padding in bytes.
     #[arg(long)]
     max_handshake_padding: Option<usize>,
+    /// Set how long completed handshakes remain in the replay cache, in seconds.
     #[arg(long)]
     replay_window_secs: Option<i64>,
+    /// Set the proof-of-work puzzle difficulty in bits.
     #[arg(long)]
     puzzle_bits: Option<u8>,
+    /// Set the per-tunnel I/O buffer size in bytes.
     #[arg(long)]
     tunnel_buffer: Option<usize>,
+    /// Set the delay before starting service after launch, in milliseconds.
     #[arg(long)]
     cold_start_delay_ms: Option<u64>,
+    /// Set the maximum number of connections held in the tarpit.
     #[arg(long)]
     tarpit_max: Option<usize>,
+    /// Set how long tarpit connections are held, in seconds.
     #[arg(long)]
     tarpit_hold_secs: Option<u64>,
+    /// Set the logging filter, such as info, debug, or espejismo=trace.
     #[arg(long)]
     log_level: Option<String>,
+    /// Select human-readable or JSON log output. Example: --log-format json.
     #[arg(long)]
     log_format: Option<String>,
+    /// Append logs to this file. Example: --log-file ./server.log.
     #[arg(long)]
     log_file: Option<PathBuf>,
+    /// Disable ANSI color codes in terminal log output.
     #[arg(long)]
     no_log_ansi: bool,
+    /// Bind the admin API to this address. Example: --admin-listen 127.0.0.1:9090.
     #[arg(long)]
     admin_listen: Option<SocketAddr>,
+    /// Set the bearer token required by the admin API.
     #[arg(long)]
     admin_token: Option<String>,
 }
