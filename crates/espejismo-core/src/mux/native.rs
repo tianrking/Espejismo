@@ -720,7 +720,13 @@ async fn handle_frame(
             if payload.len() != 8 {
                 bail!("native mux malformed ping");
             }
-            let nonce = u64::from_be_bytes(payload[..8].try_into().expect("payload len checked"));
+            let nonce = u64::from_be_bytes(
+                payload
+                    .get(..8)
+                    .ok_or_else(|| anyhow::anyhow!("native mux malformed ping"))?
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("native mux malformed ping"))?,
+            );
             if let Some((started, reply)) = ctx.pending_pings.remove(&nonce) {
                 let _ = reply.send(started.elapsed());
             } else {
