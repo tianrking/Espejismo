@@ -13,6 +13,7 @@ use espejismo_core::{
     TransportTarget, TunnelLaneSnapshot, TunnelPoolConfig, UnderlayConfig, UnderlayMode,
 };
 use futures::StreamExt;
+use rand::Rng;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio::sync::{Mutex, RwLock};
 use tokio::time::timeout;
@@ -781,25 +782,21 @@ impl TransportConnector for TcpTransportConnector {
     }
 }
 
-fn reconnect_backoff(lane_id: usize, failures: u32) -> Duration {
+fn reconnect_backoff(failures: u32, jitter_percent: u64) -> Duration {
     if failures == 0 {
         return Duration::ZERO;
     }
     let exponent = failures.min(6);
     let base_ms = 250_u64.saturating_mul(1_u64 << exponent);
-    // Deterministic per-lane spread avoids synchronized retries without adding
-    // randomness or allowing a failure on one lane to change another's delay.
-    let spread_percent = (lane_id as u64).wrapping_mul(37) % 21;
-    Duration::from_millis(
-        base_ms
-            .saturating_add(base_ms * spread_percent / 100)
-            .min(16_000),
-    )
+    // jitter_percent is a 80..=120 multiplier (±20%). Cap after applying it
+    // so the configured ceiling is respected even for the largest failure count.
+    Duration::from_millis((base_ms.saturating_mul(jitter_percent) / 100).min(16_000))
 }
 
 async fn apply_reconnect_backoff(lane: &TunnelLane) {
     let failures = lane.health.lock().await.consecutive_failures;
-    tokio::time::sleep(reconnect_backoff(lane.id, failures)).await;
+    let jitter_percent = rand::thread_rng().gen_range(80..=120);
+    tokio::time::sleep(reconnect_backoff(failures, jitter_percent)).await;
 }
 
 fn unix_now_secs() -> u64 {
@@ -848,31 +845,19 @@ mod tests {
     #[test]
     fn reconnect_backoff_grows_exponentially_and_caps_at_sixteen_seconds() {
         assert_eq!(reconnect_backoff(0, 0), Duration::ZERO);
-        assert_eq!(reconnect_backoff(0, 1), Duration::from_millis(500));
-        assert_eq!(reconnect_backoff(0, 2), Duration::from_millis(1_000));
-        assert_eq!(reconnect_backoff(0, 3), Duration::from_millis(2_000));
-        assert_eq!(reconnect_backoff(0, 5), Duration::from_millis(8_000));
-        assert_eq!(reconnect_backoff(0, 6), Duration::from_millis(16_000));
-        assert_eq!(reconnect_backoff(0, 99), Duration::from_millis(16_000));
+        assert_eq!(reconnect_backoff(1, 100), Duration::from_millis(500));
+        assert_eq!(reconnect_backoff(2, 100), Duration::from_millis(1_000));
+        assert_eq!(reconnect_backoff(3, 100), Duration::from_millis(2_000));
+        assert_eq!(reconnect_backoff(5, 100), Duration::from_millis(8_000));
+        assert_eq!(reconnect_backoff(6, 100), Duration::from_millis(16_000));
+        assert_eq!(reconnect_backoff(99, 120), Duration::from_millis(16_000));
     }
 
     #[test]
-    fn reconnect_backoff_spread_is_deterministic_and_lane_specific() {
-        let lane_one_delay = reconnect_backoff(1, 3);
-        assert_eq!(lane_one_delay, Duration::from_millis(2_320));
-        assert_eq!(reconnect_backoff(1, 3), lane_one_delay);
-        assert_eq!(reconnect_backoff(2, 3), Duration::from_millis(2_220));
-        assert_ne!(reconnect_backoff(1, 3), reconnect_backoff(2, 3));
-    }
-
-    #[test]
-    fn reconnect_backoff_uses_only_the_requested_lanes_failure_count() {
-        let lane_one_delay = reconnect_backoff(1, 1);
-        let lane_two_delay = reconnect_backoff(2, 99);
-
-        assert_eq!(lane_one_delay, Duration::from_millis(580));
-        assert_eq!(lane_two_delay, Duration::from_millis(16_000));
-        assert_eq!(reconnect_backoff(1, 1), lane_one_delay);
+    fn reconnect_backoff_applies_bounded_jitter() {
+        assert_eq!(reconnect_backoff(3, 80), Duration::from_millis(1_600));
+        assert_eq!(reconnect_backoff(3, 120), Duration::from_millis(2_400));
+        assert!(reconnect_backoff(99, 120) <= Duration::from_secs(16));
     }
 
     #[test]

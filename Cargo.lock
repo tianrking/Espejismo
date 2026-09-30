@@ -633,6 +633,7 @@ dependencies = [
  "espejismo-core",
  "futures",
  "netstack-smoltcp",
+ "rand",
  "serde",
  "serde_json",
  "tokio",
