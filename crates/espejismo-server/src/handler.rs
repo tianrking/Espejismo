@@ -22,7 +22,9 @@ use crate::relay::{connect_egress_tcp, limited_copy_bidirectional, relay_udp_dat
 use crate::tarpit;
 use crate::RemoteRuntime;
 
+// Bound task occupancy while waiting for a saturated global stream limit.
 const STREAM_PERMIT_TIMEOUT: Duration = Duration::from_secs(15);
+// Tunnel requests are small protocol headers; fail stalled peers promptly.
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub(crate) async fn handle_peer(

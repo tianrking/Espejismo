@@ -39,6 +39,7 @@ impl OutboundConnector for DefaultOutboundConnector {
                 &request.authority,
                 payload,
                 &request.policy,
+                // Bound one UDP reply independently of the longer TCP stream idle timeout.
                 Duration::from_secs(10),
             )
             .await
@@ -176,6 +177,7 @@ async fn relay_udp_datagram_inner(
     socket.connect(target).await?;
     socket.send(payload).await?;
     let mut response = vec![0_u8; 65_535];
+    // UDP replies are datagram transactions and should not inherit a long-lived stream timeout.
     let n = timeout(
         idle.min(Duration::from_secs(10)),
         socket.recv(&mut response),

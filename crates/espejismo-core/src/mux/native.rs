@@ -46,6 +46,7 @@ impl Default for NativeMuxConfig {
             initial_window_bytes: 1024 * 1024,
             stream_buffer_frames: 128,
             send_queue_frames: 64,
+            // Match shared.mux defaults; normal runtime construction overrides these values.
             session_idle_timeout: Duration::from_secs(300),
             drain_timeout: Duration::from_secs(30),
         }

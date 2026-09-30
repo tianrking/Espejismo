@@ -15,6 +15,7 @@ use tracing::{debug, info};
 use crate::metrics::Metrics;
 use crate::runtime_state::{RuntimeState, RuntimeStateSnapshot};
 
+// Bound local control-plane clients that stop sending an unauthenticated request midway.
 const ADMIN_HEADER_TIMEOUT: Duration = Duration::from_secs(15);
 const ADMIN_BODY_TIMEOUT: Duration = Duration::from_secs(15);
 

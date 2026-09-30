@@ -61,6 +61,7 @@ pub(crate) async fn relay_udp_via_socks5_proxy(
     let request = encode_socks5_udp_datagram(&host, port, payload)?;
     socket.send(&request).await?;
     let mut response = vec![0_u8; 65_535];
+    // A SOCKS5 UDP response is one datagram transaction, capped independently of stream idle.
     let n = timeout(
         idle.min(Duration::from_secs(10)),
         socket.recv(&mut response),

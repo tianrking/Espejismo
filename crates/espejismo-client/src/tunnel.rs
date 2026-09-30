@@ -22,6 +22,7 @@ use tracing::debug;
 use crate::adaptive::AdaptiveThroughput;
 use crate::mux::{client_session, MuxControl, MuxRuntimeConfig, MuxStream};
 
+// DNS, TCP, and handshake share a fixed ceiling so pool setup cannot stall indefinitely.
 const LANE_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

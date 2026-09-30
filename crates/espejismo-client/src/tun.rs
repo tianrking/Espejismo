@@ -21,6 +21,7 @@ use crate::route;
 use crate::tunnel::{MeteredTunnelStream, TunnelService, TunnelStream};
 
 const MAX_TUN_UDP_TASKS: usize = 1024;
+// TUN packets should not queue behind an unavailable tunnel stream for long.
 const TUN_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub async fn run_tun_ingress(

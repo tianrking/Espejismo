@@ -5,6 +5,7 @@ use tokio::time::{timeout, Duration};
 
 use super::ProxyAuth;
 
+// Bound slow local proxy clients while allowing ordinary headers to arrive incrementally.
 const HTTP_PROXY_HEADER_TIMEOUT: Duration = Duration::from_secs(15);
 
 #[derive(Clone, Debug)]
