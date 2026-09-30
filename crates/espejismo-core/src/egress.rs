@@ -31,7 +31,7 @@ impl EgressPolicy {
             .iter()
             .any(|pattern| host_matches(&normalized_host, pattern))
         {
-            bail!("egress host is blocked");
+            bail!("egress target host '{host}' is blocked by remote.egress.block_hosts");
         }
         if !self.allow_hosts.is_empty()
             && !self
@@ -39,18 +39,18 @@ impl EgressPolicy {
                 .iter()
                 .any(|pattern| host_matches(&normalized_host, pattern))
         {
-            bail!("egress host is not allowed");
+            bail!("egress target host '{host}' is not in remote.egress.allow_hosts");
         }
         if self.block_ports.contains(&port) {
-            bail!("egress port is blocked");
+            bail!("egress target port {port} is blocked by remote.egress.block_ports");
         }
         if !self.allow_ports.is_empty() && !self.allow_ports.contains(&port) {
-            bail!("egress port is not allowed");
+            bail!("egress target port {port} is not in remote.egress.allow_ports");
         }
         if self.deny_private_ips {
             if let Ok(ip) = normalized_host.parse::<IpAddr>() {
                 if is_private_or_special(ip) {
-                    bail!("private or special egress IP is blocked");
+                    bail!("egress target IP '{ip}' is private or special and remote.egress.deny_private_ips is enabled");
                 }
             }
         }
@@ -59,13 +59,19 @@ impl EgressPolicy {
 
     pub fn validate_resolved_addr(&self, addr: SocketAddr) -> Result<()> {
         if self.deny_private_ips && is_private_or_special(addr.ip()) {
-            bail!("resolved private or special egress IP is blocked");
+            bail!("resolved egress address {addr} has a private or special IP and remote.egress.deny_private_ips is enabled");
         }
         if self.block_ports.contains(&addr.port()) {
-            bail!("resolved egress port is blocked");
+            bail!(
+                "resolved egress address {addr} uses port {} blocked by remote.egress.block_ports",
+                addr.port()
+            );
         }
         if !self.allow_ports.is_empty() && !self.allow_ports.contains(&addr.port()) {
-            bail!("resolved egress port is not allowed");
+            bail!(
+                "resolved egress address {addr} uses port {} not in remote.egress.allow_ports",
+                addr.port()
+            );
         }
         Ok(())
     }
@@ -175,7 +181,9 @@ pub fn split_authority(authority: &str) -> Result<(String, u16)> {
         bail!("target authority must include a port");
     };
     let host = host.trim_matches(['[', ']']);
-    let port = port.parse::<u16>()?;
+    let port = port
+        .parse::<u16>()
+        .context("target authority port must be an integer from 0 to 65535")?;
     if host.is_empty() {
         bail!("target host is empty");
     }
@@ -220,7 +228,9 @@ mod tests {
             deny_private_ips: true,
             ..EgressPolicy::default()
         };
-        assert!(policy.validate_authority("127.0.0.1:80").is_err());
+        let error = policy.validate_authority("127.0.0.1:80").unwrap_err();
+        assert!(error.to_string().contains("127.0.0.1"));
+        assert!(error.to_string().contains("remote.egress.deny_private_ips"));
     }
 
     #[test]
@@ -230,7 +240,9 @@ mod tests {
             ..EgressPolicy::default()
         };
         assert!(policy.validate_authority("api.example.com:443").is_ok());
-        assert!(policy.validate_authority("example.net:443").is_err());
+        let error = policy.validate_authority("example.net:443").unwrap_err();
+        assert!(error.to_string().contains("example.net"));
+        assert!(error.to_string().contains("remote.egress.allow_hosts"));
     }
 
     #[test]
@@ -240,7 +252,17 @@ mod tests {
             ..EgressPolicy::default()
         };
         assert!(policy.validate_authority("example.com:443").is_ok());
-        assert!(policy.validate_authority("example.com:80").is_err());
+        let error = policy.validate_authority("example.com:80").unwrap_err();
+        assert!(error.to_string().contains("80"));
+        assert!(error.to_string().contains("remote.egress.allow_ports"));
+    }
+
+    #[test]
+    fn authority_port_errors_name_the_expected_field_and_format() {
+        let error = split_authority("example.com:service").unwrap_err();
+        assert!(error
+            .to_string()
+            .contains("target authority port must be an integer from 0 to 65535"));
     }
 
     #[test]
