@@ -4,6 +4,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
 
+// Keep scrape label cardinality and the backing maps bounded even when callers
+// provide attacker-controlled user names or failure strings.
+const MAX_USER_METRIC_SERIES: usize = 128;
+const MAX_FAILURE_REASON_SERIES: usize = 32;
+const OTHER_USER: &str = "other";
+const OTHER_FAILURE_REASON: &str = "other";
+
 #[derive(Clone, Debug, Default)]
 pub struct Metrics {
     inner: Arc<MetricsInner>,
@@ -107,7 +114,15 @@ impl Metrics {
     pub fn inc_stream_failed_reason(&self, reason: impl AsRef<str>) {
         self.inc_stream_failed();
         let mut reasons = lock_reason_metrics(&self.inner.stream_failure_reasons);
-        let key = sanitize_reason(reason.as_ref());
+        let sanitized = sanitize_reason(reason.as_ref());
+        let key = if reasons.contains_key(&sanitized)
+            || sanitized == OTHER_FAILURE_REASON
+            || reasons.len() < MAX_FAILURE_REASON_SERIES - 1
+        {
+            sanitized
+        } else {
+            OTHER_FAILURE_REASON.to_string()
+        };
         *reasons.entry(key).or_insert(0) += 1;
     }
 
@@ -294,10 +309,18 @@ impl Metrics {
 
     fn with_user(&self, user: &str, f: impl FnOnce(&mut UserMetricsSnapshot)) {
         let mut users = lock_user_metrics(&self.inner.users);
+        let key = if users.contains_key(user)
+            || user == OTHER_USER
+            || users.len() < MAX_USER_METRIC_SERIES - 1
+        {
+            user
+        } else {
+            OTHER_USER
+        };
         let entry = users
-            .entry(user.to_string())
+            .entry(key.to_string())
             .or_insert_with(|| UserMetricsSnapshot {
-                user: user.to_string(),
+                user: key.to_string(),
                 ..UserMetricsSnapshot::default()
             });
         f(entry);
@@ -410,5 +433,46 @@ mod tests {
             "espejismo_stream_failure_reason_total{role=\"server\",reason=\"bad___reason\"} 1\n"
         ));
         assert!(!rendered.contains("reason=\"bad\""));
+    }
+
+    #[test]
+    fn user_metric_series_are_bounded_with_overflow_bucket() {
+        let metrics = Metrics::default();
+        for index in 0..(MAX_USER_METRIC_SERIES + 20) {
+            metrics.inc_user_handshake_success(&format!("user-{index}"));
+        }
+
+        let snapshot = metrics.snapshot("server");
+        assert_eq!(snapshot.users.len(), MAX_USER_METRIC_SERIES);
+        let overflow = snapshot
+            .users
+            .iter()
+            .find(|user| user.user == OTHER_USER)
+            .unwrap();
+        assert_eq!(overflow.handshake_success, 21);
+    }
+
+    #[test]
+    fn failure_reason_series_are_bounded_with_overflow_bucket() {
+        let metrics = Metrics::default();
+        for index in 0..(MAX_FAILURE_REASON_SERIES + 20) {
+            metrics.inc_stream_failed_reason(format!("reason-{index}"));
+        }
+
+        let snapshot = metrics.snapshot("server");
+        assert_eq!(
+            snapshot.stream_failure_reasons.len(),
+            MAX_FAILURE_REASON_SERIES
+        );
+        let overflow = snapshot
+            .stream_failure_reasons
+            .iter()
+            .find(|reason| reason.reason == OTHER_FAILURE_REASON)
+            .unwrap();
+        assert_eq!(overflow.count, 21);
+        assert_eq!(
+            snapshot.stream_failed,
+            (MAX_FAILURE_REASON_SERIES + 20) as u64
+        );
     }
 }
