@@ -79,6 +79,53 @@ espejismo-local --config espejismo.toml --check-config
 
 ## Accepted Config Parameters
 
+### Defaults when fields are omitted
+
+These are the parser defaults from `EspejismoConfig::default()`. An absent
+optional credential or endpoint remains unset; `shared.psk` and `local.server`
+must be supplied for their respective roles. Explicit values in a TOML file or
+an applied profile take precedence.
+
+| Section | Field | Default |
+| --- | --- | --- |
+| `shared` | `clock_skew_secs`, `puzzle_bits` | `30`, `12` |
+| `shared` | `handshake_window.enabled`, `step_secs`, `previous_windows`, `future_windows` | `true`, `30`, `1`, `0` |
+| `shared` | `max_padding`, `jitter_ms`, `padding_chance_percent` | `64`, `0`, `35` |
+| `shared` | `backpressure_threshold_ms`, `backpressure_cooldown_ms` | `40`, `1000` |
+| `shared` | `tunnel_buffer`, `idle_timeout_secs`, `max_streams`, `max_physical_connections`, `key_update_frames` | `1048576`, `300`, `256`, `1024`, `16384` |
+| `shared.tcp` | `nodelay`, `keepalive_secs`, `heartbeat_secs` | `true`, `30`, `30` |
+| `shared.tcp` | `user_timeout_ms`, `send_buffer_bytes`, `recv_buffer_bytes`, `congestion_control` | `0`, `0`, `0`, unset |
+| `shared.mux` | `mode`, `native_initial_window_bytes`, `native_stream_buffer_frames`, `native_send_queue_frames`, `native_idle_timeout_secs`, `native_drain_timeout_secs` | `yamux`, `8388608`, `128`, `64`, `300`, `30` |
+| `shared.pacing` | `enabled`, `max_bytes_per_sec`, `burst_bytes`, `min_write_bytes` | `true`, `0` (uncapped), `65536`, `1024` |
+| `shared.obfuscation` | `profile`, `chunk_policy`, `randomize_chunks`, `min_chunk`, `max_chunk` | `balanced`, `balanced`, `true`, `4096`, `16384` |
+| `shared.stealth` | `frame_size`, `frame_size_candidates`, `tick_ms` | `4096`, `[]`, `50` |
+| `shared.stealth_shaper` | `enabled`, `mode`, `idle_noise`, `padding_budget_bps` | `false`, `web`, `poisson`, `0` |
+| `shared.stealth_shaper` | `min_delay_ms`, `max_delay_ms`, `idle_max_delay_ms` | `20`, `80`, `1000` |
+| `shared.underlay` | `mode` | `tcp` |
+| `shared.underlay.websocket` | `path`, `max_frame_bytes`, `host` | `"/espejismo"`, `1048576`, unset |
+| `shared.underlay.http2` | `path`, `authority`, `initial_stream_window_bytes`, `initial_connection_window_bytes`, `max_frame_bytes` | `"/espejismo"`, unset, `8388608`, `16777216`, `65536` |
+| `shared.port_hopping` | `enabled`, `ports`, `window_secs`, `seed` | `false`, `[]`, `300`, `"espejismo-port-hop"` |
+| `local` | `server`, `socks5_listen`, `http_listen` | unset, `127.0.0.1:6680`, `127.0.0.1:6681` |
+| `local` | `handshake_padding`, `http_bulk_threshold_bytes`, `auth` | `256`, `1048576`, unset |
+| `local.tunnel_pool` | `min_connections`, `max_connections`, `interactive_lanes`, `bulk_lanes` | `1`, `4`, `1`, `2` |
+| `local.tunnel_pool` | `max_reconnect_attempts`, `max_connection_age_secs` | `3`, `3600` |
+| `local.tun` | `enabled`, `name`, `address`, `prefix`, `destination`, `mtu` | `false`, `esptun0`, `10.255.0.2`, `24`, `10.255.0.1`, `1500` |
+| `local.tun` | `udp_enabled`, `udp_timeout_secs`, `udp_block_ports` | `true`, `3`, `[443]` |
+| `local.tun.route` | `enabled`, `protect_server_route`, `dns_enabled`, `dns_servers` | `false`, `true`, `false`, `[1.1.1.1, 8.8.8.8]` |
+| `remote` | `listen`, `handshake_timeout_ms`, `reject_delay_ms`, `max_handshake_padding` | `0.0.0.0:6690`, `3000`, `0`, `1024` |
+| `remote` | `replay_window_secs`, `cold_start_delay_ms`, `tarpit_max`, `tarpit_hold_secs` | `60`, `35`, `1024`, `300` |
+| `remote.fallback_http` | `mode`, `enabled`, `upstream`, `probe_timeout_ms` | `silent`, `false`, unset, `250` |
+| `remote.fallback_http` | `server`, `body` | `nginx`, built-in “It works” HTML page |
+| `remote.users[].quota` | `bytes`, `window_secs` | unset, `86400` |
+| `remote.users[].bandwidth` | `bytes_per_sec` | unset |
+| `remote.egress` | `deny_private_ips`, host/port lists, `proxy`, `socks5_proxy` | `false`, empty, unset, unset |
+| `logging` | `level`, `format`, `file`, `ansi` | `info`, `compact`, unset, `true` |
+| `admin` | `listen`, `token` | unset, unset |
+
+The table describes omitted fields, not the values selected by built-in
+profiles. For example, the `auto-throughput` profile overlays several buffer,
+chunk, socket, threshold, and lane settings described below.
+
 ### shared
 
 `shared.psk`: Shared secret for single-user mode and local client profiles.
