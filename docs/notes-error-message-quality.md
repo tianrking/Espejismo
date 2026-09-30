@@ -16,3 +16,18 @@ Keep the existing egress policy and security behavior. Improve only the diagnost
 - No performance measurement was run because this is a diagnostic text change with no expected runtime behavior or performance effect.
 
 The regression assertions verify that host and port policy errors contain the rejected value and the relevant config setting, and that malformed target ports name the expected field and format. No policy behavior changed.
+
+## Client mux stream diagnostics (round 053)
+
+The client already recorded per-attempt mux stream failures in lane health, but the returned terminal error discarded the last failure and omitted which remote server and lane were affected. Lane-control connection failures also returned without stream-open context. Updated these errors to identify the server and lane, and to retain the final mux error after retries. Added a focused message regression test.
+
+Expected benefit: an operator can correlate a failed local request with the configured remote and lane, then see the actionable transport cause (for example, a reset) without finding a separate lane-health log. This is diagnostic-only; no reconnect, mux, or protocol behavior changes, and no throughput impact is expected.
+
+Validation:
+
+- `cargo test -p espejismo-client --offline`: passed, 29 tests including the new diagnostic assertion.
+- `cargo test --workspace --offline`: client tests passed (29) and core tests passed (120), then the command produced no further output while entering the socket-dependent yamux integration phase; interrupted after waiting. No complete workspace result is claimed.
+- `cargo test --workspace --lib --offline`: core tests progressed through the transport tests, then stalled without a completion summary; interrupted. No complete library-suite result is claimed.
+- `cargo fmt --check` is blocked by an unrelated pre-existing import-order diff in `crates/espejismo-client/src/main.rs`; `rustfmt --edition 2021 crates/espejismo-client/src/tunnel.rs` completed for the changed file.
+
+Conclusion: the targeted client suite passes and covers the new message contents. Broader workspace validation is incomplete because socket-dependent tests did not terminate in this environment.

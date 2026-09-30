@@ -386,10 +386,13 @@ impl TunnelManager {
     ) -> Result<MuxStream> {
         let started = Instant::now();
         let max_attempts = self.max_reconnect_attempts.max(1);
+        let mut last_error = None;
         for attempt in 1..=max_attempts {
             if let Err(err) = self.ensure_lane_control(lane.clone()).await {
                 self.metrics.inc_stream_failed_reason("lane_connect");
-                return Err(err);
+                return Err(err).with_context(|| {
+                    format!("open mux stream on lane {} to {}", lane.id, self.server)
+                });
             }
             let result = {
                 let mut guard = lane.control.lock().await;
@@ -404,6 +407,7 @@ impl TunnelManager {
                     return Ok(stream);
                 }
                 Err(err) => {
+                    last_error = Some(err.to_string());
                     {
                         let mut guard = lane.control.lock().await;
                         *guard = None;
@@ -417,7 +421,12 @@ impl TunnelManager {
                 }
             }
         }
-        anyhow::bail!("mux stream open failed after {max_attempts} attempts")
+        Err(stream_open_failure(
+            &self.server,
+            lane.id,
+            max_attempts,
+            last_error.as_deref(),
+        ))
     }
 
     async fn ensure_lane_control(&self, lane: Arc<TunnelLane>) -> Result<()> {
@@ -807,12 +816,29 @@ fn unix_now_secs() -> u64 {
         .as_secs()
 }
 
+fn stream_open_failure(
+    server: &str,
+    lane_id: usize,
+    attempts: u32,
+    last_error: Option<&str>,
+) -> anyhow::Error {
+    match last_error {
+        Some(error) => anyhow::anyhow!(
+            "open mux stream to {server} on lane {lane_id} failed after {attempts} attempts; last error: {error}"
+        ),
+        None => anyhow::anyhow!(
+            "open mux stream to {server} on lane {lane_id} failed after {attempts} attempts"
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::Duration;
 
     use super::{
-        lane_score, reconnect_backoff, update_recent_throughput, LaneHealth, LaneKind, TunnelLane,
+        lane_score, reconnect_backoff, stream_open_failure, update_recent_throughput, LaneHealth,
+        LaneKind, TunnelLane,
     };
     use tokio::sync::Mutex;
 
@@ -901,5 +927,15 @@ mod tests {
 
         update_recent_throughput(&mut health, 2_000_000, 0, Duration::from_secs(1));
         assert_eq!(health.recent_client_to_remote_bps, 10_000_000);
+    }
+
+    #[test]
+    fn stream_open_failure_names_server_lane_attempts_and_last_error() {
+        let error = stream_open_failure("edge.example:443", 2, 3, Some("connection reset"));
+        let message = error.to_string();
+        assert!(message.contains("edge.example:443"));
+        assert!(message.contains("lane 2"));
+        assert!(message.contains("3 attempts"));
+        assert!(message.contains("connection reset"));
     }
 }
