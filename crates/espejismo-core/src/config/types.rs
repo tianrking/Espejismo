@@ -18,6 +18,7 @@ pub struct ConfigInput {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EspejismoConfig {
     #[serde(default)]
     pub shared: SharedConfig,
@@ -41,6 +42,7 @@ pub struct FrameOptionOverrides {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct SharedConfig {
     pub psk: Option<String>,
     #[serde(default = "default_clock_skew_secs")]
@@ -88,6 +90,7 @@ pub struct SharedConfig {
 }
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct HandshakeWindowConfig {
     #[serde(default = "default_handshake_window_enabled")]
     pub enabled: bool,
@@ -111,6 +114,7 @@ impl From<HandshakeWindowConfig> for crate::crypto::HandshakeWindow {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TcpConfig {
     #[serde(default = "default_tcp_nodelay")]
     pub nodelay: bool,
@@ -137,6 +141,7 @@ pub enum MuxMode {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct MuxConfig {
     #[serde(default)]
     pub mode: MuxMode,
@@ -206,6 +211,7 @@ impl SharedConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PacingConfig {
     #[serde(default = "default_pacing_enabled")]
     pub enabled: bool,
@@ -218,6 +224,7 @@ pub struct PacingConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ObfuscationConfig {
     #[serde(default)]
     pub profile: ObfuscationProfile,
@@ -232,6 +239,7 @@ pub struct ObfuscationConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StealthConfig {
     #[serde(default = "default_stealth_frame_size")]
     pub frame_size: usize,
@@ -242,6 +250,7 @@ pub struct StealthConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct StealthShaperConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -260,6 +269,7 @@ pub struct StealthShaperConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct UnderlayConfig {
     #[serde(default)]
     pub mode: UnderlayMode,
@@ -281,6 +291,7 @@ pub enum UnderlayMode {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct WebSocketUnderlayConfig {
     #[serde(default = "default_websocket_path")]
     pub path: String,
@@ -291,6 +302,7 @@ pub struct WebSocketUnderlayConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Http2UnderlayConfig {
     #[serde(default = "default_http2_path")]
     pub path: String,
@@ -305,6 +317,7 @@ pub struct Http2UnderlayConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct PortHoppingConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -334,6 +347,7 @@ impl PortHoppingConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalConfig {
     pub server: Option<String>,
     #[serde(default = "default_socks5_listen")]
@@ -353,6 +367,7 @@ pub struct LocalConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct TunnelPoolConfig {
     #[serde(default = "default_tunnel_pool_min_connections")]
     pub min_connections: usize,
@@ -369,6 +384,7 @@ pub struct TunnelPoolConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalTunConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -393,6 +409,7 @@ pub struct LocalTunConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LocalTunRouteConfig {
     #[serde(default)]
     pub enabled: bool,
@@ -405,6 +422,7 @@ pub struct LocalTunRouteConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemoteConfig {
     #[serde(default = "default_remote_listen")]
     pub listen: SocketAddr,
@@ -431,6 +449,7 @@ pub struct RemoteConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemoteUserConfig {
     pub name: String,
     pub psk: String,
@@ -441,6 +460,7 @@ pub struct RemoteUserConfig {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemoteUserQuotaConfig {
     #[serde(default)]
     pub bytes: Option<u64>,
@@ -449,12 +469,14 @@ pub struct RemoteUserQuotaConfig {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemoteUserBandwidthConfig {
     #[serde(default)]
     pub bytes_per_sec: Option<u64>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RemoteFallbackHttpConfig {
     #[serde(default)]
     pub mode: ProbeDefenseMode,
@@ -479,6 +501,7 @@ pub enum ProbeDefenseMode {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct EgressConfig {
     #[serde(default)]
     pub deny_private_ips: bool,
@@ -511,6 +534,7 @@ impl From<EgressConfig> for EgressPolicy {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct LogConfig {
     #[serde(default = "default_log_level")]
     pub level: String,
@@ -532,6 +556,7 @@ pub enum LogFormat {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct AdminConfig {
     #[serde(default)]
     pub listen: Option<SocketAddr>,

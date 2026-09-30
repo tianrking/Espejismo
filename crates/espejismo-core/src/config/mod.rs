@@ -35,7 +35,14 @@ pub fn load_config_base64(encoded: &str) -> Result<EspejismoConfig> {
 }
 
 pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
-    let config: EspejismoConfig = toml::from_str(content)?;
+    let config: EspejismoConfig = toml::from_str(content).map_err(|error| {
+        let message = error.to_string();
+        if let Some(diagnostic) = unknown_field_diagnostic(&message) {
+            anyhow::anyhow!(diagnostic)
+        } else {
+            anyhow::anyhow!(error)
+        }
+    })?;
     let validate_stealth_frame_size = |frame_size: usize, field: &str| -> Result<()> {
         anyhow::ensure!(
             frame_size <= 64 * 1024,
@@ -341,6 +348,59 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     Ok(config)
 }
 
+fn unknown_field_diagnostic(message: &str) -> Option<String> {
+    let marker = "unknown field `";
+    let start = message.find(marker)? + marker.len();
+    let tail = &message[start..];
+    let end = tail.find('`')?;
+    let field = &tail[..end];
+    let expected_marker = "expected ";
+    let expected_start = message.find(expected_marker)? + expected_marker.len();
+    let expected_text = message[expected_start..].split(['\n', '.']).next()?;
+    let mut expected = Vec::new();
+    let mut remaining = expected_text;
+    while let Some(open) = remaining.find('`') {
+        remaining = &remaining[open + 1..];
+        let Some(close) = remaining.find('`') else {
+            break;
+        };
+        expected.push(&remaining[..close]);
+        remaining = &remaining[close + 1..];
+    }
+    if expected.is_empty() {
+        expected.extend(
+            expected_text
+                .split(", or ")
+                .flat_map(|part| part.split(", "))
+                .map(str::trim),
+        );
+    }
+    let suggestion = expected
+        .into_iter()
+        .map(|candidate| (edit_distance(field, candidate), candidate))
+        .filter(|(distance, _)| *distance <= 3 && *distance < field.len().max(1) / 2 + 1)
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, candidate)| format!("; did you mean `{candidate}`?"))
+        .unwrap_or_default();
+    Some(format!("unknown config field `{field}`{suggestion}"))
+}
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    let mut row = (0..=right.len()).collect::<Vec<_>>();
+    for (i, a) in left.bytes().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, b) in right.bytes().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (row[j + 1] + 1)
+                .min(row[j] + 1)
+                .min(diagonal + usize::from(a != b));
+            diagonal = above;
+        }
+    }
+    row[right.len()]
+}
+
 pub fn apply_named_profile(config: &mut EspejismoConfig, name: &str) -> Result<()> {
     let normalized = name.trim().to_ascii_lowercase().replace('_', "-");
     match normalized.as_str() {
@@ -604,6 +664,24 @@ mod tests {
         adaptive_throughput_floor, apply_adaptive_throughput, apply_named_profile, config_to_toml,
         encode_config_base64, example_config, load_config_base64, parse_config, EspejismoConfig,
     };
+
+    #[test]
+    fn rejects_unknown_config_fields_with_a_suggestion() {
+        let err = parse_config("[shared]\nmax_stream = 12\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown config field `max_stream`"), "{err}");
+        assert!(err.contains("did you mean `max_streams`?"), "{err}");
+    }
+
+    #[test]
+    fn rejects_unknown_nested_config_fields() {
+        let err = parse_config("[local.tun]\nenabeld = true\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown config field `enabeld`"), "{err}");
+        assert!(err.contains("did you mean `enabled`?"), "{err}");
+    }
 
     #[test]
     fn example_config_roundtrips_through_toml_and_base64() {
