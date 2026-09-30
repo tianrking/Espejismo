@@ -305,4 +305,24 @@ mod tests {
         let packet = [0x00, 0x00, 0x00, 0x03, 10, b'e', b'x'];
         assert!(parse_udp_packet(&packet).is_err());
     }
+
+    #[test]
+    fn udp_parser_never_panics_on_bounded_random_inputs() {
+        use rand::{Rng, SeedableRng};
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x534f_434b_5355_4450);
+        for len in 0..=1024 {
+            let mut bytes = vec![0; len];
+            rng.fill(bytes.as_mut_slice());
+            assert!(std::panic::catch_unwind(|| parse_udp_packet(&bytes)).is_ok());
+        }
+
+        for atyp in [1, 3, 4] {
+            for len in 0..=24 {
+                let mut packet = vec![0, 0, 0, atyp];
+                packet.resize(len, 0);
+                assert!(std::panic::catch_unwind(|| parse_udp_packet(&packet)).is_ok());
+            }
+        }
+    }
 }

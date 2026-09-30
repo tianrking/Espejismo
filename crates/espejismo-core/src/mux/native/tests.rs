@@ -15,6 +15,34 @@ fn native_frame_parser_rejects_unknown_types_and_large_payloads() {
     assert!(super::validate_frame_bytes_for_fuzz(&frame).is_err());
 }
 
+#[tokio::test]
+async fn native_frame_reader_handles_empty_truncated_and_oversized_input() {
+    use tokio::io::AsyncWriteExt;
+
+    let (writer, mut reader) = tokio::io::duplex(64);
+    drop(writer);
+    assert!(super::frame::read_frame(&mut reader)
+        .await
+        .unwrap()
+        .is_none());
+
+    for length in 1..9 {
+        let (mut writer, mut reader) = tokio::io::duplex(64);
+        writer.write_all(&vec![0; length]).await.unwrap();
+        drop(writer);
+        assert!(super::frame::read_frame(&mut reader).await.is_err());
+    }
+
+    let (mut writer, mut reader) = tokio::io::duplex(64);
+    writer
+        .write_all(&[super::FRAME_DATA, 0, 0, 0, 1])
+        .await
+        .unwrap();
+    writer.write_all(&((u32::MAX).to_be_bytes())).await.unwrap();
+    drop(writer);
+    assert!(super::frame::read_frame(&mut reader).await.is_err());
+}
+
 #[test]
 fn native_pending_frames_enforce_limit() {
     let mut pending = super::pending::PendingFrames::new(1);

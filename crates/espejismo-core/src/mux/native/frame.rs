@@ -98,7 +98,9 @@ mod tests {
             rng.fill(payload.as_mut_slice());
 
             let (mut tx, mut rx) = duplex(len + 9);
-            write_frame(&mut tx, kind, stream_id, &payload).await.unwrap();
+            write_frame(&mut tx, kind, stream_id, &payload)
+                .await
+                .unwrap();
             drop(tx);
             assert_eq!(
                 read_frame(&mut rx).await.unwrap(),
