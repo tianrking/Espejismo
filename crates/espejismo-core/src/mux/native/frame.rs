@@ -70,3 +70,74 @@ pub fn validate_frame_bytes_for_fuzz(input: &[u8]) -> Result<Option<(u8, u32, us
     }
     Ok(Some((kind, stream_id, len)))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rand::{Rng, SeedableRng};
+    use tokio::io::duplex;
+
+    #[tokio::test]
+    async fn random_frames_roundtrip_through_async_codec() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x4652_414d_4553);
+        let kinds = [
+            FRAME_OPEN,
+            FRAME_DATA,
+            FRAME_WINDOW_UPDATE,
+            FRAME_FIN,
+            FRAME_RST,
+            FRAME_PING,
+            FRAME_GOAWAY,
+        ];
+
+        for _ in 0..256 {
+            let kind = kinds[rng.gen_range(0..kinds.len())];
+            let stream_id = rng.gen::<u32>();
+            let len = rng.gen_range(0..=4096);
+            let mut payload = vec![0; len];
+            rng.fill(payload.as_mut_slice());
+
+            let (mut tx, mut rx) = duplex(len + 9);
+            write_frame(&mut tx, kind, stream_id, &payload).await.unwrap();
+            drop(tx);
+            assert_eq!(
+                read_frame(&mut rx).await.unwrap(),
+                Some((kind, stream_id, payload))
+            );
+            assert_eq!(read_frame(&mut rx).await.unwrap(), None);
+        }
+    }
+
+    #[test]
+    fn random_byte_sequences_never_panic_and_invalid_complete_frames_error() {
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x494e_5055_5453);
+
+        for len in 0..=1024 {
+            let mut bytes = vec![0; len];
+            rng.fill(bytes.as_mut_slice());
+            assert!(std::panic::catch_unwind(|| validate_frame_bytes_for_fuzz(&bytes)).is_ok());
+        }
+
+        for kind in 0..=u8::MAX {
+            if matches!(
+                kind,
+                FRAME_OPEN
+                    | FRAME_DATA
+                    | FRAME_WINDOW_UPDATE
+                    | FRAME_FIN
+                    | FRAME_RST
+                    | FRAME_PING
+                    | FRAME_GOAWAY
+            ) {
+                continue;
+            }
+            let mut bytes = vec![kind, 0, 0, 0, 0];
+            bytes.extend_from_slice(&0_u32.to_be_bytes());
+            assert!(validate_frame_bytes_for_fuzz(&bytes).is_err());
+        }
+
+        let mut oversized = vec![FRAME_DATA, 0, 0, 0, 1];
+        oversized.extend_from_slice(&((MAX_PAYLOAD as u32) + 1).to_be_bytes());
+        assert!(validate_frame_bytes_for_fuzz(&oversized).is_err());
+    }
+}
