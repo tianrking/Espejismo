@@ -846,11 +846,33 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_backoff_is_bounded_and_spread_by_lane() {
+    fn reconnect_backoff_grows_exponentially_and_caps_at_sixteen_seconds() {
         assert_eq!(reconnect_backoff(0, 0), Duration::ZERO);
         assert_eq!(reconnect_backoff(0, 1), Duration::from_millis(500));
-        assert!(reconnect_backoff(0, 99) <= Duration::from_millis(16_000));
+        assert_eq!(reconnect_backoff(0, 2), Duration::from_millis(1_000));
+        assert_eq!(reconnect_backoff(0, 3), Duration::from_millis(2_000));
+        assert_eq!(reconnect_backoff(0, 5), Duration::from_millis(8_000));
+        assert_eq!(reconnect_backoff(0, 6), Duration::from_millis(16_000));
+        assert_eq!(reconnect_backoff(0, 99), Duration::from_millis(16_000));
+    }
+
+    #[test]
+    fn reconnect_backoff_spread_is_deterministic_and_lane_specific() {
+        let lane_one_delay = reconnect_backoff(1, 3);
+        assert_eq!(lane_one_delay, Duration::from_millis(2_320));
+        assert_eq!(reconnect_backoff(1, 3), lane_one_delay);
+        assert_eq!(reconnect_backoff(2, 3), Duration::from_millis(2_220));
         assert_ne!(reconnect_backoff(1, 3), reconnect_backoff(2, 3));
+    }
+
+    #[test]
+    fn reconnect_backoff_uses_only_the_requested_lanes_failure_count() {
+        let lane_one_delay = reconnect_backoff(1, 1);
+        let lane_two_delay = reconnect_backoff(2, 99);
+
+        assert_eq!(lane_one_delay, Duration::from_millis(580));
+        assert_eq!(lane_two_delay, Duration::from_millis(16_000));
+        assert_eq!(reconnect_backoff(1, 1), lane_one_delay);
     }
 
     #[test]
