@@ -14,7 +14,7 @@ use netstack_smoltcp::{StackBuilder, TcpListener, UdpSocket};
 use tokio::io::AsyncReadExt;
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
-use tracing::{debug, info, warn};
+use tracing::{debug, info, trace, warn};
 use tun_rs::DeviceBuilder;
 
 use crate::route;
@@ -142,7 +142,7 @@ async fn handle_tun_tcp(
             metrics.inc_stream_opened();
             let result = async {
                 let authority = authority_from_socket(remote);
-                info!(%local, %remote, authority = %authority, "TUN TCP flow accepted");
+                debug!(%local, %remote, authority = %authority, "TUN TCP flow accepted");
                 let (tunnel_stream, priority) =
                     open_tun_stream(tunnel.clone(), StreamPriority::Interactive).await?;
                 let mut tunnel_stream = MeteredTunnelStream::new(tunnel_stream);
@@ -215,7 +215,7 @@ async fn handle_tun_udp(
 
     while let Some((payload, local, remote)) = read_half.next().await {
         if policy.blocks(remote) {
-            debug!(
+            trace!(
                 %local,
                 %remote,
                 "TUN UDP datagram dropped by local UDP port policy"
@@ -224,7 +224,7 @@ async fn handle_tun_udp(
         }
         let Ok(permit) = task_limit.clone().try_acquire_owned() else {
             metrics.inc_stream_failed();
-            debug!(
+            trace!(
                 %local,
                 %remote,
                 max = MAX_TUN_UDP_TASKS,
@@ -239,7 +239,7 @@ async fn handle_tun_udp(
         tokio::spawn(async move {
             let _permit = permit;
             let authority = authority_from_socket(remote);
-            debug!(
+            trace!(
                 %local,
                 %remote,
                 authority = %authority,
