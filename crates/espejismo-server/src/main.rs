@@ -287,7 +287,7 @@ async fn main() -> Result<()> {
 
     while let Some((socket, peer)) = accepted_rx.recv().await {
         let _ = apply_tcp_options(&socket, &runtime.tcp);
-        let Ok(connection_permit) = runtime.global_connection_limit.clone().try_acquire_owned()
+        let Some(connection_permit) = try_connection_permit(&runtime.global_connection_limit)
         else {
             debug!(%peer, "remote peer dropped because global connection limit is full");
             continue;
@@ -305,6 +305,10 @@ async fn main() -> Result<()> {
         });
     }
     Ok(())
+}
+
+fn try_connection_permit(limit: &Arc<Semaphore>) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    limit.clone().try_acquire_owned().ok()
 }
 
 fn log_overrides(args: &Args) -> LogOverrides {
@@ -604,6 +608,7 @@ fn build_runtime(
     reload_source: ConfigInput,
 ) -> Result<RemoteRuntime> {
     let settings = build_remote_settings(&config, args)?;
+    let connection_limit = connection_limit_capacity(&config);
     Ok(RemoteRuntime {
         listen: args.listen.unwrap_or(config.remote.listen),
         settings: Arc::new(RwLock::new(settings)),
@@ -624,11 +629,13 @@ fn build_runtime(
             .then_some(reload_source),
         reload_args: sanitized_reload_args(args),
         runtime_state: RuntimeState::default(),
-        global_connection_limit: Arc::new(Semaphore::new(
-            config.shared.max_physical_connections.max(1) as usize,
-        )),
+        global_connection_limit: Arc::new(Semaphore::new(connection_limit)),
         global_stream_limit: Arc::new(Semaphore::new(config.shared.max_streams.max(1) as usize)),
     })
+}
+
+fn connection_limit_capacity(config: &EspejismoConfig) -> usize {
+    config.shared.max_physical_connections.max(1) as usize
 }
 
 fn sanitized_reload_args(args: &Args) -> Args {
@@ -739,5 +746,36 @@ impl RemoteRuntime {
             })
         });
         Some(action)
+    }
+}
+
+#[cfg(test)]
+mod connection_limit_tests {
+    use super::{connection_limit_capacity, try_connection_permit};
+    use espejismo_core::{config::example_config, parse_config};
+    use std::sync::Arc;
+    use tokio::sync::Semaphore;
+
+    #[test]
+    fn configured_physical_connection_limit_is_enforced_until_permit_is_released() {
+        let mut config = parse_config(&example_config()).expect("example config parses");
+        config.shared.max_physical_connections = 2;
+        let limit = Arc::new(Semaphore::new(connection_limit_capacity(&config)));
+
+        let first = try_connection_permit(&limit).expect("first connection admitted");
+        let second = try_connection_permit(&limit).expect("second connection admitted");
+        assert!(
+            try_connection_permit(&limit).is_none(),
+            "excess connection rejected"
+        );
+        assert_eq!(limit.available_permits(), 0);
+
+        drop(first);
+        assert!(
+            try_connection_permit(&limit).is_some(),
+            "released capacity is reusable"
+        );
+        drop(second);
+        assert_eq!(limit.available_permits(), 2);
     }
 }
