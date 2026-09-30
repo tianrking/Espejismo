@@ -37,11 +37,14 @@ pub fn load_config_base64(encoded: &str) -> Result<EspejismoConfig> {
 pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     let config: EspejismoConfig = toml::from_str(content)?;
     let validate_stealth_frame_size = |frame_size: usize, field: &str| -> Result<()> {
-        anyhow::ensure!(frame_size <= 64 * 1024, "{field} must be <= 65536");
+        anyhow::ensure!(
+            frame_size <= 64 * 1024,
+            "{field} must be in 141..=65536 bytes; for example, frame_size = 4096"
+        );
         let min_stealth_frame = 24 + 32 + 84 + 16 + 1;
         anyhow::ensure!(
             frame_size >= min_stealth_frame,
-            "{field} must leave room for handshake, AEAD tag, and at least one payload byte"
+            "{field} must be in 141..=65536 bytes to fit the handshake, AEAD tag, and payload; for example, frame_size = 4096"
         );
         Ok(())
     };
@@ -50,9 +53,12 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     }
     anyhow::ensure!(
         config.local.tun.prefix <= 32,
-        "local.tun.prefix must be <= 32"
+        "local.tun.prefix must be in 0..=32; for example, prefix = 24"
     );
-    anyhow::ensure!(config.local.tun.mtu >= 576, "local.tun.mtu must be >= 576");
+    anyhow::ensure!(
+        config.local.tun.mtu >= 576,
+        "local.tun.mtu must be >= 576; for example, mtu = 1500"
+    );
     anyhow::ensure!(
         config.local.tun.udp_timeout_secs > 0,
         "local.tun.udp_timeout_secs must be greater than 0"
@@ -83,11 +89,11 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
         );
         anyhow::ensure!(
             config.shared.handshake_window.previous_windows <= 4,
-            "shared.handshake_window.previous_windows must be <= 4"
+            "shared.handshake_window.previous_windows must be in 0..=4; for example, previous_windows = 1"
         );
         anyhow::ensure!(
             config.shared.handshake_window.future_windows <= 2,
-            "shared.handshake_window.future_windows must be <= 2"
+            "shared.handshake_window.future_windows must be in 0..=2; for example, future_windows = 0"
         );
         anyhow::ensure!(
             u16::from(config.shared.handshake_window.previous_windows)
@@ -114,7 +120,7 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     );
     anyhow::ensure!(
         config.shared.max_streams <= 65_535,
-        "shared.max_streams must be <= 65535"
+        "shared.max_streams must be in 1..=65535; for example, max_streams = 256"
     );
     anyhow::ensure!(
         config.shared.max_physical_connections > 0,
@@ -122,7 +128,7 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     );
     anyhow::ensure!(
         config.shared.max_physical_connections <= 65_535,
-        "shared.max_physical_connections must be <= 65535"
+        "shared.max_physical_connections must be in 1..=65535; for example, max_physical_connections = 8"
     );
     anyhow::ensure!(
         config.shared.key_update_frames > 0,
@@ -164,7 +170,7 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     );
     anyhow::ensure!(
         config.shared.obfuscation.min_chunk <= config.shared.obfuscation.max_chunk,
-        "shared.obfuscation.min_chunk must be <= max_chunk"
+        "shared.obfuscation.min_chunk must be in 1..=max_chunk; for example, min_chunk = 1024 and max_chunk = 16384"
     );
     anyhow::ensure!(
         config.local.tunnel_pool.max_connections > 0,
@@ -305,7 +311,7 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
         );
         anyhow::ensure!(
             (16_384..=16_777_215).contains(&config.shared.underlay.http2.max_frame_bytes),
-            "shared.underlay.http2.max_frame_bytes must be between 16384 and 16777215"
+            "shared.underlay.http2.max_frame_bytes must be in 16384..=16777215; for example, max_frame_bytes = 16384"
         );
     }
     if config.shared.port_hopping.enabled {
@@ -626,7 +632,12 @@ mod tests {
             [local.tun]
             mtu = 500
         "#;
-        assert!(parse_config(bad_mtu).is_err());
+        let err = parse_config(bad_mtu).unwrap_err().to_string();
+        assert!(err.contains("local.tun.mtu"), "{err}");
+        assert!(err.contains("576"), "{err}");
+        assert!(err.contains("mtu = 1500"), "{err}");
+
+        parse_config("[local.tun]\nmtu = 576\nprefix = 32\n").unwrap();
     }
 
     #[test]
@@ -747,6 +758,38 @@ mod tests {
             let err = parse_config(config).unwrap_err().to_string();
             assert!(err.contains(expected), "{err}");
         }
+    }
+
+    #[test]
+    fn reports_ranges_and_examples_for_config_boundaries() {
+        for (invalid, field, range, example) in [
+            (
+                "[shared]\nmax_streams = 65536\n",
+                "shared.max_streams",
+                "1..=65535",
+                "max_streams = 256",
+            ),
+            (
+                "[shared.handshake_window]\nprevious_windows = 5\n",
+                "previous_windows",
+                "0..=4",
+                "previous_windows = 1",
+            ),
+            (
+                "[shared.obfuscation]\nmin_chunk = 16385\nmax_chunk = 16384\n",
+                "min_chunk",
+                "1..=max_chunk",
+                "min_chunk = 1024",
+            ),
+        ] {
+            let err = parse_config(invalid).unwrap_err().to_string();
+            assert!(err.contains(field), "{err}");
+            assert!(err.contains(range), "{err}");
+            assert!(err.contains(example), "{err}");
+        }
+
+        parse_config("[shared]\nmax_streams = 65535\n").unwrap();
+        parse_config("[shared.handshake_window]\nprevious_windows = 4\n").unwrap();
     }
 
     #[test]
