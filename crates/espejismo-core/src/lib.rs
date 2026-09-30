@@ -1,3 +1,17 @@
+//! Shared protocol and configuration primitives for Espejismo.
+//!
+//! Parse and serialize the maintained deployment configuration without
+//! opening sockets or contacting a service:
+//!
+//! ```
+//! let source = include_str!("../../../configs/examples/espejismo.toml");
+//! let config = espejismo_core::parse_config(source)?;
+//! let serialized = espejismo_core::config_to_toml(&config)?;
+//! let reparsed = espejismo_core::parse_config(&serialized)?;
+//! assert_eq!(reparsed.local.server, config.local.server);
+//! # Ok::<(), anyhow::Error>(())
+//! ```
+
 pub mod admin;
 pub mod cli_support;
 pub mod config;

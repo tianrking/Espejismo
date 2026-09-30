@@ -60,6 +60,10 @@ The maintained one-file example is:
 configs/examples/espejismo.toml
 ```
 
+The `espejismo-core` crate doctest parses and serializes this exact file, so
+`cargo test --doc -p espejismo-core` checks the documented configuration against
+the parser without network access.
+
 Generate the same shape from a binary:
 
 ```bash
