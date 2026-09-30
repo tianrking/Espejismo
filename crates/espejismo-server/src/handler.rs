@@ -13,7 +13,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tokio::time::{sleep, timeout};
-use tracing::{debug, info};
+use tracing::{debug, info, trace};
 
 use crate::fallback::{fallback_or_reject, route_http_fallback, should_route_to_http_fallback};
 use crate::limits::UserLimitRegistry;
@@ -395,7 +395,9 @@ async fn handle_mux_stream_inner(
             limits
                 .account_and_throttle(user, payload.len() as u64)
                 .await?;
-            debug!(target = %authority, priority = ?priority, "mux UDP relay opened");
+            // This is emitted once per datagram, so keep routine relay success
+            // below debug to avoid turning verbose logging into traffic-volume logging.
+            trace!(target = %authority, priority = ?priority, "mux UDP relay opened");
             let response = relay_udp_datagram(&authority, &payload, &egress, idle).await?;
             limits
                 .account_and_throttle(user, response.len() as u64)

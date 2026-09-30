@@ -154,4 +154,15 @@ mod tests {
         assert!(filter.contains("tokio_yamux=info"));
         assert!(!filter.contains("tokio_yamux=debug"));
     }
+
+    #[test]
+    fn global_trace_keeps_transport_dependencies_capped() {
+        let filter = safe_log_filter("trace");
+
+        assert!(filter.contains("espejismo_core=trace"));
+        assert!(filter.contains("espejismo_client=trace"));
+        assert!(filter.contains("espejismo_server=trace"));
+        assert!(filter.contains("tokio_yamux=info"));
+        assert!(!filter.contains("tokio_yamux=trace"));
+    }
 }

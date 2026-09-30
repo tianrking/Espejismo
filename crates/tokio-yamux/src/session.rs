@@ -307,7 +307,7 @@ where
         }
 
         let ping_id = self.send_ping(cx, None)?;
-        debug!("[{:?}] sent keep_alive ping (id={:?})", self.ty, ping_id);
+        trace!("[{:?}] sent keep_alive ping (id={:?})", self.ty, ping_id);
         self.pings.insert(ping_id, ping_at);
         Ok(())
     }
