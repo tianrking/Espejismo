@@ -326,6 +326,21 @@ async fn main() -> Result<()> {
         metrics.clone(),
         runtime_state.clone(),
     ));
+    validate_admin_listener(
+        runtime.admin_listen,
+        runtime.socks5_listen,
+        runtime.http_listen,
+    )?;
+    // Bind all local proxy ports before starting admin or accept tasks so a
+    // late port conflict cannot leave a partially started client behind.
+    let socks_listener = runtime
+        .socks5_listen
+        .map(|addr| bind_tcp_listener(addr, &runtime.tcp))
+        .transpose()?;
+    let http_listener = runtime
+        .http_listen
+        .map(|addr| bind_tcp_listener(addr, &runtime.tcp))
+        .transpose()?;
     if let Some(addr) = runtime.admin_listen {
         let reload = local_reload_action(
             config_input,
@@ -347,8 +362,7 @@ async fn main() -> Result<()> {
     }
 
     let mut listeners = JoinSet::new();
-    if let Some(addr) = runtime.socks5_listen {
-        let listener = bind_tcp_listener(addr, &runtime.tcp)?;
+    if let (Some(addr), Some(listener)) = (runtime.socks5_listen, socks_listener) {
         let service = service.clone();
         let metrics = metrics.clone();
         listeners.spawn(async move {
@@ -375,8 +389,7 @@ async fn main() -> Result<()> {
         });
     }
 
-    if let Some(addr) = runtime.http_listen {
-        let listener = bind_tcp_listener(addr, &runtime.tcp)?;
+    if let (Some(addr), Some(listener)) = (runtime.http_listen, http_listener) {
         let service = service.clone();
         let metrics = metrics.clone();
         listeners.spawn(async move {
@@ -1069,6 +1082,18 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args, doctor: bool)
     report_config_check(warnings, errors)
 }
 
+fn validate_admin_listener(
+    admin: Option<SocketAddr>,
+    socks5: Option<SocketAddr>,
+    http: Option<SocketAddr>,
+) -> Result<()> {
+    anyhow::ensure!(
+        admin.map_or(true, |addr| Some(addr) != socks5 && Some(addr) != http),
+        "admin.listen must not reuse a proxy listener address"
+    );
+    Ok(())
+}
+
 fn diagnose_low_feature_profile(config: &EspejismoConfig, warnings: &mut Vec<String>) {
     if !config.shared.obfuscation.profile.is_stealth() {
         warnings.push(
@@ -1125,10 +1150,19 @@ fn validate_windows_tun_dns_servers(dns_servers: &[IpAddr]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_tun_auto_route_server_ipv4;
+    use super::{validate_admin_listener, validate_tun_auto_route_server_ipv4};
     #[cfg(target_os = "windows")]
     use super::validate_windows_tun_dns_servers;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    #[test]
+    fn rejects_admin_listener_reusing_proxy_address() {
+        let proxy: SocketAddr = "127.0.0.1:6680".parse().unwrap();
+        let admin: SocketAddr = "127.0.0.1:9090".parse().unwrap();
+        assert!(validate_admin_listener(Some(proxy), Some(proxy), None).is_err());
+        assert!(validate_admin_listener(Some(admin), Some(proxy), None).is_ok());
+        assert!(validate_admin_listener(None, Some(proxy), None).is_ok());
+    }
 
     #[test]
     fn tun_auto_route_requires_ipv4_server_address() {

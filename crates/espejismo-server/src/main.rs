@@ -242,6 +242,10 @@ async fn main() -> Result<()> {
     apply_log_overrides(&mut config.logging, &log_overrides(&args))?;
     let _log_guard = init_logging(&config.logging)?;
     let runtime = build_runtime(config, &args, config_input)?;
+    validate_admin_listener(runtime.admin_listen, runtime.listen)?;
+    // Acquire every tunnel port before starting auxiliary tasks. This makes a
+    // port-hopping bind failure an immediate startup error with its address.
+    let listeners = bind_remote_listeners(&runtime)?;
     let metrics = Metrics::default();
     if let Some(addr) = runtime.admin_listen {
         let reload = runtime.reload_action();
@@ -256,8 +260,6 @@ async fn main() -> Result<()> {
             },
         );
     }
-
-    let listeners = bind_remote_listeners(&runtime)?;
     let tarpit = tarpit::TarpitManager::spawn(runtime.tarpit_max, runtime.tarpit_hold);
     let replay = Arc::new(tokio::sync::Mutex::new(ReplayCache::new(
         runtime.replay_window_secs,
@@ -336,6 +338,14 @@ fn bind_remote_listeners(runtime: &RemoteRuntime) -> Result<Vec<tokio::net::TcpL
         .into_iter()
         .map(|addr| bind_tcp_listener(addr, &runtime.tcp))
         .collect()
+}
+
+fn validate_admin_listener(admin: Option<SocketAddr>, remote: SocketAddr) -> Result<()> {
+    anyhow::ensure!(
+        admin != Some(remote),
+        "admin.listen must not reuse remote.listen"
+    );
+    Ok(())
 }
 
 fn apply_cli_overrides_to_config(config: &mut EspejismoConfig, args: &Args) -> Result<()> {
@@ -777,5 +787,19 @@ mod connection_limit_tests {
         );
         drop(second);
         assert_eq!(limit.available_permits(), 2);
+    }
+}
+
+#[cfg(test)]
+mod startup_validation_tests {
+    use super::validate_admin_listener;
+    use std::net::SocketAddr;
+
+    #[test]
+    fn rejects_admin_listener_reusing_remote_address() {
+        let addr: SocketAddr = "127.0.0.1:6690".parse().unwrap();
+        assert!(validate_admin_listener(Some(addr), addr).is_err());
+        assert!(validate_admin_listener(None, addr).is_ok());
+        assert!(validate_admin_listener(Some("127.0.0.1:9090".parse().unwrap()), addr).is_ok());
     }
 }
