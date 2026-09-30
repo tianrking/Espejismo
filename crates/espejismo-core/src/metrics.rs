@@ -384,12 +384,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prometheus_labels_escape_backslash_quote_and_newline() {
+    fn prometheus_label_value_escapes_backslash_quote_and_newline() {
+        let mut escaped = String::new();
+        push_label_value(&mut escaped, "slash\\ quote\" line\nnext");
+        assert_eq!(escaped, "slash\\\\ quote\\\" line\\nnext");
+    }
+
+    #[test]
+    fn prometheus_metrics_escape_role_and_user_labels() {
         let metrics = Metrics::default();
         metrics.inc_user_handshake_success("alice\"\\\nremote");
         let rendered = metrics.render_prometheus("local\"\\\nrole");
         assert!(rendered.contains("role=\"local\\\"\\\\\\nrole\""));
         assert!(rendered.contains("user=\"alice\\\"\\\\\\nremote\""));
         assert!(!rendered.contains("\nremote\""));
+    }
+
+    #[test]
+    fn prometheus_reason_label_uses_sanitized_reason() {
+        let metrics = Metrics::default();
+        metrics.inc_stream_failed_reason("bad\"\\\nreason");
+
+        let rendered = metrics.render_prometheus("server");
+        assert!(rendered.contains(
+            "espejismo_stream_failure_reason_total{role=\"server\",reason=\"bad___reason\"} 1\n"
+        ));
+        assert!(!rendered.contains("reason=\"bad\""));
     }
 }
