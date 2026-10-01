@@ -44,6 +44,10 @@ compatible configuration and protocol versions.
 
 ## Upgrade
 
+Read the [client/server version compatibility policy](VERSION-COMPATIBILITY.md)
+before choosing an upgrade order. Do not infer cross-version compatibility from
+matching `0.1.x` release numbers.
+
 1. Select and pin the target release. Back up the current binaries and config;
    record the current version (`espejismo-remote --version`) and preserve the
    exact config, including PSKs and admin credentials, with restrictive
