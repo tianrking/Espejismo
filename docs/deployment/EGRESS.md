@@ -53,3 +53,7 @@ HTTP and HTTPS proxy URLs describe the connection to the upstream proxy itself.
 They are different from tunneling an HTTPS destination such as
 `example.com:443`, which works through either plain `http://` CONNECT proxies or
 TLS-protected `https://` CONNECT proxies.
+
+Espejismo validates HTTPS proxy certificates against its bundled Mozilla
+WebPKI roots. Hostname matching and certificate troubleshooting are described
+in [TLS Certificates](TLS-CERTIFICATES.md).

@@ -27,6 +27,8 @@ it does not start local proxy listeners.
 | Noisy/large log files | Use journald or the platform log collector, or configure external rotation for `[logging].file`; Espejismo does not rotate file output. Use targeted filters such as `info,espejismo_core=debug` only while investigating. See [Logging](LOGGING.md). |
 | Admin endpoint unavailable | Confirm `[admin].listen` is enabled and bound on the expected address, the service was restarted if the listener changed, and the request includes the configured bearer token. Keep it on loopback unless protected by a trusted firewall. |
 | TUN traffic breaks after stop/crash | Restore route/DNS state with `espejismo-local --config <config> --tun-route-cleanup` (with the platform privileges required for route changes). Windows also supports cleanup without a config when the TUN name is supplied; see [CLI](CLI.md). |
+| HTTPS egress proxy connection fails | Check the proxy hostname, certificate dates and chain, system clock, and that the endpoint serves TLS. Espejismo validates HTTPS proxy certificates against bundled Mozilla roots; see [TLS Certificates](TLS-CERTIFICATES.md). |
+| Public HTTPS endpoint shows a certificate error | The reverse proxy owns TLS termination and its public certificate. Check its hostname, certificate chain/expiry, and TLS logs; see [TLS Certificates](TLS-CERTIFICATES.md). |
 
 For further diagnosis, collect binary versions, OS, sanitized config values,
 the exact failing command, `--doctor` output, and a short relevant log window.
