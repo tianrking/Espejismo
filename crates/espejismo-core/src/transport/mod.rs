@@ -570,6 +570,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn idle_copy_bidirectional_refreshes_timeout_on_traffic() {
+        let (mut left, mut left_peer) = duplex(64);
+        let (mut right, mut right_peer) = duplex(64);
+        let idle = Duration::from_millis(100);
+
+        let task = tokio::spawn(async move {
+            idle_copy_bidirectional(&mut left, &mut right, idle).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        left_peer.write_all(b"activity").await.unwrap();
+        let mut received = [0_u8; 8];
+        right_peer.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, b"activity");
+
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(!task.is_finished(), "traffic must refresh the idle deadline");
+
+        let copied = tokio::time::timeout(Duration::from_millis(150), task)
+            .await
+            .expect("connection should close after traffic stops")
+            .unwrap()
+            .unwrap();
+        assert_eq!(copied, (8, 0));
+    }
+
+    #[tokio::test]
     async fn idle_copy_bidirectional_copies_one_direction_before_shutdown() {
         let (mut left, mut left_peer) = duplex(64);
         let (mut right, mut right_peer) = duplex(64);
