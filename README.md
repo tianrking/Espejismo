@@ -17,6 +17,53 @@ and release archives that can be installed with a single command.
 
 Espejismo is a native Rust encrypted tunnel that refuses to impersonate TLS, QUIC, or any other protocol — instead it relies on authenticated encrypted chaos: masked metadata, dynamic handshake windows, padding, and silent rejection of unauthenticated probes. It keeps the operational model deliberately small: one server binary, one client binary, one TOML configuration file. If you want a tunnel you can read, audit, and understand (start with `docs/PROTOCOL.md`), it may be for you; if you want protocol camouflage or a multi-protocol suite, it is not.
 
+## Quickstart (Linux/macOS)
+
+This gets a SOCKS5 proxy running with the published release. You need a server
+with a reachable TCP port `6690`, plus a client machine. Allow TCP `6690` in the
+server firewall/security group. The commands below assume the default install
+directory (`~/.espejismo`).
+
+1. Install the full package on both machines:
+
+   ```bash
+   curl -fsSL https://raw.githubusercontent.com/tianrking/Espejismo/main/scripts/install.sh | sh
+   ```
+
+2. On the server, copy the example config:
+
+   ```bash
+   cp ~/.espejismo/configs/espejismo.toml ./espejismo.toml
+   ```
+
+   Set `[shared].psk` and the `psk` in `[[remote.users]]` to the same long
+   random value, and leave `[remote].listen` at `"0.0.0.0:6690"`. Start the
+   server:
+
+   ```bash
+   ~/.espejismo/bin/espejismo-remote --config ./espejismo.toml
+   ```
+
+3. On the client, copy the same example config, set `[shared].psk` to that
+   identical value, and set `[local].server` to your server's public IP or
+   hostname plus `:6690`:
+
+   ```bash
+   cp ~/.espejismo/configs/espejismo.toml ./espejismo.toml
+   # Edit ./espejismo.toml: [shared].psk and [local].server
+   ~/.espejismo/bin/espejismo-local --config ./espejismo.toml --check-config
+   ~/.espejismo/bin/espejismo-local --config ./espejismo.toml --probe-server
+   ~/.espejismo/bin/espejismo-local --config ./espejismo.toml
+   ```
+
+   Configure an application to use SOCKS5 at `127.0.0.1:6680` (or HTTP at
+   `127.0.0.1:6681`). For example, verify with
+   `curl --proxy socks5h://127.0.0.1:6680 https://example.com/`.
+
+Keep each process running in its terminal. For Windows commands, TUN mode,
+server-only packages, and deployment details, see the
+[deployment quickstart](docs/deployment/QUICKSTART.md).
+
 ## Technical Profile
 
 | Layer | What ships in `v0.1.5` |
