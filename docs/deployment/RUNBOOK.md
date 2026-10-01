@@ -61,10 +61,12 @@ compatible configuration and protocol versions.
    sudo systemctl --no-pager --full status espejismo-remote
    ```
 
-   Repeat for `espejismo-local` where used. A restart causes active tunnel
-   sessions to reconnect. Runtime admin reload/apply can update supported
-   settings without a restart; process-owned listeners, TUN ownership, and log
-   file handles still require restart (see [Admin](ADMIN.md)).
+   Repeat for `espejismo-local` where used. A restart interrupts active
+   tunnels; see [Shutdown and Connection Draining](SHUTDOWN.md) for the current
+   signal behavior and production deployment guidance. Runtime admin
+   reload/apply can update supported settings without a restart; process-owned
+   listeners, TUN ownership, and log file handles still require restart (see
+   [Admin](ADMIN.md)).
 4. Confirm the reported version, a successful client `--probe-server`, proxy
    traffic, and clean logs before removing the backup.
 
