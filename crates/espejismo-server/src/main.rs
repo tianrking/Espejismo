@@ -19,6 +19,8 @@ use tokio::net::lookup_host;
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tracing::{debug, info};
 
+const ACCEPT_RESOURCE_RETRY_DELAY: Duration = Duration::from_millis(250);
+
 mod fallback;
 mod handler;
 mod http_chain;
@@ -278,8 +280,13 @@ async fn main() -> Result<()> {
                         }
                     }
                     Err(err) => {
-                        debug!(error = %err, "remote listener accept failed");
-                        break;
+                        if is_temporary_resource_exhaustion(&err) {
+                            debug!(error = %err, retry_ms = ACCEPT_RESOURCE_RETRY_DELAY.as_millis(), "remote listener temporarily out of resources; retrying accept");
+                            tokio::time::sleep(ACCEPT_RESOURCE_RETRY_DELAY).await;
+                        } else {
+                            debug!(error = %err, "remote listener accept failed");
+                            break;
+                        }
                     }
                 }
             }
@@ -307,6 +314,22 @@ async fn main() -> Result<()> {
         });
     }
     Ok(())
+}
+
+fn is_temporary_resource_exhaustion(err: &std::io::Error) -> bool {
+    if err.kind() == std::io::ErrorKind::OutOfMemory {
+        return true;
+    }
+
+    match err.raw_os_error() {
+        // Linux: ENFILE, EMFILE, ENOMEM. Windows: ERROR_NOT_ENOUGH_MEMORY,
+        // ERROR_OUTOFMEMORY. Tokio reports these as OS errors on accept.
+        #[cfg(target_os = "linux")]
+        Some(23) | Some(24) | Some(12) => true,
+        #[cfg(windows)]
+        Some(8) | Some(14) => true,
+        _ => false,
+    }
 }
 
 fn try_connection_permit(limit: &Arc<Semaphore>) -> Option<tokio::sync::OwnedSemaphorePermit> {
@@ -794,6 +817,36 @@ mod connection_limit_tests {
         );
         drop(second);
         assert_eq!(limit.available_permits(), 2);
+    }
+}
+
+#[cfg(test)]
+mod accept_resource_tests {
+    use super::is_temporary_resource_exhaustion;
+
+    #[test]
+    fn retries_known_descriptor_and_memory_exhaustion_errors() {
+        #[cfg(target_os = "linux")]
+        for code in [12, 23, 24] {
+            assert!(is_temporary_resource_exhaustion(&std::io::Error::from_raw_os_error(code)));
+        }
+        #[cfg(windows)]
+        for code in [8, 14] {
+            assert!(is_temporary_resource_exhaustion(&std::io::Error::from_raw_os_error(code)));
+        }
+        assert!(is_temporary_resource_exhaustion(&std::io::Error::from(
+            std::io::ErrorKind::OutOfMemory
+        )));
+    }
+
+    #[test]
+    fn does_not_retry_permanent_accept_errors() {
+        assert!(!is_temporary_resource_exhaustion(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied
+        )));
+        assert!(!is_temporary_resource_exhaustion(&std::io::Error::from(
+            std::io::ErrorKind::ConnectionAborted
+        )));
     }
 }
 
