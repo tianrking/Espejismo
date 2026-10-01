@@ -146,6 +146,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn quota_counts_udp_request_and_response_toward_same_user_limit() {
+        let limits = UserLimitRegistry::new([(
+            "alice".to_string(),
+            UserLimitConfig {
+                quota_bytes: Some(12),
+                quota_window: Duration::from_secs(60),
+                bandwidth_bytes_per_sec: None,
+            },
+        )]);
+
+        // UDP relay accounts the request payload and returned payload separately.
+        limits.account_and_throttle("alice", 7).await.unwrap();
+        limits.account_and_throttle("alice", 5).await.unwrap();
+        assert!(limits.account_and_throttle("alice", 1).await.is_err());
+    }
+
+    #[tokio::test]
     async fn bandwidth_without_backlog_allows_first_chunk() {
         let limits = UserLimitRegistry::new([(
             "alice".to_string(),

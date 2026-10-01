@@ -76,12 +76,12 @@ pub async fn write_udp_datagram_with_priority<W>(
 where
     W: AsyncWriteExt + Unpin,
 {
-    writer.write_u8(CMD_UDP_DATAGRAM).await?;
-    writer.write_u8(priority as u8).await?;
-    write_authority(writer, authority).await?;
     if payload.len() > u16::MAX as usize {
         bail!("UDP payload too large");
     }
+    writer.write_u8(CMD_UDP_DATAGRAM).await?;
+    writer.write_u8(priority as u8).await?;
+    write_authority(writer, authority).await?;
     writer.write_u16(payload.len() as u16).await?;
     writer.write_all(payload).await?;
     Ok(())
@@ -199,5 +199,21 @@ mod tests {
             }
             _ => panic!("expected UDP datagram request"),
         }
+    }
+
+    #[tokio::test]
+    async fn udp_datagram_rejects_payload_larger_than_wire_length_limit() {
+        let payload = vec![0_u8; u16::MAX as usize + 1];
+        let mut wire = Vec::new();
+
+        assert!(write_udp_datagram_with_priority(
+            &mut wire,
+            "example.com:53",
+            StreamPriority::Interactive,
+            &payload,
+        )
+        .await
+        .is_err());
+        assert!(wire.is_empty());
     }
 }
