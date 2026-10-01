@@ -32,3 +32,25 @@ throughput improvement is expected.
   This integration test is unrelated to CLI help; no code test failure was
   reported in the client or server packages.
 - No performance experiment applies to this help-text-only change.
+
+## Follow-up audit (round 076)
+
+Rechecked the current Clap argument structs against the client and server
+startup branches and rendered help pages. Their option names, environment
+variable, defaults, command examples, and descriptions matched the observed
+behavior. One boundary was missing from the benchmark helper help: its
+`--chunk-bytes` input is clamped to 1 KiB–1 MiB before use. Updated that
+description so operators can see the effective range.
+
+This text-only correction does not change parsing or runtime behavior. It
+reduces confusion for values outside the accepted effective range; no
+performance change is expected.
+
+### Verification
+
+- Rendered `espejismo-local --help`, `espejismo-remote --help`, and
+  `espejismo-bench-http --help`; confirmed the updated chunk-size range appears
+  in the generated output.
+- `cargo test --offline -p espejismo-client -p espejismo-server`: 50 passed,
+  0 failed (31 client, 19 server; benchmark helper has no unit tests).
+- `git diff --check`: passed. No performance experiment applies.

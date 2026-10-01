@@ -21,7 +21,7 @@ struct Args {
     /// Maximum accepted upload size, in MiB.
     #[arg(long, default_value_t = 4096)]
     max_upload_mib: u64,
-    /// Buffer chunk size for benchmark transfers, in bytes.
+    /// Buffer chunk size for benchmark transfers, in bytes (clamped to 1 KiB–1 MiB).
     #[arg(long, default_value_t = DEFAULT_CHUNK_BYTES)]
     chunk_bytes: usize,
 }
