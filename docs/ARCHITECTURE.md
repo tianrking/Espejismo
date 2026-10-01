@@ -156,6 +156,54 @@ Remote physical connections are capped by `shared.max_physical_connections`.
 Logical stream permits and first tunnel-request reads use bounded timeouts so a
 slow peer cannot hold semaphores or tasks indefinitely.
 
+### Connection and Stream Lifecycle
+
+The lifecycle has three independent scopes. A listener accepts underlay
+connections; each accepted physical connection authenticates once and owns one
+mux session; each mux stream carries one TCP CONNECT relay or one UDP datagram
+transaction. A stream failure does not by itself imply that its physical
+connection failed, and a physical connection failure ends every stream on that
+session.
+
+```text
+Client lane: disconnected -> connecting -> authenticated/mux-ready
+             -> (stream opens and closes; lane remains ready)
+             -> disconnected on session end or max-age rotation
+             -> connecting on the next stream demand
+
+Remote peer: accepted -> authenticating -> authenticated/mux-serving
+             -> closed on mux/session end
+
+Logical stream: opened -> request received -> egress/relay
+                -> clean completion, or stream-local failure -> closed
+```
+
+Client TCP/underlay connect or handshake failure leaves the lane unavailable;
+the next open attempt observes the configured bounded backoff and attempt
+limit. A mux stream-open failure clears that lane's control and is retried
+within the configured attempt limit. Session termination decrements active
+physical-connection accounting and the lane is re-established lazily when a
+later stream needs it. Reconnection creates a fresh authenticated session;
+streams from the failed session are not replayed or transparently resumed.
+Maximum connection age similarly causes the current control to be discarded
+when checked before a later open.
+
+On the remote, invalid or timed-out authentication follows the configured
+fallback-or-reject path and does not enter mux service. Once authenticated,
+mux session errors end the physical session. A zero per-session stream limit
+drops the newly yielded stream; global permit exhaustion or a per-session
+permit wait timeout returns from the peer handler and ends that physical
+session. Malformed or timed-out tunnel requests, egress denial, egress connect
+errors, quota errors, and relay/idle timeout end the affected stream. EOF and
+stream shutdown complete the relay normally. AEAD/frame errors
+are fail-fast at the physical transport and therefore terminate its mux
+session and streams. The listener remains available for subsequent peers.
+
+This is an implementation map, not a promise of transparent recovery: there is
+no stream migration, replay, or automatic retry of an established proxy flow.
+The state labels above describe control flow in the client lane and server
+handler, not a shared protocol state field on the wire.
+
 The current production tunnel still uses TCP as the physical underlay. The core
 crate also contains UDP underlay primitives: packet codec, session id, sequence
 numbers, cumulative ACKs, retransmission scheduling, and a portable congestion
