@@ -22,9 +22,35 @@ pub fn load_config(input: ConfigInput) -> Result<EspejismoConfig> {
 
 pub fn load_config_file(path: impl AsRef<Path>) -> Result<EspejismoConfig> {
     let path = path.as_ref();
+    warn_if_config_permissions_are_broad(path);
     let content = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     parse_config(&content).with_context(|| format!("parse {}", path.display()))
 }
+
+/// Warn when a Unix config file grants any access to group or other users.
+/// Permission metadata failures are left to the regular file read path.
+#[cfg(unix)]
+fn warn_if_config_permissions_are_broad(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Ok(metadata) = fs::metadata(path) {
+        let mode = metadata.permissions().mode() & 0o777;
+        if config_permissions_are_broad(mode) {
+            eprintln!(
+                "warning: config file {} has broad permissions ({mode:04o}); restrict access to protect secrets (for example, chmod 600)",
+                path.display()
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+fn config_permissions_are_broad(mode: u32) -> bool {
+    mode & 0o077 != 0
+}
+
+#[cfg(not(unix))]
+fn warn_if_config_permissions_are_broad(_path: &Path) {}
 
 pub fn load_config_base64(encoded: &str) -> Result<EspejismoConfig> {
     let bytes = base64::engine::general_purpose::STANDARD
@@ -382,7 +408,9 @@ fn unknown_field_diagnostic(message: &str) -> Option<String> {
         .min_by_key(|(distance, _)| *distance)
         .map(|(_, candidate)| format!("; did you mean `{candidate}`?"))
         .unwrap_or_default();
-    Some(format!("unknown config field `{field}`{suggestion}"))
+    Some(format!(
+        "unknown config field `{field}`{suggestion}; check whether this option was renamed or removed in this release"
+    ))
 }
 
 fn edit_distance(left: &str, right: &str) -> usize {
@@ -659,11 +687,47 @@ pub fn encode_config_base64(toml: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
     use super::defaults;
     use super::{
         adaptive_throughput_floor, apply_adaptive_throughput, apply_named_profile, config_to_toml,
         encode_config_base64, example_config, load_config_base64, parse_config, EspejismoConfig,
     };
+
+    #[cfg(unix)]
+    #[test]
+    fn loads_config_with_restricted_permissions() {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "espejismo-config-permissions-{}-{}.toml",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, "").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(super::load_config_file(&path).is_ok());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn config_file_permission_check_is_safe_for_missing_path() {
+        let path = PathBuf::from("missing-espejismo-config.toml");
+        super::warn_if_config_permissions_are_broad(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn flags_group_or_other_access_but_accepts_private_modes() {
+        assert!(!super::config_permissions_are_broad(0o600));
+        assert!(!super::config_permissions_are_broad(0o400));
+        assert!(super::config_permissions_are_broad(0o640));
+        assert!(super::config_permissions_are_broad(0o604));
+    }
 
     #[test]
     fn rejects_unknown_config_fields_with_a_suggestion() {
@@ -681,6 +745,21 @@ mod tests {
             .to_string();
         assert!(err.contains("unknown config field `enabeld`"), "{err}");
         assert!(err.contains("did you mean `enabled`?"), "{err}");
+    }
+
+    #[test]
+    fn unknown_fields_explain_how_to_handle_removed_options() {
+        let err = parse_config("[shared]\nretired_option = true\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("unknown config field `retired_option`"),
+            "{err}"
+        );
+        assert!(
+            err.contains("check whether this option was renamed or removed in this release"),
+            "{err}"
+        );
     }
 
     #[test]
