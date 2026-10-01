@@ -743,8 +743,7 @@ impl RemoteRuntime {
                 };
                 apply_log_overrides(&mut config.logging, &log_overrides(&args))?;
                 let next = build_remote_settings(&config, &args)?;
-                let user_count = next.users.len();
-                *settings.write().await = next;
+                let user_count = replace_remote_settings(&settings, next).await;
                 runtime_state.mark_config_applied();
                 Ok(json!({
                     "ok": true,
@@ -757,6 +756,14 @@ impl RemoteRuntime {
         });
         Some(action)
     }
+}
+
+// Build and validate the complete candidate before entering this commit point.
+// A failed parse/build therefore cannot expose a mixture of old and new policy.
+async fn replace_remote_settings(settings: &RwLock<RemoteSettings>, next: RemoteSettings) -> usize {
+    let user_count = next.users.len();
+    *settings.write().await = next;
+    user_count
 }
 
 #[cfg(test)]
@@ -801,5 +808,53 @@ mod startup_validation_tests {
         assert!(validate_admin_listener(Some(addr), addr).is_err());
         assert!(validate_admin_listener(None, addr).is_ok());
         assert!(validate_admin_listener(Some("127.0.0.1:9090".parse().unwrap()), addr).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod reload_safety_tests {
+    use super::{build_remote_settings, replace_remote_settings, Args};
+    use clap::Parser;
+    use espejismo_core::{config::example_config, parse_config};
+    use tokio::sync::RwLock;
+
+    fn test_args() -> Args {
+        Args::try_parse_from(["espejismo-remote"]).expect("default arguments parse")
+    }
+
+    #[tokio::test]
+    async fn reload_candidate_is_committed_as_one_complete_settings_value() {
+        let old_config = parse_config(&example_config()).expect("example config parses");
+        let old = build_remote_settings(&old_config, &test_args()).expect("initial settings build");
+        let settings = RwLock::new(old);
+
+        let mut next_config = old_config;
+        next_config.remote.users.pop();
+        let next =
+            build_remote_settings(&next_config, &test_args()).expect("replacement settings build");
+        let expected_users = next.users.len();
+
+        let committed_users = replace_remote_settings(&settings, next).await;
+        let committed = settings.read().await;
+        assert_eq!(committed_users, expected_users);
+        assert_eq!(committed.users.len(), expected_users);
+    }
+
+    #[tokio::test]
+    async fn invalid_candidate_does_not_replace_current_settings() {
+        let config = parse_config(&example_config()).expect("example config parses");
+        let initial = build_remote_settings(&config, &test_args()).expect("initial settings build");
+        let original_user_count = initial.users.len();
+        let settings = RwLock::new(initial);
+
+        let candidate = build_remote_settings(
+            &config,
+            &Args::try_parse_from(["espejismo-remote", "--psk", "x"])
+                .expect("invalid candidate arguments parse"),
+        );
+        assert!(candidate.is_err(), "invalid PSK must fail settings build");
+
+        let current = settings.read().await;
+        assert_eq!(current.users.len(), original_user_count);
     }
 }
