@@ -266,7 +266,15 @@ async fn main() -> Result<()> {
         runtime.replay_window_secs,
     )));
     let mux_mode = runtime.settings.read().await.mux.mode;
-    info!(listen = %runtime.listen, mux = ?mux_mode, listeners = listeners.len(), "remote listening with mux tunnel support");
+    info!(
+        role = "remote",
+        version = env!("CARGO_PKG_VERSION"),
+        listen = %runtime.listen,
+        mux = ?mux_mode,
+        underlay = ?runtime.settings.read().await.underlay.mode,
+        listeners = listeners.len(),
+        "service started"
+    );
     let (accepted_tx, mut accepted_rx) = mpsc::channel(1024);
     for listener in listeners {
         let accepted_tx = accepted_tx.clone();

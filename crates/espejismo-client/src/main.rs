@@ -437,7 +437,20 @@ async fn main() -> Result<()> {
         !listeners.is_empty(),
         "enable at least one local ingress: socks5_listen, http_listen, or local.tun.enabled"
     );
-    info!(server = %runtime.server, mux = ?runtime.mux.mode, "local proxy ready with reconnecting tunnel manager");
+    let ingress = startup_ingress_summary(
+        runtime.socks5_listen,
+        runtime.http_listen,
+        runtime.tun.enabled,
+    );
+    info!(
+        role = "local",
+        version = env!("CARGO_PKG_VERSION"),
+        server = %runtime.server,
+        mux = ?runtime.mux.mode,
+        underlay = ?runtime.underlay.mode,
+        ingress = %ingress,
+        "service started"
+    );
 
     tokio::select! {
         result = listeners.join_next() => {
@@ -452,6 +465,19 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn startup_ingress_summary(
+    socks5_listen: Option<SocketAddr>,
+    http_listen: Option<SocketAddr>,
+    tun_enabled: bool,
+) -> String {
+    format!(
+        "socks5={},http={},tun={}",
+        socks5_listen.map_or_else(|| "disabled".to_string(), |addr| addr.to_string()),
+        http_listen.map_or_else(|| "disabled".to_string(), |addr| addr.to_string()),
+        if tun_enabled { "enabled" } else { "disabled" },
+    )
 }
 
 fn build_tunnel_manager(
@@ -1148,10 +1174,21 @@ fn validate_windows_tun_dns_servers(dns_servers: &[IpAddr]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{validate_admin_listener, validate_tun_auto_route_server_ipv4};
     #[cfg(target_os = "windows")]
     use super::validate_windows_tun_dns_servers;
+    use super::{
+        startup_ingress_summary, validate_admin_listener, validate_tun_auto_route_server_ipv4,
+    };
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    #[test]
+    fn startup_ingress_summary_reports_disabled_and_enabled_ingresses() {
+        let socks = Some("127.0.0.1:6680".parse().unwrap());
+        assert_eq!(
+            startup_ingress_summary(socks, None, true),
+            "socks5=127.0.0.1:6680,http=disabled,tun=enabled"
+        );
+    }
 
     #[test]
     fn rejects_admin_listener_reusing_proxy_address() {
