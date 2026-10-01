@@ -467,6 +467,19 @@ mod tests {
             &["Authorization: Bearer wrong-secret"],
             Some("admin-secret")
         ));
+        assert!(!authorized(&[], Some("admin-secret")));
+        assert!(!authorized(
+            &["Authorization: Basic admin-secret"],
+            Some("admin-secret")
+        ));
+        assert!(!authorized(
+            &["Authorization: Bearer admin-secret-extra"],
+            Some("admin-secret")
+        ));
+        assert!(authorized(
+            &["Authorization: Bearer wrong-secret", "X-Espejismo-Admin-Token: admin-secret"],
+            Some("admin-secret")
+        ));
     }
 
     #[test]
