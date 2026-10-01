@@ -253,6 +253,7 @@ include `bin/wintun.dll` beside `espejismo-local.exe`.
 
 | Topic | Link |
 | --- | --- |
+| Quick troubleshooting | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
 | Complete configuration reference | [docs/deployment/CONFIG.md](docs/deployment/CONFIG.md) |
 | Quick deployment path | [docs/deployment/QUICKSTART.md](docs/deployment/QUICKSTART.md) |
 | Deployment, upgrade, and rollback runbook | [docs/deployment/RUNBOOK.md](docs/deployment/RUNBOOK.md) |
