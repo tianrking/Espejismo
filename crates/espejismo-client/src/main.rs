@@ -15,7 +15,6 @@ use espejismo_core::{
     ProxyAuth, RuntimeState, TcpConfig, TunnelPoolConfig,
 };
 use serde_json::json;
-use tokio::net::lookup_host;
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tracing::{debug, info};
@@ -907,9 +906,8 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args, doctor: bool)
     }
     let server = args.server.clone().or_else(|| config.local.server.clone());
     match server {
-        Some(server) => match lookup_host(server.as_str()).await {
+        Some(server) => match espejismo_core::resolve_socket_addrs(server.as_str()).await {
             Ok(addrs) => {
-                let addrs = addrs.collect::<Vec<_>>();
                 if !addrs.is_empty() {
                     println!("OK local.server resolves: {server}");
                     if let Some(error) =

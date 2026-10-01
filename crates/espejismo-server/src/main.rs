@@ -15,7 +15,6 @@ use espejismo_core::{
     ReplayCache, RuntimeState, TcpConfig, TrafficObserver,
 };
 use serde_json::json;
-use tokio::net::lookup_host;
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tracing::{debug, info};
 
@@ -527,9 +526,9 @@ async fn check_remote_config(config: &EspejismoConfig, args: &Args, doctor: bool
         );
     }
     if let Some(proxy) = EgressPolicy::from(config.remote.egress.clone()).upstream_proxy()? {
-        match lookup_host(proxy.endpoint.as_str()).await {
+        match espejismo_core::resolve_socket_addrs(proxy.endpoint.as_str()).await {
             Ok(addrs) => {
-                if addrs.count() > 0 {
+                if !addrs.is_empty() {
                     println!("OK egress proxy resolves: {}", proxy.endpoint);
                 } else {
                     warnings.push(format!(
@@ -554,9 +553,9 @@ async fn check_remote_config(config: &EspejismoConfig, args: &Args, doctor: bool
                 .split('/')
                 .next()
                 .unwrap_or(upstream);
-            match lookup_host(host).await {
+            match espejismo_core::resolve_socket_addrs(host).await {
                 Ok(addrs) => {
-                    if addrs.count() > 0 {
+                    if !addrs.is_empty() {
                         println!("OK fallback upstream resolves: {upstream}");
                     } else {
                         warnings.push(format!(
