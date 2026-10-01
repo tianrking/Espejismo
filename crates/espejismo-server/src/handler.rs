@@ -13,7 +13,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tokio::time::{sleep, timeout};
-use tracing::{debug, info, trace};
+use tracing::{debug, info, trace, warn};
 
 use crate::fallback::{fallback_or_reject, route_http_fallback, should_route_to_http_fallback};
 use crate::limits::UserLimitRegistry;
@@ -80,6 +80,7 @@ pub(crate) async fn handle_peer(
         Ok(Err(err)) => {
             metrics.inc_handshake_failure();
             metrics.dec_active_physical();
+            warn!(error = %err, "peer authentication failed");
             runtime
                 .runtime_state
                 .record_error(format!("handshake rejected: {err}"));
@@ -95,6 +96,7 @@ pub(crate) async fn handle_peer(
         Err(err) => {
             metrics.inc_handshake_failure();
             metrics.dec_active_physical();
+            warn!(error = %err, "peer authentication timed out");
             runtime
                 .runtime_state
                 .record_error(format!("handshake timeout: {err}"));
@@ -146,6 +148,7 @@ where
         Ok(Err(err)) => {
             metrics.inc_handshake_failure();
             metrics.dec_active_physical();
+            warn!(error = %err, "peer authentication failed");
             runtime
                 .runtime_state
                 .record_error(format!("websocket handshake rejected: {err}"));
@@ -154,6 +157,7 @@ where
         Err(err) => {
             metrics.inc_handshake_failure();
             metrics.dec_active_physical();
+            warn!(error = %err, "peer authentication timed out");
             runtime
                 .runtime_state
                 .record_error(format!("websocket handshake timeout: {err}"));
