@@ -64,6 +64,40 @@ Keep each process running in its terminal. For Windows commands, TUN mode,
 server-only packages, and deployment details, see the
 [deployment quickstart](docs/deployment/QUICKSTART.md).
 
+## Typical Deployment Topology
+
+```text
+Client machine                                      Remote server
+┌─────────────────────────────┐                    ┌──────────────────────────┐
+│ Applications                │                    │                          │
+│   ├─ SOCKS5 ─┐              │                    │                          │
+│   ├─ HTTP ───┴─> espejismo-local                  │                          │
+│   └─ TUN (optional) ────────┘                    │                          │
+│                       │                          │                          │
+│             authenticated encrypted              │                          │
+│             TCP tunnel (one or more lanes)        │                          │
+└───────────────────────┼──────────────────────────┘                          │
+                        └──── TCP / optional WebSocket or HTTP/2 underlay ─────>
+                                                   │ espejismo-remote          │
+                                                   │          │               │
+                                                   │          └─> optional    │
+                                                   │              upstream    │
+                                                   │              proxy       │
+                                                   └──────────┬───────────────┘
+                                                              │
+                                                              v
+                                                   Destination services
+```
+
+Applications use the local SOCKS5 or HTTP listener, or optionally send system
+traffic through the client's TUN interface. `espejismo-local` multiplexes those
+flows over authenticated encrypted TCP tunnel lanes to `espejismo-remote`;
+WebSocket and HTTP/2 are optional TCP underlays. The remote process connects to
+the requested destination directly or through its configured upstream proxy.
+SOCKS5 UDP relay is carried through the same TCP tunnel. The diagram describes
+the normal client-to-server deployment; it does not imply protocol camouflage
+or a separate UDP transport.
+
 ## Technical Profile
 
 | Layer | What ships in `v0.1.5` |
