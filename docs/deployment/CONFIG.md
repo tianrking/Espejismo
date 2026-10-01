@@ -126,6 +126,31 @@ The table describes omitted fields, not the values selected by built-in
 profiles. For example, the `auto-throughput` profile overlays several buffer,
 chunk, socket, threshold, and lane settings described below.
 
+### Tuning guidance
+
+Keep the defaults as the starting point. Change one group at a time and compare
+latency, throughput, memory use, and reconnect behavior on the actual path;
+larger buffers and more lanes consume more memory and do not guarantee higher
+throughput. Settings that must agree across peers are marked below.
+
+| Goal | Settings to consider | Guidance |
+| --- | --- | --- |
+| High bandwidth-delay product | `shared.obfuscation.chunk_policy`, `randomize_chunks`, `max_chunk`; `shared.tunnel_buffer`; `shared.underlay.http2` windows; `local.tunnel_pool` | Try the documented bulk profile or `auto-throughput` overlay first. Increase chunk sizes/windows or bulk lanes only when measurement shows a throughput ceiling. Keep peer values aligned where the field is shared. |
+| Low latency or constrained memory | `local.tunnel_pool.max_connections`, `shared.tunnel_buffer`, `shared.pacing.burst_bytes`, `shared.obfuscation` | Reduce lanes and buffering if memory is constrained. Prefer the `low_latency` chunk policy for small interactive exchanges; validate that bulk transfers remain acceptable. |
+| Rate limiting | `shared.pacing.max_bytes_per_sec`; `remote.users[].bandwidth.bytes_per_sec` | Set an application-wide cap with pacing, or a per-user cap on the server. `0` means uncapped for pacing; leave user bandwidth unset for no per-user cap. |
+| Replay tolerance | `shared.handshake_window.*`, `shared.clock_skew_secs`, `remote.replay_window_secs` | Keep handshake-window settings identical on both peers. Increase accepted previous windows only for measured clock or path delay; keep the replay cache window at least as large as accepted handshake tolerance. |
+| TCP behavior | `shared.tcp.keepalive_secs`, `heartbeat_secs`, `user_timeout_ms`, `send_buffer_bytes`, `recv_buffer_bytes` | Keep OS buffer defaults (`0`) unless measurements or platform guidance indicate otherwise. Shorter keepalive/heartbeat intervals detect dead paths sooner but add traffic; `user_timeout_ms = 0` leaves the OS policy in effect. |
+| TUN routing | `local.tun.route.*`, `local.tun.udp_enabled`, `udp_block_ports`, `mtu` | Leave route takeover and DNS takeover disabled until explicitly needed. Protect the server route when takeover is enabled. The default UDP block for port 443 avoids QUIC; clear or change it only when UDP/443 should pass through. |
+| Egress restrictions | `remote.egress.deny_private_ips`, `allow_hosts`, `block_hosts`, `allow_ports`, `block_ports` | Set policy to match the server's intended destinations. `deny_private_ips` defaults to `false`; enable it for public-relay deployments that must not reach private or special addresses. Review allow/block rules together before exposure. |
+| Stealth shaping | `shared.obfuscation.profile`, `shared.stealth.*`, `shared.stealth_shaper.*` | Use the `stealth` profile on both peers when its traffic pattern is intended. The shaper is disabled by default; idle padding consumes the configured budget and may add latency. Do not treat these settings as protocol camouflage. |
+| Port hopping | `shared.port_hopping.*` | Enable only when both peers share the same nonempty seed, port list, and window. Bind/firewall every candidate port on the remote. |
+| Diagnostics and admin | `logging.level`, `format`, `file`; `admin.listen`, `token` | Use `info` for routine operation and temporarily increase verbosity to investigate. Enable admin only when needed, keep it on loopback where possible, and use a token for non-loopback binds. |
+
+Optional credentials and endpoints have no default value: configure `shared.psk`
+and `local.server` for their roles, and configure admin tokens, egress proxies,
+fallback upstreams, user quotas, or bandwidth limits only when required. Avoid
+copying example secrets into a deployment.
+
 ### shared
 
 `shared.psk`: Shared secret for single-user mode and local client profiles.
