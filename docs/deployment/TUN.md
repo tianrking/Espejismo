@@ -128,8 +128,8 @@ Important deployment notes:
   static DNS state on shutdown. On macOS it uses `networksetup` to save and
   apply DNS servers for network services, then restores the previous empty or
   static DNS state on shutdown.
-- On Ctrl-C or SIGTERM, Espejismo reverts the TUN DNS settings and removes the
-  policy routing rules/routes on a best-effort basis. Older recovery state files
+- On Ctrl-C/SIGINT or SIGTERM, Espejismo reverts the TUN DNS settings and removes
+  the policy routing rules/routes on a best-effort basis. Older recovery state files
   from previous versions that modified the `main` default route are still
   restored by `--tun-route-cleanup`.
 - During route takeover Espejismo writes a small recovery state file under the

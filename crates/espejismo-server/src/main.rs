@@ -294,7 +294,17 @@ async fn main() -> Result<()> {
     }
     drop(accepted_tx);
 
-    while let Some((socket, peer)) = accepted_rx.recv().await {
+    loop {
+        let accepted = tokio::select! {
+            accepted = accepted_rx.recv() => accepted,
+            _ = shutdown_signal() => {
+                info!("shutdown signal received");
+                break;
+            }
+        };
+        let Some((socket, peer)) = accepted else {
+            break;
+        };
         let _ = apply_tcp_options(&socket, &runtime.tcp);
         let Some(connection_permit) = try_connection_permit(&runtime.global_connection_limit)
         else {
@@ -314,6 +324,31 @@ async fn main() -> Result<()> {
         });
     }
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let terminate = async {
+            if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
+                sigterm.recv().await;
+            }
+        };
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = terminate => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await;
+    }
 }
 
 fn is_temporary_resource_exhaustion(err: &std::io::Error) -> bool {
