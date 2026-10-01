@@ -317,7 +317,7 @@ async fn handle_mux_stream(
     if let Err(err) = &result {
         let reason = classify_stream_failure(err);
         metrics.inc_stream_failed_reason(reason);
-        if reason == "egress_denied" {
+        if is_egress_denial(err) {
             metrics.inc_egress_denied();
         }
         traffic.observe(TrafficEvent {
@@ -439,20 +439,62 @@ fn throughput_bps(bytes: u64, elapsed: Duration) -> u64 {
         / nanos) as u64
 }
 
+/// Stable, low-cardinality classes for stream failure metrics and traffic events.
+/// User/request failures include policy and quota rejections; transport failures
+/// include timeouts and I/O errors. Unrecognized failures are internal until
+/// their source can be classified explicitly.
 fn classify_stream_failure(err: &anyhow::Error) -> &'static str {
     let text = err.to_string();
-    if text.contains("egress policy")
+    if is_egress_denial(err) || text.contains("quota") {
+        "user_error"
+    } else if text.contains("timed out")
+        || err
+            .chain()
+            .any(|cause| cause.downcast_ref::<std::io::Error>().is_some())
+    {
+        "network_error"
+    } else {
+        "internal_error"
+    }
+}
+
+fn is_egress_denial(err: &anyhow::Error) -> bool {
+    let text = err.to_string();
+    text.contains("egress policy")
         || text.contains("egress host")
         || text.contains("egress port")
         || text.contains("egress IP")
         || text.contains("no allowed UDP egress")
-    {
-        "egress_denied"
-    } else if text.contains("timed out") {
-        "timeout"
-    } else if text.contains("quota") {
-        "quota"
-    } else {
-        "other"
+}
+
+#[cfg(test)]
+mod error_classification_tests {
+    use super::classify_stream_failure;
+
+    #[test]
+    fn stream_failures_have_stable_operational_classes() {
+        assert_eq!(
+            classify_stream_failure(&anyhow::anyhow!("egress host denied by policy")),
+            "user_error"
+        );
+        assert_eq!(
+            classify_stream_failure(&anyhow::anyhow!("user quota exceeded")),
+            "user_error"
+        );
+        assert_eq!(
+            classify_stream_failure(&anyhow::anyhow!("tunnel request read timed out")),
+            "network_error"
+        );
+        assert_eq!(
+            classify_stream_failure(&anyhow::anyhow!(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "peer reset"
+            ))),
+            "network_error"
+        );
+        assert_eq!(
+            classify_stream_failure(&anyhow::anyhow!("unexpected state transition")),
+            "internal_error"
+        );
     }
 }
