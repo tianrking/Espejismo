@@ -698,7 +698,10 @@ impl Drop for StreamHandle {
                     // Always successful unless the session is dropped
                     let _ignore = self.unbound_event_sender.unbounded_send(rst_event);
                 }
-                StreamState::Closed => unreachable!(),
+                StreamState::Closed => unreachable!(
+                    "yamux stream {} entered Drop with Closed state despite the state guard",
+                    self.id
+                ),
             }
 
             let event = StreamEvent::Closed(self.id);

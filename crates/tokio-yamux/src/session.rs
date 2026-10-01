@@ -609,9 +609,12 @@ where
                 Poll::Ready(Some(Ok(())))
             }
             Poll::Ready(None) => {
-                // Since session hold one event sender,
-                // the channel can not be disconnected.
-                unreachable!()
+                // The session owns an event sender for its whole lifetime.
+                unreachable!(
+                    "yamux {:?} session event channel closed with {} streams still tracked",
+                    self.ty,
+                    self.streams.len()
+                )
             }
             Poll::Pending => Poll::Pending,
         }
@@ -632,9 +635,8 @@ where
                 Poll::Ready(Some(Ok(())))
             }
             Poll::Ready(None) => {
-                // Since session hold one event sender,
-                // the channel can not be disconnected.
-                unreachable!()
+                // The session owns a control sender for its whole lifetime.
+                unreachable!("yamux {:?} session control channel closed", self.ty)
             }
             Poll::Pending => Poll::Pending,
         }
@@ -1078,8 +1080,8 @@ mod test {
                         }
                     }
                     None => {
-                        // Session closed
-                        unreachable!();
+                        // The test's peer only exits after the expected timeout.
+                        unreachable!("yamux test session closed before idle timeout");
                     }
                 }
             }
