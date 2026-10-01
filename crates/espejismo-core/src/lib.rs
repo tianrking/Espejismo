@@ -16,6 +16,7 @@ pub mod admin;
 pub mod cli_support;
 pub mod config;
 pub mod crypto;
+pub mod dns;
 pub mod egress;
 pub mod extension;
 pub mod ingress;
@@ -44,6 +45,7 @@ pub use crypto::{
     accept_handshake, accept_handshake_with_replay, accept_handshake_with_users, connect_handshake,
     parse_psk, AuthenticatedSession, HandshakeConfig, HandshakeUser, HandshakeWindow, SessionKeys,
 };
+pub use dns::{resolve_socket_addrs, DNS_RESOLUTION_TIMEOUT};
 pub use egress::{split_authority, EgressPolicy, EgressProxy, EgressProxyKind};
 pub use extension::{
     AuthDecision, AuthRequest, Authenticator, CommandAuthenticator, EgressRequest,

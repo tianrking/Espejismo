@@ -7,7 +7,7 @@ use espejismo_core::{
     OutboundConnector, StreamPriority, TransportStream,
 };
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::net::{lookup_host, TcpStream, UdpSocket};
+use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::timeout;
 
 use crate::http_chain::connect_via_http_proxy;
@@ -107,10 +107,7 @@ async fn connect_egress_tcp_inner(authority: &str, egress: &EgressPolicy) -> Res
         };
     }
     let mut last_error = None;
-    for addr in lookup_host(authority)
-        .await
-        .with_context(|| format!("resolve {authority}"))?
-    {
+    for addr in espejismo_core::resolve_socket_addrs(authority).await? {
         if let Err(err) = egress.validate_resolved_addr(addr) {
             last_error = Some(err);
             continue;
@@ -158,10 +155,7 @@ async fn relay_udp_datagram_inner(
         };
     }
     let mut selected = None;
-    for addr in lookup_host(authority)
-        .await
-        .with_context(|| format!("resolve {authority}"))?
-    {
+    for addr in espejismo_core::resolve_socket_addrs(authority).await? {
         if egress.validate_resolved_addr(addr).is_ok() {
             selected = Some(addr);
             break;
