@@ -215,6 +215,28 @@ padding temporarily.
 
 `shared.max_physical_connections`: Remote physical TCP connection cap.
 
+#### Connection and stream limits
+
+These limits apply at different scopes and are independent:
+
+| Setting | Scope | At capacity |
+| --- | --- | --- |
+| `local.tunnel_pool.max_connections` | Client process; maximum authenticated physical tunnel lanes in its pool | The client does not create additional lanes. New proxy flows use available lanes and may wait/fail according to the lane reconnect and stream-open path. |
+| `shared.max_physical_connections` | Remote process; all accepted physical TCP tunnel connections across its listeners | The accept loop drops newly accepted sockets immediately and logs at debug level. Existing connections keep their permits until their handler ends. |
+| `shared.max_streams` | Remote process-wide logical streams, and separately per authenticated physical connection | A stream at the process-wide cap causes the peer handler to end, closing that physical connection and its streams. At the per-connection cap, the handler waits up to its bounded permit timeout; if no stream finishes in time, it ends that physical connection. |
+
+`shared.max_streams` therefore bounds aggregate server stream work and also
+sets the per-connection ceiling; it is not a per-user quota. Both configured
+server limits default to `max_physical_connections = 1024` and `max_streams =
+256`. They must be in `1..=65535`; zero is rejected during config validation.
+The client pool defaults to `min_connections = 1` and `max_connections = 4`.
+
+The server's physical connection limit also bounds the number of simultaneous
+handshakes, since a connection permit is acquired before peer authentication.
+`remote.tarpit_max` is a separate cap on connections held by the fallback
+tarpit and does not increase the physical connection limit. OS listen backlog
+and file-descriptor limits can impose lower effective admission limits.
+
 `shared.key_update_frames`: Frame interval for AEAD traffic-key rotation.
 
 ### shared.tcp
