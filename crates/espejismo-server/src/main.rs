@@ -18,7 +18,8 @@ use serde_json::json;
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tracing::{debug, info};
 
-const ACCEPT_RESOURCE_RETRY_DELAY: Duration = Duration::from_millis(250);
+const ACCEPT_RESOURCE_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
+const ACCEPT_RESOURCE_RETRY_MAX_DELAY: Duration = Duration::from_secs(16);
 
 mod fallback;
 mod handler;
@@ -279,17 +280,21 @@ async fn main() -> Result<()> {
     for listener in listeners {
         let accepted_tx = accepted_tx.clone();
         tokio::spawn(async move {
+            let mut resource_failures = 0_u32;
             loop {
                 match listener.accept().await {
                     Ok((socket, peer)) => {
+                        resource_failures = 0;
                         if accepted_tx.send((socket, peer)).await.is_err() {
                             break;
                         }
                     }
                     Err(err) => {
                         if is_temporary_resource_exhaustion(&err) {
-                            debug!(error = %err, retry_ms = ACCEPT_RESOURCE_RETRY_DELAY.as_millis(), "remote listener temporarily out of resources; retrying accept");
-                            tokio::time::sleep(ACCEPT_RESOURCE_RETRY_DELAY).await;
+                            resource_failures = resource_failures.saturating_add(1);
+                            let delay = accept_resource_retry_delay(resource_failures);
+                            debug!(error = %err, retry_ms = delay.as_millis(), "remote listener temporarily out of resources; retrying accept");
+                            tokio::time::sleep(delay).await;
                         } else {
                             debug!(error = %err, "remote listener accept failed");
                             break;
@@ -331,6 +336,16 @@ async fn main() -> Result<()> {
         });
     }
     Ok(())
+}
+
+fn accept_resource_retry_delay(consecutive_failures: u32) -> Duration {
+    if consecutive_failures == 0 {
+        return Duration::ZERO;
+    }
+    let exponent = consecutive_failures.saturating_sub(1).min(6);
+    ACCEPT_RESOURCE_RETRY_BASE_DELAY
+        .saturating_mul(1_u32 << exponent)
+        .min(ACCEPT_RESOURCE_RETRY_MAX_DELAY)
 }
 
 async fn shutdown_signal() {
@@ -864,17 +879,38 @@ mod connection_limit_tests {
 
 #[cfg(test)]
 mod accept_resource_tests {
-    use super::is_temporary_resource_exhaustion;
+    use super::{accept_resource_retry_delay, is_temporary_resource_exhaustion};
+    use std::time::Duration;
+
+    #[test]
+    fn retry_delay_grows_and_stays_bounded() {
+        assert_eq!(accept_resource_retry_delay(0), Duration::ZERO);
+        assert_eq!(accept_resource_retry_delay(1), Duration::from_millis(250));
+        assert_eq!(accept_resource_retry_delay(2), Duration::from_millis(500));
+        assert_eq!(accept_resource_retry_delay(3), Duration::from_millis(1_000));
+        assert_eq!(
+            accept_resource_retry_delay(7),
+            Duration::from_millis(16_000)
+        );
+        assert_eq!(
+            accept_resource_retry_delay(u32::MAX),
+            Duration::from_millis(16_000)
+        );
+    }
 
     #[test]
     fn retries_known_descriptor_and_memory_exhaustion_errors() {
         #[cfg(target_os = "linux")]
         for code in [12, 23, 24] {
-            assert!(is_temporary_resource_exhaustion(&std::io::Error::from_raw_os_error(code)));
+            assert!(is_temporary_resource_exhaustion(
+                &std::io::Error::from_raw_os_error(code)
+            ));
         }
         #[cfg(windows)]
         for code in [8, 14] {
-            assert!(is_temporary_resource_exhaustion(&std::io::Error::from_raw_os_error(code)));
+            assert!(is_temporary_resource_exhaustion(
+                &std::io::Error::from_raw_os_error(code)
+            ));
         }
         assert!(is_temporary_resource_exhaustion(&std::io::Error::from(
             std::io::ErrorKind::OutOfMemory
