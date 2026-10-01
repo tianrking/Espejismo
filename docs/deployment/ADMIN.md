@@ -11,7 +11,8 @@ token = "change-me-admin-token"
 
 Endpoints:
 
-- `GET /healthz`: health probe.
+- `GET /healthz`: unauthenticated liveness probe returning only `ok`; it does
+  not report tunnel readiness or runtime details.
 - `GET /status`: JSON status snapshot.
 - `GET /connections`: metrics plus runtime tunnel state for troubleshooting.
 - `GET /metrics`: Prometheus-style text metrics.
@@ -19,6 +20,10 @@ Endpoints:
 - `POST /apply`: apply a TOML config supplied as the request body.
 
 Authentication:
+
+`GET /healthz` is the only unauthenticated route, so a load balancer can probe
+the process without an admin credential. All other routes below require the
+configured token.
 
 ```bash
 curl -H 'Authorization: Bearer change-me-admin-token' http://127.0.0.1:9090/status
