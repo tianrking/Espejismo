@@ -382,7 +382,9 @@ fn unknown_field_diagnostic(message: &str) -> Option<String> {
         .min_by_key(|(distance, _)| *distance)
         .map(|(_, candidate)| format!("; did you mean `{candidate}`?"))
         .unwrap_or_default();
-    Some(format!("unknown config field `{field}`{suggestion}"))
+    Some(format!(
+        "unknown config field `{field}`{suggestion}; check whether this option was renamed or removed in this release"
+    ))
 }
 
 fn edit_distance(left: &str, right: &str) -> usize {
@@ -681,6 +683,18 @@ mod tests {
             .to_string();
         assert!(err.contains("unknown config field `enabeld`"), "{err}");
         assert!(err.contains("did you mean `enabled`?"), "{err}");
+    }
+
+    #[test]
+    fn unknown_fields_explain_how_to_handle_removed_options() {
+        let err = parse_config("[shared]\nretired_option = true\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown config field `retired_option`"), "{err}");
+        assert!(
+            err.contains("check whether this option was renamed or removed in this release"),
+            "{err}"
+        );
     }
 
     #[test]
