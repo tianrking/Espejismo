@@ -25,6 +25,39 @@ Authentication:
 the process without an admin credential. All other routes below require the
 configured token.
 
+## Configuration reload
+
+Configuration is not watched automatically, and neither binary handles
+`SIGHUP`. Use the authenticated admin endpoint to request an update:
+
+- `POST /reload` rereads the original `--config` file or `--config-base64`
+  value. It is unavailable if the process was started without either source.
+- `POST /apply` parses the TOML request body as a candidate config. It does not
+  replace the source used by a later `/reload`.
+
+Both actions apply the startup CLI overrides again, so an overridden value in
+the config file or `/apply` body does not supersede the command line. The
+client also reapplies its startup profile import. The candidate is parsed and
+built before runtime settings are replaced; on failure, the current settings
+remain active. A successful response means the in-memory settings were
+accepted, not that every process resource was recreated. The response's
+`restart_required_for` field names primary restart cases; use the table below
+for the full set of startup-captured settings. `/status` exposes the last
+successful apply timestamp.
+
+| Process | Updated by reload/apply | Restart required for |
+| --- | --- | --- |
+| Remote | Users and handshake credentials/policy; per-user quotas and bandwidth limits; egress and fallback policy; handshake/reject/cold-start timing; frame shaping, underlay and mux settings; idle and logical-stream limits. These are the settings assembled into the remote runtime policy. | `remote.listen`, `admin.listen`, `logging.file`, shared TCP socket options, port hopping, tunnel buffer, replay window, tarpit limits, and process-wide physical-connection/logical-stream semaphore capacities. These are captured by the running listener/process. |
+| Local | `local.server`, proxy authentication, handshake settings, TCP options, pacing, obfuscation/frame shaping, underlay and mux settings, tunnel pool, tunnel buffer, HTTP bulk threshold, and idle timeout. The tunnel manager is replaced for subsequent tunnel work. | SOCKS5/HTTP listen addresses, TUN device/route/DNS ownership and settings, `admin.listen`, and `logging.file`. These belong to already-created listeners, the active TUN setup, or open log handles. |
+
+For either process, newly created tunnels and newly opened logical streams use
+the updated runtime settings. Established streams keep their existing
+resources and settings until they close; an update does not renegotiate an
+active stream. Settings supplied only through a changed config source take
+effect after the next successful reload/apply. A restart is needed for the
+process-owned settings above. See [Configuration](CONFIG.md) for each field's
+meaning and [Runbook](RUNBOOK.md) for upgrade/restart procedure.
+
 ```bash
 curl -H 'Authorization: Bearer change-me-admin-token' http://127.0.0.1:9090/status
 curl -H 'Authorization: Bearer change-me-admin-token' http://127.0.0.1:9090/connections
@@ -56,18 +89,6 @@ espejismo_tunnel_lane_bytes_client_to_remote{role="local",lane_id="0",lane_kind=
 espejismo_tunnel_lane_bytes_remote_to_client{role="local",lane_id="0",lane_kind="bulk",state="connected"} 2048
 espejismo_tunnel_lane_last_open_latency_ms{role="local",lane_id="0",lane_kind="bulk",state="connected"} 158
 ```
-
-Runtime apply updates new tunnels and newly opened logical streams. A restart is
-still required for process-owned resources such as listener sockets,
-`admin.listen`, TUN device ownership, and log file handles.
-
-Remote runtime-managed settings include users, quotas, bandwidth limits, egress
-policy, fallback behavior, handshake timing, frame shaping, and stream limits.
-Local runtime-managed settings include `local.server`, local proxy auth,
-TCP/pacing/obfuscation knobs, mux mode, and `local.tunnel_pool`; applying those
-settings rebuilds the tunnel pool without restarting the local process.
-Existing established streams keep their current resources until they naturally
-close.
 
 Keep admin listeners bound to loopback unless they sit behind a trusted local
 firewall or service manager.
