@@ -798,8 +798,9 @@ fn reconnect_backoff(failures: u32, jitter_percent: u64) -> Duration {
     }
     let exponent = failures.min(6);
     let base_ms = 250_u64.saturating_mul(1_u64 << exponent);
-    // jitter_percent is a 80..=120 multiplier (±20%). Cap after applying it
-    // so the configured ceiling is respected even for the largest failure count.
+    // Keep headroom for the upper end of the 80..=120% jitter window. Capping
+    // only after applying jitter collapses every high-failure delay to 16 s.
+    let base_ms = base_ms.min(13_333);
     Duration::from_millis((base_ms.saturating_mul(jitter_percent) / 100).min(16_000))
 }
 
@@ -876,14 +877,17 @@ mod tests {
         assert_eq!(reconnect_backoff(2, 100), Duration::from_millis(1_000));
         assert_eq!(reconnect_backoff(3, 100), Duration::from_millis(2_000));
         assert_eq!(reconnect_backoff(5, 100), Duration::from_millis(8_000));
-        assert_eq!(reconnect_backoff(6, 100), Duration::from_millis(16_000));
-        assert_eq!(reconnect_backoff(99, 120), Duration::from_millis(16_000));
+        assert_eq!(reconnect_backoff(6, 100), Duration::from_millis(13_333));
+        assert_eq!(reconnect_backoff(99, 120), Duration::from_millis(15_999));
     }
 
     #[test]
     fn reconnect_backoff_applies_bounded_jitter() {
         assert_eq!(reconnect_backoff(3, 80), Duration::from_millis(1_600));
         assert_eq!(reconnect_backoff(3, 120), Duration::from_millis(2_400));
+        assert_eq!(reconnect_backoff(6, 80), Duration::from_millis(10_666));
+        assert_eq!(reconnect_backoff(6, 120), Duration::from_millis(15_999));
+        assert!(reconnect_backoff(6, 80) < reconnect_backoff(6, 120));
         assert!(reconnect_backoff(99, 120) <= Duration::from_secs(16));
     }
 
