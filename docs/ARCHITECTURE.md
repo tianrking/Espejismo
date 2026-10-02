@@ -2,6 +2,44 @@
 
 ![Data flow](architecture.svg)
 
+## Textual Architecture Map
+
+```text
+Client machine                                               Remote machine
+┌──────────────────────────────┐                    ┌─────────────────────────────┐
+│ Applications / system flows  │                    │                             │
+│  SOCKS5 · HTTP · optional TUN│                    │                             │
+└──────────────┬───────────────┘                    │                             │
+               v                                    │                             │
+┌──────────────────────────────┐                    │                             │
+│ espejismo-local              │                    │                             │
+│ ingress → internal commands  │                    │                             │
+│ mux → authenticated lanes    │                    │                             │
+└──────────────┬───────────────┘                    │                             │
+               │ TCP (optional WebSocket / HTTP/2 underlay)                        │
+               └── encrypted Espejismo frames ────>┌─────────────────────────────┐
+                                                    │ espejismo-remote            │
+                                                    │ listener → auth → mux       │
+                                                    │ stream request → egress     │
+                                                    └──────────────┬──────────────┘
+                                                                   v
+                                                    Destination or configured proxy
+```
+
+Each process reads the shared TOML configuration with its local or remote
+section; CLI overrides and runtime admin updates affect the corresponding
+process. The local listener converts SOCKS5, HTTP proxy, or optional TUN traffic
+into internal tunnel commands. Commands travel as independent mux streams over
+authenticated physical lanes. On the remote, each stream is checked against
+egress policy and relayed to its destination, directly or through a configured
+upstream proxy. SOCKS5 UDP relay is an application-level flow over the same TCP
+tunnel. The diagram does not represent the experimental UDP underlay primitives
+as a production path.
+
+This map shows component ownership and the ordinary data path. The following
+sections detail handshake and frame formats, underlay choices, mux behavior,
+failure scopes, configuration, and egress policy.
+
 ## Goals
 
 Espejismo is a native Rust encrypted transport for public and untrusted
