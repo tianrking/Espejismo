@@ -1,5 +1,8 @@
 # Configuration
 
+For the authentication flow, PSK handling, and credential-rotation procedure,
+see [Authentication and Key Management](AUTHENTICATION.md).
+
 For workload-oriented profile selection, parameter trade-offs, and a repeatable
 throughput tuning process, see [Performance Tuning](PERFORMANCE.md).
 
