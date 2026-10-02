@@ -70,6 +70,8 @@ Metrics include active physical connections, active logical streams, accepted
 connections, handshake success/failure counters, stream counters, byte totals,
 egress deny counters, stream failure reason counters, session rotation counters,
 frame key-update counters, and local tunnel lane counters.
+See [Prometheus Metrics](METRICS.md) for the complete metric catalog, types,
+label definitions, units, scope, and example queries.
 
 `/status` and `/connections` also include runtime state: tunnel state,
 reconnect count, consecutive failures, recent errors, egress policy version,
