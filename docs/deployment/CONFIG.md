@@ -479,13 +479,33 @@ defaults.
 
 ### shared.pacing
 
-`enabled`: Enable application-level pacing.
+Pacing limits bytes written by the local application-level frame sender. Since
+`shared` settings are read by both binaries, configure the same policy on both
+peers to cap traffic in both directions; a one-sided setting caps only that
+peer's outbound tunnel traffic. This is an aggregate cap for that sender, not a
+per-user policy.
 
-`max_bytes_per_sec`: Rate cap. `0` means uncapped.
+`enabled`: Enable application-level pacing. It defaults to `true`.
 
-`burst_bytes`: Uncharged burst budget.
+`max_bytes_per_sec`: Rate cap in bytes per second. `0` means uncapped, which
+is the default. For example, `1250000` is approximately 10 Mbit/s before
+protocol overhead.
 
-`min_write_bytes`: Minimum pacing write charge.
+`burst_bytes`: Uncharged burst budget in bytes; defaults to `65536`.
+
+`min_write_bytes`: Minimum charge per paced write in bytes; defaults to
+`1024`. With pacing enabled, `burst_bytes` and `min_write_bytes` must be
+positive. The burst permits short transfers to start promptly, so observed
+short-term throughput can exceed the configured average cap.
+
+For a server-side per-user aggregate relay cap, configure
+`remote.users[].bandwidth.bytes_per_sec`; omit it for no per-user cap. The
+per-user limiter applies across that user's TCP and UDP relay traffic in both
+directions. The shared pacing cap and per-user cap can be used together: traffic
+is constrained by whichever applicable cap is tighter. See [Users, Quotas, and
+Bandwidth Limits](USERS.md) for user configuration and [Connection and stream
+limits](#connection-and-stream-limits) for admission limits, which control
+concurrency rather than transfer rate.
 
 ### shared.obfuscation
 
