@@ -65,7 +65,7 @@ optima.
 | `shared.obfuscation.chunk_policy`, `min_chunk`, `max_chunk`, `randomize_chunks` | Normal encrypted data frame sizing | Larger chunks reduce per-frame overhead on bulk paths. `max_chunk` is bounded by the 262127-byte normal payload capacity. Keep shared obfuscation settings aligned on both peers. Stealth frames use `[shared.stealth]` instead. |
 | `shared.tunnel_buffer` | Buffered transport data | More buffering can help keep high-BDP paths full, at a memory cost. Avoid increasing it without a measured throughput ceiling. |
 | `shared.mux.mode` | Multiplexer implementation | `yamux` is the production default and recommended choice; `native` remains beta and did not beat Yamux in the recorded comparison. |
-| `shared.mux.native_initial_window_bytes` | Native mux per-stream window | Applies to the native mux; do not assume changing it tunes Yamux's window. Larger windows consume more memory. |
+| `shared.mux.native_initial_window_bytes` | Native mux window and Yamux maximum per-stream window | Despite the config name, the runtime maps this value to Yamux's maximum stream window too. Larger ceilings allow more in-flight data on high-BDP paths, with higher potential buffering per active stream. |
 | `shared.tcp.send_buffer_bytes`, `recv_buffer_bytes` | Kernel TCP socket buffers | `0` leaves sizing to the OS. Set explicit sizes only after measuring the path and checking platform behavior. |
 | `shared.pacing.burst_bytes`, `min_write_bytes`, `max_bytes_per_sec` | Application pacing burst, write granularity, and optional cap | Larger bursts can help bulk transfers but may increase queueing. `max_bytes_per_sec = 0` means uncapped. |
 | `local.tunnel_pool.max_connections`, `interactive_lanes`, `bulk_lanes` | Number and preferred class of physical client tunnels | More lanes can improve concurrent workloads but add sockets, buffers, and server load. Lane counts must fit within the pool maximum. |
@@ -76,6 +76,33 @@ The `auto-throughput` profile disables padding and timing jitter to favor
 throughput. Do not use it when those traffic-shape properties are required.
 Likewise, increasing `max_streams` or connection limits is capacity tuning,
 not a throughput fix by itself; review memory and server resource limits.
+
+## Yamux Window And Keepalive
+
+The production Yamux adapter starts each stream with the protocol's 256 KiB
+window and permits the stream window to grow up to
+`shared.mux.native_initial_window_bytes` (at least 256 KiB). This setting name
+is historical: it is also passed to Yamux as `max_stream_window_size`. The
+default value is 8 MiB. The shared `shared.max_streams` limit is passed to
+Yamux as its stream-count cap; its default is 256. Yamux's own default count
+and keepalive values therefore do not describe Espejismo's effective stream
+limit.
+
+Increasing the maximum window can help one long-lived stream keep a high
+bandwidth-delay product path busy after the window becomes limiting. It does
+not enlarge the initial 256 KiB, increase TCP capacity, or guarantee higher
+throughput. A larger ceiling also raises possible buffering pressure when
+many streams are active. Start with the profile-provided floor (16 MiB for
+`auto-throughput`) on a measured high-RTT path, then change it only if
+single-stream results point to flow control and memory headroom is known.
+Coordinate this shared value across peers and benchmark with the same workload.
+
+Yamux keepalive is enabled with a 30-second interval in the bundled
+`tokio-yamux` default config; Espejismo currently inherits that setting. It is
+separate from `shared.tcp.heartbeat_secs`, which sends Espejismo's encrypted
+heartbeat. Keepalive detects/maintains the mux session; it is not a window
+tuning knob or a substitute for the encrypted heartbeat. There is no public
+TOML override for Yamux keepalive interval in the current runtime adapter.
 
 ## Benchmark And Record Results
 
