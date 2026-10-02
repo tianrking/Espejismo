@@ -15,6 +15,45 @@ hostname is used; Espejismo has no built-in DoH client. TUN DNS takeover applies
 configured DNS server IP addresses to the host operating system. See
 [DNS behavior](DNS.md) for the lookup paths and DoH support status.
 
+## Quick Start
+
+Start with a working SOCKS5 or HTTP proxy config, then enable TUN ingress. For
+example, add these sections to the local config (the server config does not
+need TUN settings):
+
+```toml
+[local.tun]
+enabled = true
+name = "esptun0"
+address = "10.255.0.2"
+prefix = 24
+destination = "10.255.0.1"
+mtu = 1400
+udp_enabled = false
+
+[local.tun.route]
+enabled = true
+protect_server_route = true
+dns_enabled = true
+dns_servers = ["1.1.1.1", "8.8.8.8"]
+```
+
+Check the effective configuration and server reachability before changing
+system routes, then start the local client with required OS privileges:
+
+```bash
+espejismo-local --config client.toml --check-config
+espejismo-local --config client.toml --doctor
+sudo espejismo-local --config client.toml
+```
+
+On Windows, use an elevated PowerShell and the `.exe` binary. First test a
+direct-IP HTTP request through the route, then a hostname request to check the
+host's DNS path. To return to proxy-only operation, stop TUN and disable
+`local.tun.enabled` (or omit `--tun-enabled` when enabling it from the CLI).
+Route and DNS takeover are opt-in; leave either setting disabled if the host
+should retain its existing routing or resolver configuration.
+
 ## Support Matrix
 
 | Capability | Linux | macOS | Windows | Notes |
@@ -23,7 +62,7 @@ configured DNS server IP addresses to the host operating system. See
 | TUN ingress (local capture) | Yes | Yes | Yes | Requires elevated privileges or platform entitlement. |
 | Global IPv4 TCP forwarding via TUN | Yes | Yes | Yes | Split-default route takeover plus remote route protection. |
 | Global IPv4 UDP forwarding via TUN | Yes | Yes | Yes | Application-level UDP relay over encrypted TCP mux tunnel. |
-| Global IPv6 route takeover via TUN | No | No | No | Not advertised as complete in `v0.1.3`. |
+| Global IPv6 route takeover via TUN | No | No | No | This release supports global route takeover for IPv4 only. |
 | ICMP forwarding (`ping`) | No | No | No | Use TCP/HTTP probes for validation. |
 | Physical UDP underlay takeover | No | No | No | UDP underlay remains reserved/experimental. |
 | Auto DNS takeover | Yes | Yes | Yes (IPv4 DNS only) | Windows uses `netsh interface ipv4` DNS APIs. |
