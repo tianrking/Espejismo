@@ -22,14 +22,16 @@ espejismo-local --profile auto-throughput --config client.toml
 | --- | --- | --- |
 | Everyday proxy use | `balanced` (default) | Moderate frame and lane sizes for mixed workloads. |
 | Interactive requests, smaller memory budget | `low-latency` | Smaller chunks and burst budget; bulk transfers may be slower. |
+| Bulk transfers needing moderate tuning | `fast` | 8 MiB tunnel buffer and four bulk lanes; less aggressive than `auto-throughput`. |
 | Measured long-RTT bulk transfers | `auto-throughput` | Larger buffers, maximum normal-frame chunks, and more bulk lanes; uses more memory and reduces padding/jitter. |
 | Packet-shape-sensitive operation | `stealth` | Small fixed-size frames and optional shaping add overhead and latency. |
+| Restrictive remote egress/resource policy | `server-safe` (remote) | Denies private IPs, limits destination ports and caps resources; may reject destinations clients need. |
 
-`fast` is another throughput-oriented overlay with smaller buffers and fewer
-bulk lanes than `auto-throughput`. Profiles are overlays, not complete
-replacement configs; explicit config and CLI values can affect the effective
-settings. Check the startup output and the resolved config before comparing
-runs.
+`server-safe` targets remote policy controls rather than throughput. The other
+named profiles are overlays, not complete replacement configs; explicit config
+and CLI values can affect the effective settings. Check the startup output and
+the resolved config before comparing runs. See [Profiles](PROFILES.md) for the
+full use case of each named overlay.
 
 ## Tune One Bottleneck At A Time
 
