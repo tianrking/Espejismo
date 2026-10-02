@@ -2,6 +2,9 @@
 
 [Español](README_ES.md) | [Configuration](docs/deployment/CONFIG.md) | [TUN Mode](docs/deployment/TUN.md) | [Protocol](docs/PROTOCOL.md) | [HK2/RK Benchmarks](docs/testing/V0.1.3_HK2_RK_MODE_MATRIX.md)
 
+New here? See the [FAQ](docs/deployment/FAQ.md) for common setup, networking,
+and security questions.
+
 ![Release](https://img.shields.io/badge/release-v0.1.5-0b7285)
 ![Rust](https://img.shields.io/badge/rust-native-9a3412)
 ![Platforms](https://img.shields.io/badge/platforms-linux%20%7C%20macOS%20%7C%20windows-1f6feb)

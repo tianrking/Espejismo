@@ -4,6 +4,9 @@ This quickstart uses release packages and one TOML config file. The installer
 downloads and extracts binaries only; it does not create services or edit system
 network settings.
 
+For common questions about ports, connectivity, UDP, and protocol behavior, see
+the [FAQ](FAQ.md).
+
 ## Download
 
 Linux/macOS, or Windows Git Bash:
