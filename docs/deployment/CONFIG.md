@@ -17,6 +17,9 @@ and DNS behavior, see [SOCKS5 Ingress](SOCKS5.md).
 For HTTP proxy listener configuration, authentication, supported request forms,
 and request-size lane selection, see [HTTP Proxy Ingress](HTTP.md).
 
+For stream priority classes, automatic HTTP classification, and tunnel lane
+configuration, see [Traffic Priority and QoS](QOS.md).
+
 For system-level traffic capture using native TUN (and the distinction from
 Linux netfilter TPROXY), see [Native TUN Mode](TUN.md).
 

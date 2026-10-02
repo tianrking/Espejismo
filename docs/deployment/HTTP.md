@@ -75,7 +75,8 @@ download-path classification remains active.
 The lane choice only affects scheduling within the client's tunnel pool. It
 does not change HTTP semantics or the remote egress policy. See
 [Configuration](CONFIG.md#local) for the field reference and
-[Performance Tuning](PERFORMANCE.md) for pool guidance.
+[Traffic Priority and QoS](QOS.md) for all stream classes and lane behavior,
+and [Performance Tuning](PERFORMANCE.md) for pool guidance.
 
 ## Example
 
