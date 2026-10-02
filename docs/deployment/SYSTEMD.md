@@ -44,6 +44,10 @@ writable host paths. Keep file logging disabled for this layout; use journald
 or explicitly grant a service-owned log directory. For retention settings see
 [Logging](LOGGING.md).
 
+Espejismo does not manage PID files; systemd tracks the service process
+directly. To run multiple instances, use separate unit instances and config
+files with non-conflicting listeners. See [PID files and multiple instances](PIDFILES.md).
+
 ## Optional additional hardening
 
 On hosts where the installed systemd version supports these directives, an
