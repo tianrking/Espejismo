@@ -79,6 +79,9 @@ not a throughput fix by itself; review memory and server resource limits.
 
 ## Yamux Window And Keepalive
 
+For the byte accounting and update cycle shared by the mux implementations,
+see [Stream Flow Control](STREAM-FLOW-CONTROL.md).
+
 The production Yamux adapter starts each stream with the protocol's 256 KiB
 window and permits the stream window to grow up to
 `shared.mux.native_initial_window_bytes` (at least 256 KiB). This setting name
