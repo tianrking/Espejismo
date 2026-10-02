@@ -9,6 +9,9 @@ see [Authentication and Key Management](AUTHENTICATION.md).
 For workload-oriented profile selection, parameter trade-offs, and a repeatable
 throughput tuning process, see [Performance Tuning](PERFORMANCE.md).
 
+For SOCKS5 listener configuration, local proxy authentication, UDP support,
+and DNS behavior, see [SOCKS5 Ingress](SOCKS5.md).
+
 Espejismo uses one TOML shape for both binaries. You may keep one file and pass
 it to both sides:
 
