@@ -222,14 +222,29 @@ Logical stream: opened -> request received -> egress/relay
 ```
 
 Client TCP/underlay connect or handshake failure leaves the lane unavailable;
-that open request fails, and a later request observes the configured bounded
-backoff. A mux stream-open failure clears that lane's control and is retried
-within the configured attempt limit. Session termination decrements active
-physical-connection accounting and the lane is re-established lazily when a
-later stream needs it. Reconnection creates a fresh authenticated session;
-streams from the failed session are not replayed or transparently resumed.
+that open request fails, and a later request observes the lane's reconnect
+backoff. The first connection attempt has no delay. After each consecutive
+lane error, the next demand waits for an exponential delay starting at 500 ms,
+with a fresh 80–120% random multiplier and a 16 s maximum. The failure count is
+lane-local and is reset when a lane connection succeeds.
+A failed connect/handshake is returned to its caller immediately; it does not
+consume the mux stream-open attempt budget. A mux stream-open failure clears
+that lane's control and is retried within
+`local.tunnel_pool.max_reconnect_attempts` (default 3). Session termination
+decrements active physical-connection accounting and the lane is re-established
+lazily when a later stream needs it. Reconnection creates a fresh authenticated
+session; streams from the failed session are not replayed or transparently
+resumed.
 Maximum connection age similarly causes the current control to be discarded
 when checked before a later open.
+
+On the server, each listener retries `accept` only for recognized temporary
+resource exhaustion (such as descriptor or memory exhaustion). Its delay
+doubles from 250 ms to a 16 s cap and resets after a successful accept. Other
+accept errors stop that listener. This retry is independent of client lane
+reconnection; it does not retry authentication failures, destination connects,
+or established proxy streams. A failed logical stream ends with its session;
+the tunnel does not replay or automatically resume it.
 
 | Scope | State / event | Next state | Effect |
 | --- | --- | --- | --- |
