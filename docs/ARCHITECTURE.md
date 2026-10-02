@@ -203,6 +203,11 @@ transaction. A stream failure does not by itself imply that its physical
 connection failed, and a physical connection failure ends every stream on that
 session.
 
+The labels below describe the control flow and the client lane's published
+health state. They are not protocol states negotiated on the wire. In
+particular, `connected` means that a mux control is available for opens; it
+does not mean that every stream is healthy.
+
 ```text
 Client lane: disconnected -> connecting -> authenticated/mux-ready
              -> (stream opens and closes; lane remains ready)
@@ -217,14 +222,38 @@ Logical stream: opened -> request received -> egress/relay
 ```
 
 Client TCP/underlay connect or handshake failure leaves the lane unavailable;
-the next open attempt observes the configured bounded backoff and attempt
-limit. A mux stream-open failure clears that lane's control and is retried
+that open request fails, and a later request observes the configured bounded
+backoff. A mux stream-open failure clears that lane's control and is retried
 within the configured attempt limit. Session termination decrements active
 physical-connection accounting and the lane is re-established lazily when a
 later stream needs it. Reconnection creates a fresh authenticated session;
 streams from the failed session are not replayed or transparently resumed.
 Maximum connection age similarly causes the current control to be discarded
 when checked before a later open.
+
+| Scope | State / event | Next state | Effect |
+| --- | --- | --- | --- |
+| Client lane | no mux control; stream demand arrives | connecting | Select lane, reserve an open, and connect underlay with a bounded timeout. |
+| Client lane | connect and handshake succeed | connected | Create the encrypted transport and mux session; the control can accept stream opens. |
+| Client lane | connect/handshake fails | unavailable (reported degraded) | Record the failure; a later demand retries after bounded backoff. |
+| Client lane | stream open succeeds | connected | Add one active logical stream; the lane remains reusable. |
+| Client lane | mux open fails | connecting on retry, or unavailable | Discard the control and retry within the configured attempt limit. |
+| Client lane | session ends or age expires | disconnected / discarded | Existing streams fail with that session; age is checked before a later open. |
+| Remote physical session | accepted | authenticating | Apply handshake timeout and configured auth/fallback policy. |
+| Remote physical session | authentication succeeds | mux-serving | Yield streams to independent handlers until the mux session ends. |
+| Remote physical session | authentication rejects/times out | closed or fallback | Does not enter mux service. |
+| Remote physical session | mux/session error | closed | All streams on this physical session lose their carrier. |
+| Logical stream | mux yields stream | request pending | Read one tunnel command under the request timeout. |
+| Logical stream | valid TCP command | relaying | Apply egress policy, connect destination, then relay with idle/quota limits. |
+| Logical stream | valid UDP command | datagram transaction | Relay one datagram and response, then shut down the stream. |
+| Logical stream | malformed request, policy/connect/quota/idle/I/O error | closed | End only this stream unless the error came from the physical transport. |
+| Logical stream | EOF and relay shutdown | closed normally | Release stream permits and finish accounting. |
+
+Native mux streams additionally have protocol-level half-close and reset
+operations (`FIN` and `RST`); the common relay lifecycle above deliberately
+describes the application-level outcome shared by the mux wrapper. Yamux has
+its own internal stream/session machinery. Neither mux mode migrates a stream
+to another physical lane after failure.
 
 On the remote, invalid or timed-out authentication follows the configured
 fallback-or-reject path and does not enter mux service. Once authenticated,
