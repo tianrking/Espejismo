@@ -3,6 +3,7 @@
 Release artifacts are built by `.github/workflows/release.yml`.
 
 For the optional container deployment, see [Docker Deployment](DOCKER.md).
+For Linux service management, see [systemd deployment](SYSTEMD.md).
 
 Full packages are named:
 
