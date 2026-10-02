@@ -19,12 +19,19 @@ proxy = "socks5://user:pass@127.0.0.1:1080"
 
 Rules:
 
-- `deny_private_ips`: blocks literal private, loopback, link-local, and special
-  IP targets.
-- `allow_hosts`: optional host allowlist. Supports exact names and `*.example.com`.
-- `block_hosts`: host blocklist. Block rules are evaluated before allow rules.
-- `allow_ports`: optional port allowlist.
-- `block_ports`: port blocklist. Block rules are evaluated before allow rules.
+- `deny_private_ips`: blocks private, loopback, link-local, and special IP
+  targets. For direct egress, resolved destination IPs are checked too. The
+  setting defaults to `false`.
+- `allow_hosts`: optional host allowlist. An empty list imposes no host
+  restriction. Entries match case-insensitively and may be exact names or
+  `*.example.com` patterns. A wildcard pattern matches both `example.com` and
+  its subdomains (for example, `api.example.com`).
+- `block_hosts`: optional host blocklist, with the same matching syntax as
+  `allow_hosts`. A matching block rule takes precedence over the host allowlist.
+- `allow_ports`: optional port allowlist. An empty list imposes no port
+  restriction.
+- `block_ports`: optional port blocklist. A blocked port takes precedence over
+  the port allowlist.
 - `proxy`: optional upstream proxy for server-side egress chaining. Supported
   forms are `socks://host:port`, `socks4://host:port`,
   `socks4a://host:port`, `socks5://host:port`,
@@ -37,6 +44,34 @@ Rules:
 The policy validates literal IPs immediately. Domain names are validated as
 names before dialing, and resolved direct TCP/UDP addresses are filtered again
 before the remote endpoint connects or sends a datagram.
+
+## Rule evaluation and examples
+
+For each requested `host:port`, Espejismo checks the host blocklist, host
+allowlist (when non-empty), port blocklist, port allowlist (when non-empty),
+and then private/special IP policy for literal IP targets. Any failed check
+rejects the request. For direct connections, resolved IP addresses are checked
+against `deny_private_ips` and the port lists as a second boundary; hostname
+lists match the requested host name and are not re-evaluated against resolved
+addresses.
+
+An allowlist is the narrowest way to define a small permitted set. For example,
+this permits only HTTPS to the named service and its subdomains, while
+explicitly blocking one subdomain:
+
+```toml
+[remote.egress]
+deny_private_ips = true
+allow_hosts = ["*.example.com"]
+block_hosts = ["admin.example.com"]
+allow_ports = [443]
+```
+
+Here `example.com:443` and `api.example.com:443` are permitted, but
+`admin.example.com:443`, `api.example.com:80`, and `example.net:443` are
+rejected. An empty `allow_hosts` or `allow_ports` list means unrestricted for
+that dimension; block lists remain active independently. Review the effective
+policy together with the upstream-proxy notes below when chaining egress.
 
 Proxy behavior:
 
