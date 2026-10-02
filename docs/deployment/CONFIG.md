@@ -12,6 +12,9 @@ throughput tuning process, see [Performance Tuning](PERFORMANCE.md).
 For SOCKS5 listener configuration, local proxy authentication, UDP support,
 and DNS behavior, see [SOCKS5 Ingress](SOCKS5.md).
 
+For HTTP proxy listener configuration, authentication, supported request forms,
+and request-size lane selection, see [HTTP Proxy Ingress](HTTP.md).
+
 Espejismo uses one TOML shape for both binaries. You may keep one file and pass
 it to both sides:
 
