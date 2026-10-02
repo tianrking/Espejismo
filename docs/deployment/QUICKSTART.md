@@ -6,6 +6,8 @@ network settings.
 
 For common questions about ports, connectivity, UDP, and protocol behavior, see
 the [FAQ](FAQ.md).
+For router port forwarding, CGNAT, and testing a NAT-hosted server, see
+[NAT deployment](NAT.md).
 For Windows-specific installation, firewall, and TUN notes, see
 [Windows deployment](WINDOWS.md).
 

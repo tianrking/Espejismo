@@ -23,6 +23,9 @@ client; the example uses TCP `6690`. Allow that port in the server firewall and
 cloud security group. The local SOCKS5 and HTTP listeners default to
 `127.0.0.1:6680` and `127.0.0.1:6681`. Espejismo's tunnel uses TCP; relayed UDP
 traffic is carried through that tunnel rather than a separate UDP underlay.
+If the server is behind a router, forward the configured TCP listener port to
+the server host. A client behind NAT usually needs no inbound port mapping.
+See [NAT deployment](NAT.md), including CGNAT limitations.
 
 ## Why does the handshake fail?
 
