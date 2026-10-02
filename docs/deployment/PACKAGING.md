@@ -2,6 +2,8 @@
 
 Release artifacts are built by `.github/workflows/release.yml`.
 
+For the optional container deployment, see [Docker Deployment](DOCKER.md).
+
 Full packages are named:
 
 ```text
