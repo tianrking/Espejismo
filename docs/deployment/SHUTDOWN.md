@@ -11,6 +11,14 @@ its accept loop; active peer handlers are not joined before exit.
 
 ## Production deployments
 
+A restart is a stop followed by a fresh process start; it does not transfer
+sessions or proxy work to the replacement process. On the local side, the
+shutdown handler aborts its listener tasks, so local SOCKS5, HTTP, and TUN
+traffic can fail while it is stopped. On the remote side, the accept loop
+ends, but active peer handlers are not joined; process exit interrupts their
+tunnels as well. Once the replacement is healthy, clients can establish new
+connections, but applications must retry interrupted requests or transfers.
+
 - Treat a restart or stop as a brief outage for clients using that process.
   Clients may reconnect, but an in-flight stream is not resumed transparently.
 - For a rolling deployment behind an external load balancer, first withdraw the
