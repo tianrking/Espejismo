@@ -224,6 +224,41 @@ espejismo-remote --config espejismo.toml --check-config
 espejismo-local --config espejismo.toml --check-config
 ```
 
+### Startup validation and errors
+
+Configuration is checked in stages. File and base64 input must first decode as
+UTF-8 TOML and match the known configuration fields and types. Unknown keys
+are errors (the diagnostic may suggest a close spelling); this helps catch
+misspellings and options removed by an upgrade. The parser then checks
+cross-field constraints and supported ranges. For example, TUN prefix must be
+`0..=32`, MTU at least `576`, stream and physical connection limits
+`1..=65535`, and the tunnel pool must have at least one lane with its lane sum
+no greater than `max_connections`. Conditional checks apply when a feature is
+enabled: DNS takeover needs at least one DNS server, pacing needs positive
+burst and minimum-write sizes, and enabled port hopping needs unique nonzero
+ports, a positive window, and a nonempty seed. Errors name the field or fields
+to correct and often include the accepted range or an example value.
+
+Parsing does not prove that the process can start on this machine. The
+role-specific `--check-config` command also checks required role settings,
+resolves `local.server`, checks bindability of configured proxy/admin/tunnel
+listeners, and detects listener address reuse. Server checks require either
+`remote.users` or a shared PSK; client checks require `local.server` and a PSK.
+These checks report `ERROR` for blockers and return a failure status. `WARNING`
+messages identify advisory conditions such as a short PSK or broad egress
+policy; they do not by themselves fail the check. `--doctor` includes these
+checks and adds reachability and feature diagnostics, so network-dependent
+warnings can reflect the current environment. A successful check is a snapshot:
+DNS answers, port availability, permissions, and remote reachability can
+change before the next startup.
+
+For example, a message such as `unknown config field` points to a TOML key to
+rename or remove; `must be in ...` or `must be greater than 0` identifies a
+value constraint; `cannot bind` means the address is occupied or unavailable
+to this process; and `cannot resolve` means the configured hostname did not
+resolve during the check. Fix the indicated input or environment issue, then
+rerun the check for the same binary role.
+
 ## Accepted Config Parameters
 
 ### Defaults when fields are omitted
