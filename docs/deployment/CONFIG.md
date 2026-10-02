@@ -52,6 +52,150 @@ If `remote.users` is empty, the remote authenticates with `shared.psk`. If
 `remote.users` is configured, each user has its own PSK and the client must use
 the matching PSK in `shared.psk`.
 
+## Complete Scenario Examples
+
+These examples are complete single-file configs: put the same file on the
+remote and local machines, then run the binary for that role. Each binary
+ignores the other role's section. Replace every example PSK and admin token
+with deployment-specific random values before use.
+
+### One user with a local SOCKS5 proxy
+
+This is the usual single-user VPS setup. The proxy listens only on loopback;
+applications on the client machine connect to `127.0.0.1:6680`.
+
+```toml
+[shared]
+psk = "replace-with-a-long-random-secret"
+
+[local]
+server = "203.0.113.10:6690"
+socks5_listen = "127.0.0.1:6680"
+http_listen = "127.0.0.1:6681"
+
+[remote]
+listen = "0.0.0.0:6690"
+
+[remote.egress]
+deny_private_ips = true
+allow_ports = [80, 443]
+
+[logging]
+level = "info"
+format = "compact"
+```
+
+Allow TCP port 6690 through the server firewall. The server and client must
+use the same `shared.psk`.
+
+### Multiple users with per-user limits
+
+For a small shared server, keep the user list on the remote and give each
+client its own `shared.psk`. The remote matches that key to the user's entry;
+do not put other users' secrets in a client's config.
+
+```toml
+[shared]
+psk = "alice-long-random-secret"
+
+[local]
+server = "203.0.113.10:6690"
+socks5_listen = "127.0.0.1:6680"
+http_listen = "127.0.0.1:6681"
+
+[remote]
+listen = "0.0.0.0:6690"
+
+[[remote.users]]
+name = "alice"
+psk = "alice-long-random-secret"
+
+[remote.users.quota]
+bytes = 5368709120
+window_secs = 2592000
+
+[remote.users.bandwidth]
+bytes_per_sec = 10485760
+
+[[remote.users]]
+name = "bob"
+psk = "bob-long-random-secret"
+
+[remote.users.quota]
+bytes = 10737418240
+window_secs = 2592000
+
+[remote.users.bandwidth]
+bytes_per_sec = 20971520
+
+[remote.egress]
+deny_private_ips = true
+allow_ports = [80, 443]
+
+[logging]
+level = "info"
+format = "compact"
+```
+
+Install the same remote user list on the server. Alice's client uses Alice's
+PSK and Bob's client uses Bob's PSK. Quotas are in bytes per `window_secs`;
+bandwidth is bytes per second. Omit either limit table value when that limit
+is not needed.
+
+### TUN client with route and DNS takeover
+
+Use this when applications should use the tunnel without per-application
+proxy settings. The route settings apply on the local machine; run with the
+permissions needed to create a TUN interface and change routes. Confirm that
+the server address remains reachable directly before enabling route takeover.
+
+```toml
+[shared]
+psk = "replace-with-a-long-random-secret"
+
+[local]
+server = "203.0.113.10:6690"
+socks5_listen = "127.0.0.1:6680"
+http_listen = "127.0.0.1:6681"
+
+[local.tun]
+enabled = true
+name = "esptun0"
+address = "10.255.0.2"
+prefix = 24
+destination = "10.255.0.1"
+mtu = 1400
+udp_enabled = false
+
+[local.tun.route]
+enabled = true
+protect_server_route = true
+dns_enabled = true
+dns_servers = ["1.1.1.1", "8.8.8.8"]
+
+[local.tunnel_pool]
+min_connections = 1
+max_connections = 4
+interactive_lanes = 1
+bulk_lanes = 2
+
+[remote]
+listen = "0.0.0.0:6690"
+
+[remote.egress]
+deny_private_ips = true
+allow_ports = [80, 443]
+
+[logging]
+level = "info"
+format = "compact"
+```
+
+The server uses the same `shared.psk`; it does not need the client's TUN
+settings. This example disables UDP relay for a TCP-only baseline. Keep route
+takeover disabled until the interface and direct server route have been
+checked on the target operating system.
+
 ## Full Example
 
 The maintained one-file example is:
