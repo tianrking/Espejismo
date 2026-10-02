@@ -1,5 +1,8 @@
 # Changelog
 
+For entry and release-maintenance rules, see
+[docs/development/CHANGELOG.md](docs/development/CHANGELOG.md).
+
 ## Unreleased
 - README "Why Espejismo" section, architecture data-flow diagram
   (docs/architecture.svg), benchmark summary (docs/testing/BENCHMARKS.md)
