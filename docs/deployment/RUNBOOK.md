@@ -6,6 +6,8 @@ install services, open firewall ports, or change routes. Adapt paths and service
 names if you manage processes another way. Keep the client and remote on
 compatible configuration and protocol versions.
 
+For backup scope and host recovery steps, see [Backup And Recovery](BACKUP.md).
+
 ## Initial deployment
 
 1. Install the release package and copy the example config to a protected
