@@ -1,6 +1,6 @@
 # Espejismo
 
-[Español](README_ES.md) | [Configuration](docs/deployment/CONFIG.md) | [TUN Mode](docs/deployment/TUN.md) | [Protocol](docs/PROTOCOL.md) | [HK2/RK Benchmarks](docs/testing/V0.1.3_HK2_RK_MODE_MATRIX.md)
+[Español](README_ES.md) | [Configuration](docs/deployment/CONFIG.md) | [Migration Guide](docs/deployment/MIGRATION.md) | [TUN Mode](docs/deployment/TUN.md) | [Protocol](docs/PROTOCOL.md) | [HK2/RK Benchmarks](docs/testing/V0.1.3_HK2_RK_MODE_MATRIX.md)
 
 New here? See the [FAQ](docs/deployment/FAQ.md) for common setup, networking,
 and security questions.
