@@ -49,6 +49,32 @@ Proxy behavior:
 | `http://...` | HTTP CONNECT over plain TCP | no | optional Basic auth |
 | `https://...` | HTTP CONNECT inside TLS to the proxy | no | optional Basic auth |
 
+For TCP, the remote sends the requested `host:port` to the upstream proxy:
+SOCKS5 uses a domain-name CONNECT address, SOCKS4a sends the domain in its
+extension format, SOCKS4 accepts only an IPv4 literal, and HTTP(S) sends an
+HTTP/1.1 CONNECT authority. SOCKS5 therefore lets the upstream proxy resolve
+domain targets; SOCKS4a does as well. SOCKS4 does not resolve names. These
+chains do not perform local destination DNS resolution before proxying. The
+remote still checks the requested hostname and port against `block_hosts`,
+`allow_hosts`, `block_ports`, and `allow_ports`, and rejects private/special IP
+literals when configured. Since the upstream resolves domain names, the remote
+cannot apply `deny_private_ips` to the resulting destination address on a
+chained request; enforce that restriction on the upstream proxy as well.
+
+SOCKS5 offers no-authentication and, when credentials are configured,
+username/password authentication. The upstream selects one offered method;
+other SOCKS5 methods are unsupported. SOCKS4's optional user ID is not a
+password-based authentication mechanism. HTTP(S) proxy credentials use Basic
+authentication in `Proxy-Authorization`; use `https://` when that credential
+must be protected on the connection to the proxy. HTTPS proxy TLS certificate
+and hostname verification are enabled.
+
+UDP is available only through SOCKS5 UDP ASSOCIATE. SOCKS4, SOCKS4a, HTTP, and
+HTTPS chains cannot carry UDP; this includes SOCKS5's UDP relay being separate
+from its TCP CONNECT stream. Without an upstream proxy, the remote resolves
+the destination and applies resolved-address egress checks before direct TCP
+or UDP traffic.
+
 HTTP and HTTPS proxy URLs describe the connection to the upstream proxy itself.
 They are different from tunneling an HTTPS destination such as
 `example.com:443`, which works through either plain `http://` CONNECT proxies or
