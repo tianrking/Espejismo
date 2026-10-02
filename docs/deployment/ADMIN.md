@@ -71,7 +71,8 @@ connections, handshake success/failure counters, stream counters, byte totals,
 egress deny counters, stream failure reason counters, session rotation counters,
 frame key-update counters, and local tunnel lane counters.
 See [Prometheus Metrics](METRICS.md) for the complete metric catalog, types,
-label definitions, units, scope, and example queries.
+label definitions, units, scope, and example queries. For Prometheus scrape
+configuration and starter alert rules, see [Monitoring And Alerting](MONITORING-ALERTS.md).
 
 `/status` and `/connections` also include runtime state: tunnel state,
 reconnect count, consecutive failures, recent errors, egress policy version,
