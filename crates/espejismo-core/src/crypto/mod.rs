@@ -1,3 +1,8 @@
+//! Authenticated key exchange and traffic-key primitives.
+//!
+//! Handshake helpers establish authenticated sessions from configured
+//! pre-shared credentials; frame encryption uses the resulting session keys.
+
 use std::fmt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};

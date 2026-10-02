@@ -1,3 +1,5 @@
+//! Destination policy and outbound proxy selection for tunneled requests.
+
 use std::net::{IpAddr, SocketAddr};
 
 use anyhow::{bail, Context, Result};

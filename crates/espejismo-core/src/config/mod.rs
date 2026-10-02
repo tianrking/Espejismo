@@ -1,3 +1,8 @@
+//! Deployment configuration loading, validation, and serialization.
+//!
+//! This module accepts file or base64 input and applies bounded defaults while
+//! preserving explicit operator choices for adaptive tuning.
+
 use std::fs;
 use std::path::Path;
 

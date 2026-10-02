@@ -1,3 +1,5 @@
+//! Shared helpers for command-line logging, update checks, and config reports.
+
 use std::path::PathBuf;
 
 use anyhow::Result;

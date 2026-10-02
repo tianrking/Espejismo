@@ -1,3 +1,8 @@
+//! Local administrative HTTP endpoint and runtime control actions.
+//!
+//! The endpoint exposes operational state and authenticated actions; it is
+//! intended for a trusted local management network, not public proxy traffic.
+
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;

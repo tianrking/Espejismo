@@ -1,3 +1,5 @@
+//! Thread-safe snapshots of tunnel lifecycle and lane health.
+
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
