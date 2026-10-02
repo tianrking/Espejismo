@@ -15,6 +15,9 @@ and DNS behavior, see [SOCKS5 Ingress](SOCKS5.md).
 For HTTP proxy listener configuration, authentication, supported request forms,
 and request-size lane selection, see [HTTP Proxy Ingress](HTTP.md).
 
+For system-level traffic capture using native TUN (and the distinction from
+Linux netfilter TPROXY), see [Native TUN Mode](TUN.md).
+
 Espejismo uses one TOML shape for both binaries. You may keep one file and pass
 it to both sides:
 

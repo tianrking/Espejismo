@@ -15,6 +15,24 @@ hostname is used; Espejismo has no built-in DoH client. TUN DNS takeover applies
 configured DNS server IP addresses to the host operating system. See
 [DNS behavior](DNS.md) for the lookup paths and DoH support status.
 
+## Transparent traffic capture on Linux
+
+Espejismo does not provide a Linux netfilter `TPROXY` listener and does not
+install `iptables` or `nftables` interception rules. For system-wide traffic
+capture, use the native TUN mode documented here: enable
+`[local.tun].enabled` and, when automatic route takeover is desired,
+`[local.tun.route].enabled`. This routes supported IPv4 traffic into the
+client's existing encrypted tunnel while preserving Espejismo's small,
+operator-managed configuration model. See [Quick Start](#quick-start) for the
+configuration and privilege requirements, and [Support Matrix](#support-matrix)
+for protocol and platform limits.
+
+This is not a drop-in TPROXY setup for redirecting selected inbound connections
+or preserving their original destination through kernel socket interception.
+If that specific netfilter behavior is required, it is not currently supported
+by Espejismo; use an external component only if you have independently verified
+that it can forward traffic to a supported Espejismo ingress.
+
 ## Quick Start
 
 Start with a working SOCKS5 or HTTP proxy config, then enable TUN ingress. For
