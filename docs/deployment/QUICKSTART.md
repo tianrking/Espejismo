@@ -6,6 +6,8 @@ network settings.
 
 For common questions about ports, connectivity, UDP, and protocol behavior, see
 the [FAQ](FAQ.md).
+For Windows-specific installation, firewall, and TUN notes, see
+[Windows deployment](WINDOWS.md).
 
 ## Download
 
