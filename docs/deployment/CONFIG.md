@@ -9,6 +9,8 @@ see [Authentication and Key Management](AUTHENTICATION.md).
 For workload-oriented profile selection, parameter trade-offs, and a repeatable
 throughput tuning process, see [Performance Tuning](PERFORMANCE.md).
 
+For IPv4/IPv6 listener and destination behavior, see [IPv6 deployment notes](IPV6.md).
+
 For SOCKS5 listener configuration, local proxy authentication, UDP support,
 and DNS behavior, see [SOCKS5 Ingress](SOCKS5.md).
 

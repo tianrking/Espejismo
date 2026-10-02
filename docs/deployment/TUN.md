@@ -14,6 +14,8 @@ use the local or remote operating system resolver depending on where the
 hostname is used; Espejismo has no built-in DoH client. TUN DNS takeover applies
 configured DNS server IP addresses to the host operating system. See
 [DNS behavior](DNS.md) for the lookup paths and DoH support status.
+IPv6 listener and proxy destination behavior, plus the IPv4-only route takeover
+limit, are summarized in [IPv6 deployment notes](IPV6.md).
 
 ## Transparent traffic capture on Linux
 
