@@ -26,6 +26,46 @@ Fields:
 
 JSON logs always disable ANSI escape sequences.
 
+## Levels and formats
+
+`error` indicates an operation could not continue, `warn` marks a rejected or
+partially recovered operation, `info` records service lifecycle and successful
+setup, `debug` adds per-connection and troubleshooting details, and `trace` is
+for very detailed diagnostics. Normal operation should use `info`. Enable
+`debug` or `trace` temporarily and narrow the filter to the relevant
+application module when possible; verbose output can grow quickly.
+
+With the default `compact` format, each event is a compact human-readable line
+with its level, timestamp, structured fields, and message. `pretty` is a
+multiline human-readable alternative. `json` emits one structured event per
+line for log collectors; fields such as `peer`, `error`, `user`, and timing
+values remain separate JSON properties. JSON disables ANSI regardless of the
+`ansi` setting.
+
+## Reading common events
+
+| Event or field | Meaning and next step |
+| --- | --- |
+| `service started` | The process started; `role`, `listen`, `mux`, `underlay`, and `listeners` describe the active service setup. |
+| `SOCKS5 proxy listening` / `HTTP proxy listening` | The local proxy listener is ready at the `listen` address. Check the configured address if a local application cannot connect. |
+| `authenticated tunnel accepted` | The remote accepted a peer; `user`, `handshake_ms`, and `cold_start_ms` show identity and setup timings. |
+| `peer authentication failed` / `peer authentication timed out` | A remote handshake was rejected or exceeded its configured deadline. Check that client and server credentials and protocol settings match, then inspect the associated `error`; unauthenticated peers may also be expected internet traffic. |
+| `remote peer dropped because global connection limit is full` | The configured server connection cap is reached. Check current load and connection limits. |
+| `perf local stream completed` | A local proxy flow completed. `open_ms`, `copy_ms`, byte counts, and `remote_to_client_bps` help distinguish setup delay from transfer time; this is emitted at `debug`. |
+| `TUN route restore was incomplete` | Route cleanup encountered an error during shutdown or recovery. Read `error` and verify the host routes and DNS settings before relying on the system network. |
+| `shutdown signal received` | The process received its normal shutdown signal. |
+
+Application events use structured fields where available. In particular,
+`target` fields can contain requested destination hostnames, and `user` fields
+identify configured users. Treat collected logs as operational data and apply
+the same access and retention controls used for other connection metadata.
+
+For a focused investigation, start with a module filter such as
+`info,espejismo_server=debug` or `info,espejismo_client=debug`. A global
+`debug` or `trace` enables that level for Espejismo application crates while
+keeping high-volume transport dependencies capped at `info`; see the
+dependency note below.
+
 ## Command-Line Overrides
 
 ```bash
