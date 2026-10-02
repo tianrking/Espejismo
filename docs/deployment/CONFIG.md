@@ -1,5 +1,8 @@
 # Configuration
 
+For a walkthrough of traffic shaping profiles, stealth settings, and their
+trade-offs, see [Traffic Shaping and Obfuscation](OBFUSCATION.md).
+
 For the authentication flow, PSK handling, and credential-rotation procedure,
 see [Authentication and Key Management](AUTHENTICATION.md).
 
