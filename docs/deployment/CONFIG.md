@@ -431,9 +431,21 @@ and file-descriptor limits can impose lower effective admission limits.
 
 `nodelay`: Enable TCP_NODELAY.
 
-`keepalive_secs`: TCP keepalive interval.
+`keepalive_secs`: TCP socket keepalive idle interval in seconds. Defaults to
+`30`; set to `0` to leave TCP keepalive disabled by this configuration. The
+operating system controls the subsequent probe schedule and failure policy,
+which vary by platform. Where the socket setup supports it, this value sets the
+idle time before probes begin. This option applies to TCP sockets; it is
+distinct from the encrypted framing heartbeat and from Yamux session pings.
 
-`heartbeat_secs`: Encrypted heartbeat interval.
+`heartbeat_secs`: Interval in seconds for an encrypted empty padding frame when
+the normal (non-stealth) framing writer has no application data to send. Defaults
+to `30`; `0` disables these idle frames. The peer's ordinary frame read path
+receives them, so they keep traffic moving through the encrypted tunnel, but
+they are not a configurable Yamux ping timeout or TCP failure timer. In stealth
+profile, the stealth framing path is used instead and this setting does not
+schedule these heartbeat frames. Regular heartbeats can create a timing signal;
+the runtime warns about this for non-stealth profiles.
 
 `user_timeout_ms`: Linux TCP_USER_TIMEOUT, 0 disables it.
 
