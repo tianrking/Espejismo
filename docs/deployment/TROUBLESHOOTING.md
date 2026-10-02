@@ -30,6 +30,8 @@ it does not start local proxy listeners.
 | HTTPS egress proxy connection fails | Check the proxy hostname, certificate dates and chain, system clock, and that the endpoint serves TLS. Espejismo validates HTTPS proxy certificates against bundled Mozilla roots; see [TLS Certificates](TLS-CERTIFICATES.md). |
 | Public HTTPS endpoint shows a certificate error | The reverse proxy owns TLS termination and its public certificate. Check its hostname, certificate chain/expiry, and TLS logs; see [TLS Certificates](TLS-CERTIFICATES.md). |
 
+For common messages and proxy status values, see [Error and status reference](ERRORS.md).
+
 For further diagnosis, collect binary versions, OS, sanitized config values,
 the exact failing command, `--doctor` output, and a short relevant log window.
 Do not include secrets. See [Configuration](CONFIG.md), [CLI](CLI.md), and
