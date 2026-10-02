@@ -25,6 +25,9 @@ Authentication:
 the process without an admin credential. All other routes below require the
 configured token.
 
+For probe behavior and container/orchestrator examples, see
+[Health Checks](HEALTHCHECK.md).
+
 ## Configuration reload
 
 Configuration is not watched automatically, and neither binary handles
