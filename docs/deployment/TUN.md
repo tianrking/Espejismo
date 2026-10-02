@@ -9,6 +9,12 @@ mode, Espejismo creates a virtual interface and can route ordinary IPv4 TCP/UDP
 traffic from the operating system into the same encrypted protocol path, giving
 the client a global-forwarding mode without changing the remote server.
 
+DNS name resolution and TUN DNS takeover are separate concerns. Hostname lookups
+use the local or remote operating system resolver depending on where the
+hostname is used; Espejismo has no built-in DoH client. TUN DNS takeover applies
+configured DNS server IP addresses to the host operating system. See
+[DNS behavior](DNS.md) for the lookup paths and DoH support status.
+
 ## Support Matrix
 
 | Capability | Linux | macOS | Windows | Notes |

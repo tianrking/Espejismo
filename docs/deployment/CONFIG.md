@@ -731,6 +731,10 @@ to `[443]` so QUIC falls back to TCP HTTPS; use `[]` to allow UDP/443.
 `dns_enabled`: Apply DNS takeover.
 
 `dns_servers`: DNS servers to apply when DNS takeover is enabled.
+These are server IP addresses for the host operating system's DNS client; they
+do not configure an Espejismo resolver or DNS-over-HTTPS (DoH). DNS takeover is
+opt-in and disabled by default. See [DNS behavior](DNS.md) for hostname
+resolution paths and platform details.
 
 ### remote
 
