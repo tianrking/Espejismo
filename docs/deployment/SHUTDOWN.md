@@ -9,6 +9,26 @@ Active connections can be interrupted when the process exits. The local
 service also aborts its listener tasks on a shutdown signal. The remote stops
 its accept loop; active peer handlers are not joined before exit.
 
+## Signals handled by the service binaries
+
+- Ctrl-C is handled through Tokio's Ctrl-C listener on all supported platforms
+  (reported as SIGINT on Unix). On Unix, SIGTERM is handled as well. The first
+  of these events ends the service loop; repeated signals do not add a drain
+  period.
+- On Windows, the service code listens for Ctrl-C; it does not register a
+  separate SIGTERM handler.
+- SIGHUP, SIGUSR1, and SIGUSR2 have no application-defined action. In
+  particular, SIGHUP does not reload configuration or reopen the log file.
+  Their default behavior is left to the operating system. Configuration
+  changes that support runtime application use the authenticated admin API;
+  see [Admin API](ADMIN.md).
+- SIGKILL and SIGSTOP cannot be handled by an application. Other signals are
+  not converted into shutdown requests by these handlers.
+- The local process aborts and joins its listener tasks after a handled
+  shutdown event. The remote process stops accepting connections, but does not
+  join already spawned peer handlers. Neither path promises completion of
+  active proxy streams.
+
 ## Production deployments
 
 A restart is a stop followed by a fresh process start; it does not transfer
