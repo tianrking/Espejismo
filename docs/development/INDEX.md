@@ -33,6 +33,8 @@ needed to make a change to Espejismo.
   tuning guidance, and recorded results.
 - [Benchmark methodology](../testing/BENCHMARKS.md) — how to produce comparable
   throughput measurements.
+- [CPU and memory profiling](PROFILING.md) — collect Linux CPU samples and
+  memory observations for representative workloads.
 
 ## Project history and release work
 

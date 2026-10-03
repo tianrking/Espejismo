@@ -21,6 +21,8 @@ authenticated encrypted TCP/Yamux tunnel and does not use protocol camouflage.
 
 ## Measure and interpret
 
+- [CPU and memory profiling](../development/PROFILING.md) — inspect Linux CPU
+  samples, allocator activity, and resident memory under a fixed workload.
 - [Benchmark instructions and methodology](BENCHMARKS.md) — run the throughput
   harness, compare repeated rounds, and record environmental conditions.
 - [`bench-throughput.sh`](../../scripts/bench-throughput.sh) — direct and
