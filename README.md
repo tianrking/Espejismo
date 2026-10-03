@@ -143,6 +143,8 @@ For live HK2 to RK mode data, including TCP, stealth, WebSocket, HTTP/2, and
 port hopping, see [v0.1.3 HK2/RK mode matrix](docs/testing/V0.1.3_HK2_RK_MODE_MATRIX.md).
 For the adaptive lane scheduler and five-round median benchmark pass, see
 [HK2/RK throughput tuning](docs/testing/THROUGHPUT_TUNING_HK2_RK.md).
+Browse the [performance documentation index](docs/testing/PERFORMANCE_INDEX.md)
+for tuning guidance, benchmark methods, and recorded results.
 These reports describe measurements, not guaranteed rates.
 
 ## Install From Release

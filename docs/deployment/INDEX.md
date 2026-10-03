@@ -81,6 +81,8 @@ choices.
 - [Logging](LOGGING.md) — log formats, levels, and retention considerations.
 - [Performance tuning](PERFORMANCE.md) — choose settings for the measured path
   and workload.
+- [Performance documentation index](../testing/PERFORMANCE_INDEX.md) — find
+  tuning guides, benchmark methods, and recorded results.
 - [Resource planning](RESOURCES.md) — configuration-derived resource budgets
   and sizing considerations.
 - [Service level objectives](SLO.md) — operator-defined availability goals.
