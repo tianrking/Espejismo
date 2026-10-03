@@ -78,13 +78,50 @@ matching `0.1.x` release numbers.
 
 ## Rollback
 
-1. Stop the affected service and restore its saved binary and matching config
-   backup. Keep client/server configs paired if a change altered PSKs or shared
-   protocol settings.
-2. Start the service, check its status and logs, then run `--check-config`,
-   client `--probe-server`, and a small application request.
-3. If rollback follows a config-only change, restore the config first. Do not
-   rotate the PSK during rollback unless both peers are updated together.
+Rollback the whole compatible client/server release pair when protocol
+compatibility for a mixed pair is not explicitly documented. A rollback can
+restore service code and configuration, but it cannot undo external changes
+such as rotated credentials, firewall edits, or routes already applied by the
+operating system.
+
+1. Identify the last known-good release and config backups on both sides. Keep
+   the remote and local binaries, TOML files, PSKs, and shared protocol
+   settings matched as one recovery point. See [version compatibility](VERSION-COMPATIBILITY.md)
+   and [backup and recovery](BACKUP.md).
+2. Stop affected services before replacing files. If the failed change
+   affected only one side and the existing peer pair is documented as
+   compatible, that side can be restored alone; otherwise schedule both sides
+   in the same maintenance window. Example for a systemd remote:
+
+   ```bash
+   sudo systemctl stop espejismo-remote
+   sudo install -m 0755 /path/to/known-good/espejismo-remote \
+     /usr/local/bin/espejismo-remote
+   sudo install -m 0600 /path/to/known-good/espejismo.toml \
+     /etc/espejismo/espejismo.toml
+   sudo -u espejismo /usr/local/bin/espejismo-remote \
+     --config /etc/espejismo/espejismo.toml --check-config
+   sudo systemctl start espejismo-remote
+   ```
+
+   Repeat with the matching client artifact and its config where needed. Adapt
+   paths, ownership, and commands to the actual service account and deployment
+   method. For Docker, restore the previous image tag and host-side config, then
+   recreate the container; do not assume rebuilding `latest` recreates the old
+   binary.
+3. Check the service status and recent logs. From the client, run
+   `--probe-server`, then verify a small representative proxy request. Check
+   `/healthz` if admin is enabled. If config validation fails, keep the service
+   stopped and correct the restored release/config pairing before retrying.
+4. If the rollback followed a config-only change, restore the saved config
+   before restarting. Do not rotate a PSK during recovery unless both peers
+   and every affected user config are updated together. For TUN deployments,
+   check routes and DNS separately and use `--tun-route-cleanup` when needed;
+   binary/config restoration does not revert operating-system network state.
+
+If the known-good artifacts or secrets are missing, stop and recover them from
+the protected backup or release archive before changing credentials or
+reinitializing the deployment. See [Backup And Recovery](BACKUP.md).
 
 ## Routine checks
 
