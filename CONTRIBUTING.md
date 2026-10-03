@@ -64,10 +64,41 @@ for test scope and manual smoke checks.
 
 ## Submitting a change
 
-Provide a concise summary of the behavior and motivation, list the checks you
-ran, and include relevant benchmark results for performance work. Mention
-platform coverage and any known limitations. Keep commits focused and use a
-short imperative English subject line.
+Open a pull request with a concise title and a description that explains the
+problem, the user-visible or operational effect, and the approach taken. Keep
+each PR focused; split unrelated work so reviewers can assess each change on
+its own. Link related issues when available, and call out compatibility,
+configuration, security, or deployment effects explicitly.
+
+Include a validation section in the PR description. List the checks you ran
+and their results, mention platform coverage and any limits you could not
+verify, and attach comparable benchmark conditions and results for performance
+work. For documentation-only changes, identify the pages or procedures
+reviewed. Do not report a check as passing if it was not run; state why a
+relevant check was skipped.
+
+### Review expectations
+
+Reviewers should check that a change solves the stated problem without
+expanding its scope, follows the architecture and product boundaries, and
+handles relevant failure cases. For code, review tests, resource limits,
+authentication and encryption boundaries, and compatibility effects. For
+documentation, check technical accuracy against the implementation and
+canonical references, working links, copyable examples, and clear limits on
+claims. Performance claims need reproducible evidence; security-sensitive
+changes need particular scrutiny of trust boundaries and failure behavior.
+
+Keep review feedback specific and actionable, and distinguish required fixes
+from suggestions. Authors should respond to each requested change, update the
+PR description when its scope or validation changes, and rerun affected checks
+after revisions. Resolve a discussion once its concern is addressed or the
+participants agree on the outcome. Before merge, confirm the final diff is
+focused, required checks are green, and the PR description still matches the
+resulting change.
+
+Use short, focused commits with concise imperative English subject lines.
+Avoid bundling generated output, local build artifacts, secrets, or unrelated
+formatting changes.
 
 For security-sensitive issues, avoid posting exploit details publicly before a
 fix is available. Contact the maintainers through a private channel.
