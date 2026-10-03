@@ -38,6 +38,8 @@ needed to make a change to Espejismo.
 
 ## Project history and release work
 
+- [Project history](HISTORY.md) — major stages and design direction across
+  releases.
 - [Changelog maintenance](CHANGELOG.md) — user-facing entries and release
   preparation.
 - [Versioning and release branches](VERSIONING.md) — package versions, release
