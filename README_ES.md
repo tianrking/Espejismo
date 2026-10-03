@@ -1,6 +1,8 @@
 # Espejismo
 
-[English](README.md) | [Configuracion](docs/deployment/CONFIG.md) | [Modo TUN](docs/deployment/TUN.md) | [Protocolo](docs/PROTOCOL.md) | [Benchmarks HK2/RK](docs/testing/V0.1.3_HK2_RK_MODE_MATRIX.md)
+[English](README.md) | [Inicio rapido](docs/deployment/QUICKSTART.md) | [Preguntas frecuentes](docs/deployment/FAQ.md) | [Indice operativo](docs/deployment/INDEX.md) | [Configuracion](docs/deployment/CONFIG.md) | [Protocolo](docs/PROTOCOL.md) | [Glosario](GLOSSARY.md)
+
+**Empiece aqui:** [Instalar](#instalacion-desde-release) · [Configurar](#un-archivo-de-configuracion) · [Guias operativas](#documentacion-operativa) · [Compilar](#compilar-desde-codigo-fuente)
 
 ![Release](https://img.shields.io/badge/release-v0.1.5-0b7285)
 ![Rust](https://img.shields.io/badge/rust-native-9a3412)
@@ -53,6 +55,7 @@ Para datos reales HK2 a RK por modo, incluyendo TCP, stealth, WebSocket,
 HTTP/2 y port hopping, vea [matriz v0.1.3 HK2/RK](docs/testing/V0.1.3_HK2_RK_MODE_MATRIX.md).
 Para el scheduler adaptativo de lanes y el benchmark mediano de cinco rondas,
 vea [ajuste de throughput HK2/RK](docs/testing/THROUGHPUT_TUNING_HK2_RK.md).
+Son mediciones, no tasas garantizadas.
 
 ## Instalacion Desde Release
 
@@ -165,15 +168,17 @@ release para Windows incluyen `bin/wintun.dll` junto a `espejismo-local.exe`.
 
 ## Documentacion Operativa
 
+Consulte el [indice completo de documentacion operativa](docs/deployment/INDEX.md).
+
 | Tema | Enlace |
 | --- | --- |
-| Referencia completa de configuracion | [docs/deployment/CONFIG.md](docs/deployment/CONFIG.md) |
-| Despliegue rapido | [docs/deployment/QUICKSTART.md](docs/deployment/QUICKSTART.md) |
-| Alta disponibilidad | [docs/deployment/HIGH-AVAILABILITY.md](docs/deployment/HIGH-AVAILABILITY.md) |
-| Modo TUN nativo | [docs/deployment/TUN.md](docs/deployment/TUN.md) |
-| Flags CLI | [docs/deployment/CLI.md](docs/deployment/CLI.md) |
-| Paquetes y releases | [docs/deployment/PACKAGING.md](docs/deployment/PACKAGING.md) |
-| Contrato del protocolo | [docs/PROTOCOL.md](docs/PROTOCOL.md) |
+| Primer despliegue | [Despliegue rapido](docs/deployment/QUICKSTART.md) |
+| Preguntas y problemas | [Preguntas frecuentes](docs/deployment/FAQ.md) · [Solucion de problemas](docs/deployment/TROUBLESHOOTING.md) |
+| Configuracion y CLI | [Referencia de configuracion](docs/deployment/CONFIG.md) · [Flags CLI](docs/deployment/CLI.md) |
+| Captura de red | [Modo TUN](docs/deployment/TUN.md) · [DNS](docs/deployment/DNS.md) |
+| Releases y actualizaciones | [Paquetes](docs/deployment/PACKAGING.md) · [Compatibilidad de versiones](docs/deployment/VERSION-COMPATIBILITY.md) |
+| Operacion y recuperacion | [Runbook](docs/deployment/RUNBOOK.md) · [Backup y recuperacion](docs/deployment/BACKUP.md) |
+| Protocolo y diseno | [Protocolo](docs/PROTOCOL.md) · [Arquitectura](docs/ARCHITECTURE.md) · [Posicionamiento](docs/POSITIONING.md) |
 
 ## Compilar Desde Codigo Fuente
 

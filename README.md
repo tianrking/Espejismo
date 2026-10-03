@@ -1,6 +1,8 @@
 # Espejismo
 
-[Español](README_ES.md) | [Glossary](GLOSSARY.md) | [Configuration](docs/deployment/CONFIG.md) | [Traffic Shaping](docs/deployment/OBFUSCATION.md) | [Migration Guide](docs/deployment/MIGRATION.md) | [TUN Mode](docs/deployment/TUN.md) | [Protocol](docs/PROTOCOL.md) | [HK2/RK Benchmarks](docs/testing/V0.1.3_HK2_RK_MODE_MATRIX.md)
+[Español](README_ES.md) | [Quickstart](docs/deployment/QUICKSTART.md) | [FAQ](docs/deployment/FAQ.md) | [Operations index](docs/deployment/INDEX.md) | [Configuration](docs/deployment/CONFIG.md) | [Protocol](docs/PROTOCOL.md) | [Glossary](GLOSSARY.md)
+
+**Start here:** [Quickstart](#quickstart-linuxmacos) · [Deployment topology](#typical-deployment-topology) · [Install](#install-from-release) · [Configuration](#one-config-file) · [Operations guides](#operations-docs) · [Build](#build-from-source)
 
 New here? See the [FAQ](docs/deployment/FAQ.md) for common setup, networking,
 and security questions.
@@ -141,6 +143,7 @@ For live HK2 to RK mode data, including TCP, stealth, WebSocket, HTTP/2, and
 port hopping, see [v0.1.3 HK2/RK mode matrix](docs/testing/V0.1.3_HK2_RK_MODE_MATRIX.md).
 For the adaptive lane scheduler and five-round median benchmark pass, see
 [HK2/RK throughput tuning](docs/testing/THROUGHPUT_TUNING_HK2_RK.md).
+These reports describe measurements, not guaranteed rates.
 
 ## Install From Release
 
@@ -254,25 +257,19 @@ include `bin/wintun.dll` beside `espejismo-local.exe`.
 
 ## Operations Docs
 
-Browse the complete [operations documentation index](docs/deployment/INDEX.md)
-to find setup, configuration, recovery, monitoring, and tuning guides.
+Browse the [operations documentation index](docs/deployment/INDEX.md) for the
+complete guide catalog. The most common next steps are:
 
 | Topic | Link |
 | --- | --- |
-| Quick troubleshooting | [TROUBLESHOOTING.md](docs/deployment/TROUBLESHOOTING.md) |
-| Complete configuration reference | [docs/deployment/CONFIG.md](docs/deployment/CONFIG.md) |
-| Environment variables | [docs/deployment/ENVIRONMENT.md](docs/deployment/ENVIRONMENT.md) |
-| Quick deployment path | [docs/deployment/QUICKSTART.md](docs/deployment/QUICKSTART.md) |
-| Deployment, upgrade, and rollback runbook | [docs/deployment/RUNBOOK.md](docs/deployment/RUNBOOK.md) |
-| On-call incident response | [docs/deployment/ONCALL.md](docs/deployment/ONCALL.md) |
-| Backup and disaster recovery | [docs/deployment/BACKUP.md](docs/deployment/BACKUP.md) |
-| High-availability deployments | [docs/deployment/HIGH-AVAILABILITY.md](docs/deployment/HIGH-AVAILABILITY.md) |
-| Troubleshooting guide | [docs/deployment/TROUBLESHOOTING.md](docs/deployment/TROUBLESHOOTING.md) |
-| Native TUN mode | [docs/deployment/TUN.md](docs/deployment/TUN.md) |
-| CLI flags | [docs/deployment/CLI.md](docs/deployment/CLI.md) |
-| Process exit codes | [docs/deployment/EXIT-CODES.md](docs/deployment/EXIT-CODES.md) |
-| Packaging and release artifacts | [docs/deployment/PACKAGING.md](docs/deployment/PACKAGING.md) |
-| Protocol contract | [docs/PROTOCOL.md](docs/PROTOCOL.md) |
+| First deployment | [Deployment quickstart](docs/deployment/QUICKSTART.md) |
+| Questions and troubleshooting | [FAQ](docs/deployment/FAQ.md) · [Troubleshooting](docs/deployment/TROUBLESHOOTING.md) |
+| Configuration and CLI | [Configuration reference](docs/deployment/CONFIG.md) · [CLI flags](docs/deployment/CLI.md) |
+| Network capture | [Native TUN mode](docs/deployment/TUN.md) · [DNS behavior](docs/deployment/DNS.md) |
+| Releases and upgrades | [Packaging](docs/deployment/PACKAGING.md) · [Version compatibility](docs/deployment/VERSION-COMPATIBILITY.md) |
+| Routine operations | [Runbook](docs/deployment/RUNBOOK.md) · [Backup and recovery](docs/deployment/BACKUP.md) |
+| Monitoring | [Metrics](docs/deployment/METRICS.md) · [Monitoring and alerts](docs/deployment/MONITORING-ALERTS.md) |
+| Protocol and design | [Protocol contract](docs/PROTOCOL.md) · [Architecture](docs/ARCHITECTURE.md) · [Project positioning](docs/POSITIONING.md) |
 
 ## Build From Source
 
