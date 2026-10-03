@@ -266,6 +266,7 @@ include `bin/wintun.dll` beside `espejismo-local.exe`.
 | Troubleshooting guide | [docs/deployment/TROUBLESHOOTING.md](docs/deployment/TROUBLESHOOTING.md) |
 | Native TUN mode | [docs/deployment/TUN.md](docs/deployment/TUN.md) |
 | CLI flags | [docs/deployment/CLI.md](docs/deployment/CLI.md) |
+| Process exit codes | [docs/deployment/EXIT-CODES.md](docs/deployment/EXIT-CODES.md) |
 | Packaging and release artifacts | [docs/deployment/PACKAGING.md](docs/deployment/PACKAGING.md) |
 | Protocol contract | [docs/PROTOCOL.md](docs/PROTOCOL.md) |
 

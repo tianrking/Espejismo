@@ -7,6 +7,9 @@ Espejismo ships two native binaries:
 
 Both binaries accept TOML config from a file or a one-line base64 string:
 
+Process status behavior for successful commands, CLI errors, and runtime
+failures is documented in [Process exit codes](EXIT-CODES.md).
+
 Neither binary supports PID files. For process supervision and multiple
 instances, use the service manager; see [PID files and multiple instances](PIDFILES.md).
 
