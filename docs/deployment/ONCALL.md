@@ -82,3 +82,5 @@ involved, verification performed, and any follow-up action. Redact secrets.
 Hand off the current state and next check explicitly if the incident remains
 open. Espejismo has no durable application data to replay; host, config, secret,
 and network-state recovery details are in [Backup And Recovery](BACKUP.md).
+For a structured review after recovery, use the
+[Incident Postmortem template](POSTMORTEM-TEMPLATE.md).
