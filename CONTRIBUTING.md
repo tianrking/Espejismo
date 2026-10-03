@@ -56,7 +56,8 @@ for test scope and manual smoke checks.
   introduce claims that Espejismo is invisible or provides protocol camouflage.
 - Write documentation in plain language, keep examples aligned with the current
   configuration and CLI, and link to the canonical guide instead of duplicating
-  long instructions.
+  long instructions. Follow the shared [documentation style guide](docs/DOCUMENTATION_STYLE.md)
+  for page structure, terminology, formatting, and review.
 - Keep changelog entries user-facing. Follow
   [`docs/development/CHANGELOG.md`](docs/development/CHANGELOG.md) when a change
   has a notable user, compatibility, security, or operational effect.

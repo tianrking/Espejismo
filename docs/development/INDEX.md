@@ -7,6 +7,8 @@ needed to make a change to Espejismo.
 
 - [Contributing guide](../../CONTRIBUTING.md) — workspace setup, change workflow,
   quality gates, and documentation conventions.
+- [Documentation style](../DOCUMENTATION_STYLE.md) — shared page structure,
+  writing, formatting, and review conventions.
 - [Project positioning](../POSITIONING.md) — product boundaries and principles
   that changes must preserve.
 - [Architecture](../ARCHITECTURE.md) — crates, runtime components, and their
