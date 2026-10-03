@@ -36,6 +36,16 @@ reasonable clock synchronization when handshake windows are enabled. First run
 probe checks TCP reachability and completes a handshake; it does not start the
 local proxy listeners. See [CLI diagnostics](CLI.md).
 
+## Do matching release numbers guarantee that client and server can connect?
+
+No. The authenticated handshake requires an exact wire protocol version, and
+the peers do not negotiate a fallback. A configuration can also stop parsing
+after an upgrade if a key was removed or renamed. Check the target release
+notes, validate the saved config with each target binary's `--check-config`,
+and coordinate upgrades unless that release explicitly documents compatibility.
+See [version compatibility](VERSION-COMPATIBILITY.md) and
+[upgrade and rollback](RUNBOOK.md).
+
 ## Does `--probe-server` start the proxy?
 
 No. It checks the server connection and handshake only. Start `espejismo-local`
@@ -64,6 +74,15 @@ You start the processes yourself or configure a service using the deployment
 guides. Firewall and route changes are also managed by the operator; TUN route
 takeover is optional and requires platform privileges. See [Systemd](SYSTEMD.md)
 and [TUN mode](TUN.md).
+
+## TUN routing stopped working after the client exited. How do I recover?
+
+Route takeover changes host networking and may need elevated privileges. Run
+`espejismo-local --config <config> --tun-route-cleanup` with the same config
+and required platform privileges to restore saved route and DNS state. On
+Windows, cleanup can also use the TUN interface name without a config. Check
+`--doctor` and the TUN troubleshooting notes before enabling takeover again.
+See [TUN mode](TUN.md) and [CLI diagnostics](CLI.md).
 
 ## Where should I look for logs, admin status, and more help?
 
