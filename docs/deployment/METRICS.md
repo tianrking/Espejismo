@@ -4,6 +4,19 @@ The authenticated admin endpoint `GET /metrics` returns Prometheus text
 exposition. It combines process counters from the shared metrics collector with
 runtime lane metrics on the local client. The endpoint is disabled with the
 admin listener; see [Admin and Metrics](ADMIN.md) for setup and authentication.
+For a ready-to-adapt Prometheus `scrape_configs` example using a protected
+token file, see [Monitoring And Alerting](MONITORING-ALERTS.md).
+
+You can check the endpoint locally with the same bearer token Prometheus uses:
+
+```bash
+curl -H 'Authorization: Bearer change-me-admin-token' \
+  http://127.0.0.1:9090/metrics
+```
+
+The sample token must match `admin.token` in the process configuration. Keep
+the admin listener on loopback or a restricted monitoring network; the metrics
+route is authenticated and is not a public exporter.
 
 All metric names below use the `espejismo_` prefix. Counters are cumulative
 since process start and reset on restart; use `rate()` or `increase()` for

@@ -83,6 +83,8 @@ frame key-update counters, and local tunnel lane counters.
 See [Prometheus Metrics](METRICS.md) for the complete metric catalog, types,
 label definitions, units, scope, and example queries. For Prometheus scrape
 configuration and starter alert rules, see [Monitoring And Alerting](MONITORING-ALERTS.md).
+The scrape guide uses Prometheus' `bearer_token_file`, which sends the
+`Authorization: Bearer` header accepted by this endpoint.
 
 `/status` and `/connections` also include runtime state: tunnel state,
 reconnect count, consecutive failures, recent errors, egress policy version,
