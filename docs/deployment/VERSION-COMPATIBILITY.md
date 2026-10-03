@@ -15,6 +15,16 @@ fallback to an older protocol. Consequently, equal `0.1.x` numbers do not
 prove that arbitrary builds interoperate, and unequal release numbers do not
 alone prove that they cannot interoperate.
 
+Configuration compatibility is a separate concern. TOML has no schema-version
+field, and the current parser rejects unknown keys, including keys that a
+target release has removed or renamed. A config that parses on the old binary
+may therefore fail validation on the new one. Read release-specific config
+migration notes, edit a copy of the saved config, and validate it with both
+target binaries' `--check-config` commands before replacing the live files.
+Preserve secrets and intentional egress restrictions when comparing with a
+new example config; do not replace a working config wholesale just to pick up
+new defaults. See [Configuration](CONFIG.md) for parser behavior.
+
 ## Upgrade policy
 
 Use the release notes and protocol specification for the target release as the

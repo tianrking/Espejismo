@@ -1,8 +1,8 @@
 # Update Checks
 
 Both binaries can check release metadata and print a human-readable update
-notice. In `v0.0.6`, this is an explicit check command rather than an automatic
-self-replacing updater.
+notice. This is an explicit check command; it does not replace binaries or
+restart services.
 
 Before replacing either binary, review the [client/server version compatibility
 policy](VERSION-COMPATIBILITY.md). Binary release numbers do not by themselves
