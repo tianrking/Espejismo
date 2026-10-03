@@ -254,9 +254,12 @@ include `bin/wintun.dll` beside `espejismo-local.exe`.
 
 ## Operations Docs
 
+Browse the complete [operations documentation index](docs/deployment/INDEX.md)
+to find setup, configuration, recovery, monitoring, and tuning guides.
+
 | Topic | Link |
 | --- | --- |
-| Quick troubleshooting | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) |
+| Quick troubleshooting | [TROUBLESHOOTING.md](docs/deployment/TROUBLESHOOTING.md) |
 | Complete configuration reference | [docs/deployment/CONFIG.md](docs/deployment/CONFIG.md) |
 | Environment variables | [docs/deployment/ENVIRONMENT.md](docs/deployment/ENVIRONMENT.md) |
 | Quick deployment path | [docs/deployment/QUICKSTART.md](docs/deployment/QUICKSTART.md) |
