@@ -40,6 +40,8 @@ needed to make a change to Espejismo.
 
 - [Changelog maintenance](CHANGELOG.md) — user-facing entries and release
   preparation.
+- [Versioning and release branches](VERSIONING.md) — package versions, release
+  tags, and the branch policy.
 - [Release checklist](../release/RELEASE_CHECKLIST.md) — release readiness
   checks.
 
