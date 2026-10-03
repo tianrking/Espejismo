@@ -79,3 +79,80 @@ Periodically verify that an authorized operator can retrieve and decrypt the
 backup, that the TOML parses with the intended release, and that the restore
 steps still match the deployed paths. Do not test by exposing a restored
 credential or service to an untrusted network.
+
+## Disaster recovery procedure
+
+Set recovery time and acceptable data loss targets for your own deployment.
+Espejismo has no durable application data to replay; recovery time is mainly
+the time needed to regain a host, retrieve protected credentials and artifacts,
+and restore network policy. These targets depend on your provider and backup
+schedule and are not guaranteed by the software.
+
+### 1. Contain and assess
+
+- For a suspected credential leak or compromised host, restrict or isolate the
+  host at the provider or firewall first. Do not copy secrets from a host you
+  no longer trust.
+- Record the affected host, role (local or remote), last known-good release,
+  config backup time, and any recent credential, firewall, route, or DNS
+  changes. Keep incident logs separately if your policy requires them.
+- If only the process or machine is unavailable and there is no compromise,
+  preserve the existing credentials and proceed with the latest verified
+  backup. Avoid rotating credentials during ordinary host replacement.
+
+### 2. Rebuild a trusted host
+
+Provision a clean host and restore the intended OS access controls and firewall
+policy. Install the pinned Espejismo release for that host's role; retain the
+matching local and remote releases as a compatible pair. Restore unit files,
+overrides, Compose files, and scripts from trusted copies. Recreate service
+accounts and directories using the deployment guide for [systemd](SYSTEMD.md)
+or [Docker](DOCKER.md). Do not expose the listener until config validation and
+firewall review are complete.
+
+Restore the config with restrictive permissions. On a systemd deployment,
+check it as the service account before startup:
+
+```bash
+sudo install -o root -g espejismo -m 0640 ./espejismo.toml \
+  /etc/espejismo/espejismo.toml
+sudo -u espejismo /usr/local/bin/espejismo-remote \
+  --config /etc/espejismo/espejismo.toml --check-config
+```
+
+Use `espejismo-local` for a client config. For Docker, validate the host-side
+mounted config with the matching release binary. Restore required firewall
+rules explicitly; neither the installer nor the container image recreates
+host firewall policy.
+
+### 3. Start and verify in stages
+
+Start the remote endpoint and check service status and logs. From an authorized
+client, run `espejismo-local --config <client-config> --probe-server`; then
+verify one representative SOCKS5 or HTTP request. `/healthz` only checks that
+the admin HTTP handler responds, so it does not replace the client handshake
+and traffic checks. See [health checks](HEALTHCHECK.md) and the
+[runbook](RUNBOOK.md).
+
+For TUN clients, treat route and DNS state as separate host state. Check the
+current routes and resolver settings before enabling takeover. If a previous
+client crashed during route takeover, use the saved config and
+`--tun-route-cleanup` as described in the [TUN guide](TUN.md).
+Do not assume restoring TOML or restarting the service reverts OS routes.
+
+### 4. Handle suspected compromise
+
+Rebuild on a clean host and issue new shared or per-user PSKs and admin tokens.
+Update the remote and every affected client config as one coordinated change,
+then validate and probe the new pair before reopening access. Disable or remove
+old credentials from the remote config. Keep compromised-host backups and old
+secrets protected for incident review; do not restore them into service.
+Review admin exposure, firewall access, and any copied config locations.
+
+### 5. Close recovery
+
+Record the restored release, config backup used, credential changes, and
+verification results. Confirm monitoring and backups now point at the new
+host. After service is stable, remove obsolete DNS or provider routing that
+would send users to the failed host. Periodically rehearse retrieval,
+validation, and a clean-host restore without publishing live credentials.
