@@ -1,5 +1,8 @@
 # Configuration
 
+For the supported runtime, installer, and benchmark environment variables, see
+[Environment Variables](ENVIRONMENT.md).
+
 For a walkthrough of traffic shaping profiles, stealth settings, and their
 trade-offs, see [Traffic Shaping and Obfuscation](OBFUSCATION.md).
 
