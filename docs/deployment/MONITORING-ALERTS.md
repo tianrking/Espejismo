@@ -74,6 +74,15 @@ groups:
           summary: "Espejismo metrics endpoint is unavailable"
           description: "Prometheus cannot scrape {{ $labels.instance }}. Check the process, admin listener, network path, and bearer token."
 
+      - alert: EspejismoScrapeTargetsMissing
+        expr: absent(up{job="espejismo"})
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No Espejismo scrape targets are present"
+          description: "Prometheus has no up series for job espejismo. Check target discovery and scrape configuration."
+
       - alert: EspejismoHandshakeFailures
         expr: |
           sum by (instance, role) (increase(espejismo_handshake_failure_total[10m])) > 5
@@ -104,6 +113,14 @@ one failure and compares failures with opened streams. Short windows and low
 traffic can produce noisy ratios, so adjust its window or `for` duration for
 your workload. Metric counters reset when a process restarts; `increase()`
 handles counter resets for these interval checks.
+
+`EspejismoScrapeFailed` catches a configured target whose scrape fails;
+`EspejismoScrapeTargetsMissing` catches the case where the entire job has no
+`up` series. The latter cannot identify one missing target when other targets
+in the job remain present. If every expected instance must be monitored,
+compare Prometheus target inventory with an operator-maintained expected-target
+list or use service discovery alerts. `/healthz` is suitable for process
+liveness checks, but it cannot replace these scrape and tunnel alerts.
 
 These metrics are process-local. Configure scrapes for both tunnel peers and
 compare them by `instance` and the exported `role`; do not sum local and remote
