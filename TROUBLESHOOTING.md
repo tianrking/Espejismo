@@ -5,6 +5,23 @@ local client, an authenticated TCP connection, and a remote egress process;
 check those pieces in that order. The detailed deployment checklist is in
 [`docs/deployment/TROUBLESHOOTING.md`](docs/deployment/TROUBLESHOOTING.md).
 
+## Find a guide by symptom
+
+| Symptom or task | Start with |
+| --- | --- |
+| Service will not start, config is rejected, or a port cannot bind | [Deployment troubleshooting](docs/deployment/TROUBLESHOOTING.md) and [error reference](docs/deployment/ERRORS.md) |
+| Client cannot reach the server or the handshake fails | [Deployment troubleshooting](docs/deployment/TROUBLESHOOTING.md); for router forwarding or CGNAT, see [NAT deployment](docs/deployment/NAT.md) |
+| Proxy starts but a destination cannot be reached | [Egress policy](docs/deployment/EGRESS.md) and [DNS behavior](docs/deployment/DNS.md) |
+| Connections repeatedly drop or users report an outage | [On-call response](docs/deployment/ONCALL.md), then the [deployment runbook](docs/deployment/RUNBOOK.md) |
+| TUN routes or DNS remain after a stop or crash | [Native TUN guide](docs/deployment/TUN.md) and [CLI reference](docs/deployment/CLI.md) |
+| Logs are missing, noisy, or growing too large | [Logging](docs/deployment/LOGGING.md) |
+| Admin or health endpoint is unavailable | [Admin and metrics](docs/deployment/ADMIN.md) and [health checks](docs/deployment/HEALTHCHECK.md) |
+| Looking for known limitations or a performance workaround | [Known issues](docs/KNOWN_ISSUES.md) and [benchmark guidance](docs/testing/BENCHMARKS.md) |
+
+If the symptom is unclear, follow the ordered checks below and use the detailed
+[deployment troubleshooting table](docs/deployment/TROUBLESHOOTING.md) for
+platform-specific actions.
+
 ## 1. Validate both configurations
 
 Run the matching binary on each host. This checks local settings before you

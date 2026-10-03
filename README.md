@@ -263,7 +263,7 @@ complete guide catalog. The most common next steps are:
 | Topic | Link |
 | --- | --- |
 | First deployment | [Deployment quickstart](docs/deployment/QUICKSTART.md) |
-| Questions and troubleshooting | [FAQ](docs/deployment/FAQ.md) · [Troubleshooting](docs/deployment/TROUBLESHOOTING.md) |
+| Questions and troubleshooting | [FAQ](docs/deployment/FAQ.md) · [Troubleshooting index](TROUBLESHOOTING.md) · [Detailed deployment checks](docs/deployment/TROUBLESHOOTING.md) |
 | Configuration and CLI | [Configuration reference](docs/deployment/CONFIG.md) · [Examples index](docs/deployment/CONFIG-EXAMPLES.md) · [CLI flags](docs/deployment/CLI.md) |
 | Network capture | [Native TUN mode](docs/deployment/TUN.md) · [DNS behavior](docs/deployment/DNS.md) |
 | Releases and upgrades | [Packaging](docs/deployment/PACKAGING.md) · [Version compatibility](docs/deployment/VERSION-COMPATIBILITY.md) |
