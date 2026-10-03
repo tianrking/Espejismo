@@ -4,10 +4,21 @@
 
 `scripts/bench-throughput.sh` compares direct HTTP transfers with the same
 transfers through the local Espejismo HTTP proxy. Run it from a Linux test
-client with `curl`, `awk`, `dd`, and `stat`; Python 3 is optional but required
-for aggregate statistics. Start `espejismo-bench-http` on the remote test host
-and ensure the local client and tunnel are already running. Use an isolated,
-temporary benchmark port and test credentials, not production service settings.
+client with `curl`, `awk`, `dd`, `stat`, `tail`, `grep`, and `seq`; Python 3 is
+optional, but without it the summary omits aggregate statistics. The script
+builds its default upload payload under `/tmp` when missing and writes a new
+run directory under `bench-results/` by default. Choose a unique
+`ESPEJISMO_RUN_ID` if setting a custom run ID; existing output directories are
+never overwritten. Transfer failures produce results for inspection and a
+nonzero exit status.
+
+Build the optional HTTP source/sink from the repository root with
+`cargo build --release --bin espejismo-bench-http`, or use the installed
+`espejismo-bench-http` binary. Run it on the remote test host, and ensure the
+local client and tunnel are already running. Use an isolated, temporary
+benchmark port and test credentials, not production service settings.
+`bench-http` returns fixed-length zero-filled download bodies and accepts
+uploads with POST or PUT; a request path such as `/256m.bin` selects 256 MiB.
 
 For example, replace `<server-public-ip>` with the HTTP benchmark server's
 reachable address:
