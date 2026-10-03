@@ -35,6 +35,8 @@ choices.
 
 ## Configure security and networking
 
+- [Security documentation index](../SECURITY.md) — security behavior,
+  credential handling, access controls, and reporting.
 - [Configuration reference](CONFIG.md) — TOML settings and related guides.
 - [Configuration examples](CONFIG-EXAMPLES.md) — maintained full config and
   complete deployment scenarios.

@@ -1,6 +1,6 @@
 # Espejismo
 
-[Español](README_ES.md) | [Quickstart](docs/deployment/QUICKSTART.md) | [FAQ](docs/deployment/FAQ.md) | [Operations index](docs/deployment/INDEX.md) | [Configuration](docs/deployment/CONFIG.md) | [Protocol](docs/PROTOCOL.md) | [Glossary](GLOSSARY.md)
+[Español](README_ES.md) | [Quickstart](docs/deployment/QUICKSTART.md) | [FAQ](docs/deployment/FAQ.md) | [Operations index](docs/deployment/INDEX.md) | [Security](docs/SECURITY.md) | [Configuration](docs/deployment/CONFIG.md) | [Protocol](docs/PROTOCOL.md) | [Glossary](GLOSSARY.md)
 
 **Start here:** [Quickstart](#quickstart-linuxmacos) · [Deployment topology](#typical-deployment-topology) · [Install](#install-from-release) · [Configuration](#one-config-file) · [Operations guides](#operations-docs) · [Build](#build-from-source)
 
