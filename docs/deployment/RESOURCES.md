@@ -87,16 +87,40 @@ from expected local concurrency rather than only the lane count.
 
 ## Practical sizing
 
-1. Start with a profile and limits that match the host, especially
-   `max_physical_connections`, `max_streams`, client `max_connections`, and
-   `tunnel_buffer`.
-2. Estimate tunnel buffer capacity using active lanes × buffer size, and add
-   headroom for per-stream state, native mux queues, and kernel socket buffers.
-3. Set the service descriptor limit for concurrent lanes and relays, including
-   listeners and any tarpit allowance.
-4. Observe RSS, CPU, open descriptors, and active stream/lane metrics during a
-   representative peak. Increase limits only when measurements show capacity
-   headroom.
+Use this sequence for each process independently; the client and server have
+different lane, relay, and listener counts:
+
+1. Choose the expected peak active physical lanes, active streams, and
+   quarantined tarpit sockets. Use configured limits as ceilings only when
+   planning for that full load; they are independent and need not all be
+   reached together.
+2. Calculate the explicitly sized tunnel-buffer budget as
+   `active_lanes × effective_tunnel_buffer`. On a client, use the active pool
+   size; on a server, use active accepted lanes. Resolve the effective buffer
+   after profile overlays and adaptive throughput sizing, not just the TOML
+   base value.
+3. Measure a representative process baseline, then measure RSS at several
+   controlled stream counts and lane counts under the intended workload. Use
+   the observed increase per additional active stream as a planning estimate,
+   not a universal constant. Include the mux mode, traffic mix, underlay,
+   kernel socket buffer policy, and tarpit occupancy used for the measurement.
+4. Form a working estimate from baseline RSS plus the measured RSS change at
+   the target workload. Use the tunnel-buffer budget to explain/check that
+   change, not as an extra term when it is already included in the measurement.
+   Check queue occupancy and frame sizes for native mux separately; frame-count
+   limits do not imply a fixed byte allocation. Do not add the mux flow-control
+   window as allocated memory.
+5. Add operational headroom for workload variation and bursts, then confirm
+   RSS, CPU, open descriptors, and active lane/stream metrics during a
+   representative peak. Set descriptor limits from concurrent lanes, relays,
+   listeners, and tarpit allowance, with OS-level headroom. Raise application
+   limits only when the measured host has room.
+
+For example, four active client lanes with the default 1 MiB buffer correspond
+to about 4 MiB of configured tunnel-buffer capacity. This is only one term in
+the process budget: it excludes stream/task state, queues, allocator overhead,
+and kernel memory, and it is not a prediction of RSS. Repeat the estimate with
+the effective buffer if a profile or adaptive sizing raises it.
 
 Configuration defaults and profile overlays are documented in
 [`CONFIG.md`](CONFIG.md) and [`PROFILES.md`](PROFILES.md).
