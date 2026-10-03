@@ -264,7 +264,7 @@ complete guide catalog. The most common next steps are:
 | --- | --- |
 | First deployment | [Deployment quickstart](docs/deployment/QUICKSTART.md) |
 | Questions and troubleshooting | [FAQ](docs/deployment/FAQ.md) · [Troubleshooting](docs/deployment/TROUBLESHOOTING.md) |
-| Configuration and CLI | [Configuration reference](docs/deployment/CONFIG.md) · [CLI flags](docs/deployment/CLI.md) |
+| Configuration and CLI | [Configuration reference](docs/deployment/CONFIG.md) · [Examples index](docs/deployment/CONFIG-EXAMPLES.md) · [CLI flags](docs/deployment/CLI.md) |
 | Network capture | [Native TUN mode](docs/deployment/TUN.md) · [DNS behavior](docs/deployment/DNS.md) |
 | Releases and upgrades | [Packaging](docs/deployment/PACKAGING.md) · [Version compatibility](docs/deployment/VERSION-COMPATIBILITY.md) |
 | Routine operations | [Runbook](docs/deployment/RUNBOOK.md) · [Backup and recovery](docs/deployment/BACKUP.md) |

@@ -9,6 +9,9 @@ trade-offs, see [Traffic Shaping and Obfuscation](OBFUSCATION.md).
 For the authentication flow, PSK handling, and credential-rotation procedure,
 see [Authentication and Key Management](AUTHENTICATION.md).
 
+For a categorized list of the maintained full config and deployment
+scenarios, see [Configuration Examples](CONFIG-EXAMPLES.md).
+
 For workload-oriented profile selection, parameter trade-offs, and a repeatable
 throughput tuning process, see [Performance Tuning](PERFORMANCE.md).
 

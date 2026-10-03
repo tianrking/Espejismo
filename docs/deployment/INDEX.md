@@ -36,6 +36,8 @@ choices.
 ## Configure security and networking
 
 - [Configuration reference](CONFIG.md) — TOML settings and related guides.
+- [Configuration examples](CONFIG-EXAMPLES.md) — maintained full config and
+  complete deployment scenarios.
 - [Authentication and key management](AUTHENTICATION.md) — PSKs, users, and
   credential rotation.
 - [Users, quotas, and bandwidth limits](USERS.md) — configure independent
