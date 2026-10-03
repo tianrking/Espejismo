@@ -71,3 +71,8 @@ short imperative English subject line.
 
 For security-sensitive issues, avoid posting exploit details publicly before a
 fix is available. Contact the maintainers through a private channel.
+
+For bug reports, documentation corrections, and feature requests, use the
+[support guide](docs/SUPPORT.md), which includes the public issue link and a
+sanitized report template. Suspected vulnerabilities must follow the private
+[security policy](SECURITY.md).

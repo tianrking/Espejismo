@@ -19,6 +19,7 @@ Choose the path that matches the task:
   binaries or credentials.
 - Something is failing: start with the [FAQ](FAQ.md), then follow
   [troubleshooting](TROUBLESHOOTING.md) and the [on-call response guide](ONCALL.md).
+  To report an issue, see [support and issue reports](../SUPPORT.md).
 - Need command behavior: consult the [CLI reference](CLI.md) and
   [process exit codes](EXIT-CODES.md).
 
