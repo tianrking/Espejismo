@@ -264,3 +264,26 @@ The current endpoint does not report transport retransmissions or live mux
 window occupancy. UDP reliability helpers are not wired into a production
 path, and mux windows are configured per stream; do not interpret the byte
 counters or configured window as retransmission/loss telemetry.
+
+## OpenTelemetry and export paths
+
+The application uses the Rust `tracing` API to create structured diagnostic
+events, but the shipped binaries do not install an OpenTelemetry subscriber or
+an OTLP exporter. Setting standard `OTEL_*` environment variables therefore
+does not send traces or logs to an OpenTelemetry collector. The `tracing`
+events documented above are formatted locally to stderr (journald under the
+provided systemd units) or to the configured `[logging].file`; forward those
+logs with the host's existing collector integration when centralized logs are
+needed.
+
+Metrics use a separate, pull-based path: scrape the authenticated admin
+`GET /metrics` endpoint with Prometheus. It emits Prometheus text exposition,
+not OTLP metrics. Keep the admin listener on loopback or behind a trusted
+firewall, and configure the scrape credential as shown in
+[Monitoring and Alerting](MONITORING-ALERTS.md). See
+[Prometheus Metrics](METRICS.md) for the exported series and their scope.
+
+There is no distributed trace context propagation or span export in the
+current binaries. The structured `peer`, `user`, `target`, and timing fields
+in log events are useful for local diagnosis, but should not be treated as
+trace/span identifiers or a complete request trace.
