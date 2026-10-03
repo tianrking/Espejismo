@@ -260,6 +260,7 @@ include `bin/wintun.dll` beside `espejismo-local.exe`.
 | Complete configuration reference | [docs/deployment/CONFIG.md](docs/deployment/CONFIG.md) |
 | Quick deployment path | [docs/deployment/QUICKSTART.md](docs/deployment/QUICKSTART.md) |
 | Deployment, upgrade, and rollback runbook | [docs/deployment/RUNBOOK.md](docs/deployment/RUNBOOK.md) |
+| High-availability deployments | [docs/deployment/HIGH-AVAILABILITY.md](docs/deployment/HIGH-AVAILABILITY.md) |
 | Troubleshooting guide | [docs/deployment/TROUBLESHOOTING.md](docs/deployment/TROUBLESHOOTING.md) |
 | Native TUN mode | [docs/deployment/TUN.md](docs/deployment/TUN.md) |
 | CLI flags | [docs/deployment/CLI.md](docs/deployment/CLI.md) |

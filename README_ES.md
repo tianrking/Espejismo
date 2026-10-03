@@ -169,6 +169,7 @@ release para Windows incluyen `bin/wintun.dll` junto a `espejismo-local.exe`.
 | --- | --- |
 | Referencia completa de configuracion | [docs/deployment/CONFIG.md](docs/deployment/CONFIG.md) |
 | Despliegue rapido | [docs/deployment/QUICKSTART.md](docs/deployment/QUICKSTART.md) |
+| Alta disponibilidad | [docs/deployment/HIGH-AVAILABILITY.md](docs/deployment/HIGH-AVAILABILITY.md) |
 | Modo TUN nativo | [docs/deployment/TUN.md](docs/deployment/TUN.md) |
 | Flags CLI | [docs/deployment/CLI.md](docs/deployment/CLI.md) |
 | Paquetes y releases | [docs/deployment/PACKAGING.md](docs/deployment/PACKAGING.md) |
