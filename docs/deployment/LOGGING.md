@@ -60,11 +60,47 @@ line for log collectors; fields such as `peer`, `error`, `user`, and timing
 values remain separate JSON properties. JSON disables ANSI regardless of the
 `ansi` setting.
 
+### JSON record fields
+
+Each JSON line is one tracing event. The formatter supplies metadata fields
+such as `timestamp`, `level`, `fields` (the event's message and recorded
+fields), and `target` (the Rust module that emitted the event). Application
+fields below are emitted only by the events that record them; they are not a
+fixed schema present on every line. Timing values ending in `_ms` are integer
+milliseconds, byte counts and counters are integers, and addresses, errors,
+and enum-like values are formatted strings.
+
+| Field | Meaning and where it appears |
+| --- | --- |
+| `role` | `local` or `remote` in `service started`. |
+| `version` | Running binary version in `service started`. |
+| `server` | Configured remote endpoint in the local `service started` event. |
+| `listen` | Remote listener address in remote `service started`, or local proxy address in a proxy-listener-ready event. |
+| `ingress` | Enabled local ingress summary (`socks5`, `http`, and/or TUN) in local `service started`. |
+| `listeners` | Number of active remote listeners in remote `service started`. |
+| `mux`, `underlay` | Configured mux and underlay modes in `service started`. |
+| `peer` | Remote socket address associated with a connection event, where recorded. |
+| `user` | Configured authenticated user on `authenticated tunnel accepted` and selected per-flow diagnostics. This is an account name, not a credential. |
+| `error` | Human-readable cause on failures and cleanup warnings. The value can vary by operating system and failure. |
+| `target` | Requested destination hostname or authority in flow events. Treat it as connection metadata. |
+| `priority` | Logical stream priority on applicable flow events. |
+| `lane_id` | Local tunnel lane selected for a flow. |
+| `handshake_ms`, `cold_start_ms` | Authentication handshake duration and configured post-authentication cold-start delay elapsed before the tunnel is accepted. |
+| `accept_ms`, `open_ms`, `request_ms`, `prebuffer_ms`, `egress_connect_ms`, `copy_ms`, `total_ms` | Durations for the corresponding accept, tunnel-open, request, prebuffer, remote egress-connect, data-copy, or complete-flow phase. Only fields relevant to that flow type are present. |
+| `client_to_remote`, `remote_to_client` | Bytes copied in each direction for a completed stream. |
+| `remote_to_client_bps` | Approximate remote-to-client throughput for the measured copy phase. |
+
+The formatter also records the event message in `fields.message`. For example,
+`authenticated tunnel accepted` is the message, while `user`, `handshake_ms`,
+and `cold_start_ms` are independent fields. Exact optional fields depend on
+the event and the path taken; consumers should tolerate missing fields and
+unknown future fields.
+
 ## Reading common events
 
 | Event or field | Meaning and next step |
 | --- | --- |
-| `service started` | The process started; `role`, `listen`, `mux`, `underlay`, and `listeners` describe the active service setup. |
+| `service started` | The process started; `role`, `mux`, and `underlay` describe active setup. Remote records also include `listen` and `listeners`; local records include `server` and `ingress`. |
 | `SOCKS5 proxy listening` / `HTTP proxy listening` | The local proxy listener is ready at the `listen` address. Check the configured address if a local application cannot connect. |
 | `authenticated tunnel accepted` | The remote accepted a peer; `user`, `handshake_ms`, and `cold_start_ms` show identity and setup timings. |
 | `peer authentication failed` / `peer authentication timed out` | A remote handshake was rejected or exceeded its configured deadline. Check that client and server credentials and protocol settings match, then inspect the associated `error`; unauthenticated peers may also be expected internet traffic. |
