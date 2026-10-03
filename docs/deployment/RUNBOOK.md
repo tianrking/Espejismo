@@ -7,6 +7,7 @@ names if you manage processes another way. Keep the client and remote on
 compatible configuration and protocol versions.
 
 For backup scope and host recovery steps, see [Backup And Recovery](BACKUP.md).
+For incident triage and recovery verification, see [On-Call Response](ONCALL.md).
 
 ## Initial deployment
 

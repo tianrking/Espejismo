@@ -261,6 +261,7 @@ include `bin/wintun.dll` beside `espejismo-local.exe`.
 | Environment variables | [docs/deployment/ENVIRONMENT.md](docs/deployment/ENVIRONMENT.md) |
 | Quick deployment path | [docs/deployment/QUICKSTART.md](docs/deployment/QUICKSTART.md) |
 | Deployment, upgrade, and rollback runbook | [docs/deployment/RUNBOOK.md](docs/deployment/RUNBOOK.md) |
+| On-call incident response | [docs/deployment/ONCALL.md](docs/deployment/ONCALL.md) |
 | Backup and disaster recovery | [docs/deployment/BACKUP.md](docs/deployment/BACKUP.md) |
 | High-availability deployments | [docs/deployment/HIGH-AVAILABILITY.md](docs/deployment/HIGH-AVAILABILITY.md) |
 | Troubleshooting guide | [docs/deployment/TROUBLESHOOTING.md](docs/deployment/TROUBLESHOOTING.md) |
