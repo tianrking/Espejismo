@@ -7,15 +7,20 @@ choices.
 
 ## Start here
 
-- [Deployment quickstart](QUICKSTART.md) — install a release and bring up a
-  basic client and server.
-- [Frequently asked questions](FAQ.md) — common setup and behavior questions.
-- [Deployment, upgrade, and rollback runbook](RUNBOOK.md) — staged Linux
-  service deployment, upgrade, rollback, and routine checks.
-- [Troubleshooting](TROUBLESHOOTING.md) — diagnose configuration, connectivity,
-  service, and traffic problems.
-- [CLI reference](CLI.md) and [process exit codes](EXIT-CODES.md) — command
-  options and process outcomes.
+Choose the path that matches the task:
+
+- New deployment: follow the [deployment quickstart](QUICKSTART.md), then use
+  the [configuration reference](CONFIG.md) and [configuration examples](CONFIG-EXAMPLES.md)
+  to adapt the shared TOML file.
+- Production Linux service: use the [deployment, upgrade, and rollback runbook](RUNBOOK.md)
+  with the supplied [systemd units](SYSTEMD.md).
+- Existing installation: see [version compatibility](VERSION-COMPATIBILITY.md),
+  [updates](UPDATES.md), and [backup and recovery](BACKUP.md) before changing
+  binaries or credentials.
+- Something is failing: start with the [FAQ](FAQ.md), then follow
+  [troubleshooting](TROUBLESHOOTING.md) and the [on-call response guide](ONCALL.md).
+- Need command behavior: consult the [CLI reference](CLI.md) and
+  [process exit codes](EXIT-CODES.md).
 
 ## Install and operate
 
