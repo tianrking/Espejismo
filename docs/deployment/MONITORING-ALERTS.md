@@ -4,6 +4,7 @@ This guide shows a small Prometheus setup for the existing admin endpoints.
 It uses the existing metrics and does not require a separate exporter. For
 metric definitions and label semantics, see [Prometheus Metrics](METRICS.md);
 for admin listener setup and endpoint authentication, see [Admin](ADMIN.md).
+For an importable Grafana example, see [Grafana Dashboard](GRAFANA.md).
 
 ## Enable a scrape endpoint
 
