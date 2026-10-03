@@ -26,6 +26,24 @@ Fields:
 
 JSON logs always disable ANSI escape sequences.
 
+## Audit and retention
+
+Espejismo has no separate audit-log subsystem. Operational and security-related
+events use the same `[logging]` filter, format, and output described above. For
+an audit-oriented deployment, retain at least `info` events and send them to a
+host-managed collector (journald by default, or the configured file path). JSON
+is useful when the collector needs structured fields. `debug` and `trace` are
+diagnostic levels, can produce much more data, and should be enabled only for a
+focused investigation.
+
+The logs include service lifecycle, accepted authenticated tunnels, and
+authentication failures/timeouts. They are not a complete record of every
+administrative request or configuration change, and local files are not
+tamper-evident. Use the host's access controls, retention, and forwarding
+policy when an external audit trail is required. Logs may contain destination
+`target` values and configured `user` names; protect and retain them as
+connection metadata. See [Admin](ADMIN.md) for admin endpoint access controls.
+
 ## Levels and formats
 
 `error` indicates an operation could not continue, `warn` marks a rejected or
