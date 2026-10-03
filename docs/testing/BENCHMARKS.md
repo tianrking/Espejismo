@@ -73,6 +73,54 @@ and environment alongside results; do not infer an improvement from one noisy
 round. These measurements characterize this tunnel and path, not a universal
 speed ranking against other protocols.
 
+## Methodology for comparable results
+
+Treat a benchmark as a controlled comparison of one specific workload and
+network path. Before collecting data, record the commit, client and server
+hardware (including CPU limits), operating system, endpoint locations and
+underlay, profile and effective settings, RTT, transfer size, parallelism,
+round count, logging level, and any shaping or rate limits. Use the same
+machines and server process for baseline and tunnel cases. Keep unrelated
+traffic off the path where possible, and do not change settings between the
+two arms of a comparison.
+
+The harness runs direct and proxied cases in each round, which helps expose
+short-term path variation. It does not currently perform a separate warm-up
+phase or randomize case order. If startup, cache, or ordering effects could
+matter, warm the endpoints consistently before the measured run and repeat
+the comparison in a later run with the order reversed; describe these steps
+alongside the results. Do not silently discard slow rounds. Investigate and
+report failed transfers and unusual environmental events instead.
+
+Use at least five successful rounds for a tuning comparison when practical.
+Compare the median of each case, and report the observed range and standard
+deviation to show spread. The script reports population standard deviation;
+it does not calculate confidence intervals. For a formal uncertainty estimate,
+collect more independent runs and calculate a stated confidence interval from
+the per-round observations. Treat a small median difference as inconclusive
+when it is comparable to the observed run-to-run variation; repeat under
+controlled conditions before attributing it to a code or configuration
+change.
+
+For each round, compare proxy throughput with direct throughput for the same
+direction, stream count, and transfer size. The resulting ratio describes
+proxy efficiency on that path during that run. Also compare direct throughput
+across runs: a changing baseline can indicate path or host variation rather
+than a tunnel change. Report downloads and uploads separately, and keep
+single-stream and parallel results distinct because they exercise different
+limits. Throughput alone does not capture latency, CPU cost, memory use, or
+traffic-shape behavior; include those measures when they are relevant to the
+change being evaluated.
+
+An improvement claim should identify the compared revisions/settings,
+workload, median values, and spread, then state whether every measured case
+completed successfully. A result is specific to its machines, path, and
+conditions. Do not generalize it into a universal protocol ranking. This
+measurement-first approach follows the benchmark practices called out in
+[`REFERENCES.md`](../research/REFERENCES.md) (including iperf3/nuttcp's repeated
+measurements), while evaluating Espejismo's own TCP/Yamux tunnel and preserving
+the positioning in [`POSITIONING.md`](../POSITIONING.md).
+
 Method: temporary `espejismo-remote` + `bench-http` on one side, temporary
 `espejismo-local` on the other, downloading 64 MiB / uploading 32 MiB through
 the tunnel with `--profile auto-throughput`. Temporary PSK, all instances
