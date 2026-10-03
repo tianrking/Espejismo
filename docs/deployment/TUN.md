@@ -217,7 +217,7 @@ sudo espejismo-local --config espejismo.toml --tun-route-cleanup
 sudo espejismo-local --tun-name esptun0 --tun-route-cleanup
 ```
 
-Systemd stop hook example:
+## Systemd stop hook example
 
 ```ini
 [Service]
