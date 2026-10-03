@@ -114,6 +114,54 @@ sudo journalctl -u espejismo-remote --since today
 sudo journalctl --disk-usage
 ```
 
+### Syslog and centralized collectors
+
+The binaries write formatted events to stderr (or to the configured file); they
+do not open a syslog socket or emit RFC 3164/5424 messages directly. Under the
+supplied systemd units, journald is the integration point. This keeps the
+service configuration small and lets the host forward records using its
+existing rsyslog or syslog-ng setup.
+
+To give journal records a predictable program name, add a systemd drop-in:
+
+```ini
+# /etc/systemd/system/espejismo-remote.service.d/logging.conf
+[Service]
+SyslogIdentifier=espejismo-remote
+StandardOutput=journal
+StandardError=journal
+```
+
+Apply the drop-in and confirm the identifier:
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl restart espejismo-remote
+sudo journalctl -t espejismo-remote -f
+```
+
+For rsyslog forwarding, enable its journal input (`imjournal`) according to the
+host's rsyslog packaging, then add a rule such as:
+
+```conf
+# /etc/rsyslog.d/40-espejismo.conf
+if $programname == 'espejismo-remote' then {
+    action(type="omfwd" target="logs.example.net" port="6514"
+           protocol="tcp" StreamDriver="gtls" StreamDriverMode="1"
+           StreamDriverAuthMode="x509/name"
+           StreamDriverPermittedPeers="logs.example.net")
+    stop
+}
+```
+
+Replace the collector name and certificate settings with the site's trusted
+TLS configuration. Configure the matching client certificate and trust policy
+on both ends before forwarding production logs; plain TCP forwarding exposes
+log contents in transit. Keep local journal retention as a buffer and verify
+delivery at the collector after restarting rsyslog. If the service is run
+outside systemd, send stderr through the host's syslog supervisor or collector;
+setting `[logging].file` alone does not send records to syslog.
+
 For example, create `/etc/systemd/journald.conf.d/espejismo-retention.conf`:
 
 ```ini
