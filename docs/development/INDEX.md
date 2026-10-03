@@ -13,6 +13,8 @@ needed to make a change to Espejismo.
   that changes must preserve.
 - [Architecture](../ARCHITECTURE.md) — crates, runtime components, and their
   responsibilities.
+- [Code tour](../CODE-TOUR.md) — workspace map and source paths for the client,
+  server, and shared core.
 
 ## Technical references
 
