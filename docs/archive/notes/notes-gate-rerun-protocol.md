@@ -5,7 +5,7 @@ Date: 2026-09-29
 ## Scope and method
 
 This task is a measurement rerun, not a protocol or implementation change. The
-existing v0.1.5 benchmark record in [`testing/BENCHMARKS.md`](testing/BENCHMARKS.md)
+existing v0.1.5 benchmark record in [`BENCHMARKS.md`](../../../docs/testing/BENCHMARKS.md)
 defines six server pairs and compares the same `auto-throughput` tunnel method
 over public IP and tailnet. The fair comparison is to run both underlays for
 each pair with the current `main` binaries, identical 64 MiB download and 32
@@ -15,12 +15,12 @@ gain. The throughput harness guidance also recommends adjacent measurements,
 medians, and capturing environment metadata; those are preferred where the
 existing six-pair setup permits them.
 
-The performance-testing guidance in [`research/REFERENCES.md`](research/REFERENCES.md)
+The performance-testing guidance in [`REFERENCES.md`](../../../docs/research/REFERENCES.md)
 points to iperf3/nuttcp and multiple rounds with medians and confidence
 intervals. For this product, the existing paired same-payload tunnel method is
 more directly relevant than introducing a different transport benchmark. The
 comparison does not alter Espejismo's TCP tunnel, encrypted-chaos behavior, or
-minimal operations model described in [`POSITIONING.md`](POSITIONING.md).
+minimal operations model described in [`POSITIONING.md`](../../../docs/POSITIONING.md).
 
 ## Expected value
 

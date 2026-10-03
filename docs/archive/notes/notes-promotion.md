@@ -20,7 +20,7 @@ Introducing Espejismo: a native Rust encrypted tunnel that doesn't pretend to be
 
 ### Longer project introduction
 
-Espejismo is a small, self-hosted encrypted tunnel for sending client traffic through a remote egress server. It uses authenticated encryption and does not imitate TLS, QUIC, or another familiar protocol. The operating model is intentionally compact: a client binary, a server binary, and one TOML configuration file. Client access is available through SOCKS5, HTTP proxy, or native TUN. The project does not claim invisibility; endpoint addresses, timing, traffic volume, and deployment choices remain observable. Start with the [project overview](../README.md), [protocol specification](PROTOCOL.md), and [quickstart](deployment/QUICKSTART.md).
+Espejismo is a small, self-hosted encrypted tunnel for sending client traffic through a remote egress server. It uses authenticated encryption and does not imitate TLS, QUIC, or another familiar protocol. The operating model is intentionally compact: a client binary, a server binary, and one TOML configuration file. Client access is available through SOCKS5, HTTP proxy, or native TUN. The project does not claim invisibility; endpoint addresses, timing, traffic volume, and deployment choices remain observable. Start with the [project overview](../../../README.md), [protocol specification](../../../docs/PROTOCOL.md), and [quickstart](../../../docs/deployment/QUICKSTART.md).
 
 ## Pre-publication checklist
 
