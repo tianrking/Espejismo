@@ -14,9 +14,11 @@ reduces local send credit; receiving a window update adds the advertised delta.
 The receiver checks incoming data against remaining receive credit, queues
 accepted data for its application reader, and restores credit as that reader
 consumes data. It advertises the increase with a `WINDOW_UPDATE` frame when
-enough credit has accumulated (normally at least half the configured maximum),
-or when stream control flags need to be sent. This batching avoids a control
-frame for every small read while allowing a busy stream to refill its window.
+enough credit has accumulated (at least half the configured maximum; a smaller
+increase is batched unless stream flags need to be sent). This batching avoids
+a control frame for every small read while allowing a busy stream to refill its
+window. Incoming credit is checked for 32-bit overflow before changing local
+send credit; an overflowing update is rejected as an invalid message.
 
 `shared.mux.native_initial_window_bytes` is a historical setting name. In
 Yamux mode it sets the maximum stream window, not the initial 256 KiB credit;

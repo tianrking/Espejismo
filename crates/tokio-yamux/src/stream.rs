@@ -237,6 +237,7 @@ impl StreamHandle {
 
     fn handle_window_update(&mut self, frame: &Frame) -> Result<(), Error> {
         self.process_flags(frame.flags())?;
+        // Reject credit overflow before changing the send window.
         self.send_window = self
             .send_window
             .checked_add(frame.length())
@@ -750,7 +751,7 @@ mod test {
     };
     use bytes::BytesMut;
     use futures::{
-        SinkExt, StreamExt,
+        FutureExt, SinkExt, StreamExt,
         channel::mpsc::{channel, unbounded},
         task::{ArcWake, waker_ref},
     };
@@ -914,16 +915,84 @@ mod test {
     }
 
     #[test]
+    fn window_update_threshold_sends_at_half_window() {
+        let rt = rt();
+        rt.block_on(async {
+            let (_frame_sender, frame_receiver) = channel(2);
+            let (unbound_sender, mut unbound_receiver) = unbounded();
+            let max_window = INITIAL_STREAM_WINDOW * 2;
+            let mut stream = StreamHandle::new(
+                1,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                max_window,
+            );
+            stream.state = StreamState::Established;
+            stream.recv_window = INITIAL_STREAM_WINDOW;
+
+            // One queued byte leaves the credit increase just below the half-window threshold.
+            stream.read_buf.push(BytesMut::from(&b"x"[..]));
+            stream.send_window_update().unwrap();
+            assert!(unbound_receiver.next().now_or_never().is_none());
+
+            // Once the buffered byte is consumed, the increase reaches exactly half the ceiling.
+            stream.read_buf.clear();
+            stream.send_window_update().unwrap();
+            match unbound_receiver.next().await.unwrap() {
+                StreamEvent::Frame(frame) => {
+                    assert_eq!(frame.ty(), Type::WindowUpdate);
+                    assert_eq!(frame.length(), INITIAL_STREAM_WINDOW);
+                }
+                _ => panic!("half-window credit must emit a window update"),
+            }
+            assert_eq!(stream.recv_window(), max_window);
+        });
+    }
+
+    #[test]
+    fn overflowing_window_update_preserves_send_credit() {
+        let rt = rt();
+        rt.block_on(async {
+            let (_frame_sender, frame_receiver) = channel(2);
+            let (unbound_sender, _unbound_receiver) = unbounded();
+            let mut stream = StreamHandle::new(
+                1,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                INITIAL_STREAM_WINDOW,
+            );
+            stream.state = StreamState::Established;
+            stream.send_window = u32::MAX - 3;
+            let update = Frame::new_window_update(Flags::default(), 1, 4);
+
+            assert_eq!(
+                stream.handle_window_update(&update),
+                Err(crate::Error::InvalidMsgType)
+            );
+            assert_eq!(stream.send_window(), u32::MAX - 3);
+        });
+    }
+
+    #[test]
     fn write_after_reset_is_broken_pipe() {
         let rt = rt();
         rt.block_on(async {
             let (_frame_sender, frame_receiver) = channel(2);
             let (unbound_sender, _unbound_receiver) = unbounded();
             let mut stream = StreamHandle::new(
-                0, unbound_sender, frame_receiver, StreamState::Init, INITIAL_STREAM_WINDOW,
+                0,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                INITIAL_STREAM_WINDOW,
             );
             stream.state = StreamState::Reset;
-            assert_eq!(stream.write(b"x").await.unwrap_err().kind(), ErrorKind::BrokenPipe);
+            assert_eq!(
+                stream.write(b"x").await.unwrap_err().kind(),
+                ErrorKind::BrokenPipe
+            );
         });
     }
 
@@ -934,10 +1003,17 @@ mod test {
             let (_frame_sender, frame_receiver) = channel(2);
             let (unbound_sender, _unbound_receiver) = unbounded();
             let mut stream = StreamHandle::new(
-                0, unbound_sender, frame_receiver, StreamState::Init, INITIAL_STREAM_WINDOW,
+                0,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                INITIAL_STREAM_WINDOW,
             );
             stream.state = StreamState::LocalClosing;
-            assert_eq!(stream.write(b"x").await.unwrap_err().kind(), ErrorKind::BrokenPipe);
+            assert_eq!(
+                stream.write(b"x").await.unwrap_err().kind(),
+                ErrorKind::BrokenPipe
+            );
         });
     }
 
@@ -948,16 +1024,30 @@ mod test {
             let (mut frame_sender, frame_receiver) = channel(2);
             let (unbound_sender, mut unbound_receiver) = unbounded();
             let mut stream = StreamHandle::new(
-                0, unbound_sender, frame_receiver, StreamState::Init, INITIAL_STREAM_WINDOW,
+                0,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                INITIAL_STREAM_WINDOW,
             );
             stream.recv_window = 0;
             // A payload larger than the receive window is rejected by recv_frames.
             frame_sender
-                .send(Frame::new_data(Flags::from(Flag::Syn), 0, BytesMut::from("x")))
+                .send(Frame::new_data(
+                    Flags::from(Flag::Syn),
+                    0,
+                    BytesMut::from("x"),
+                ))
                 .await
                 .unwrap();
-            assert_eq!(stream.peek(&mut [0; 1]).await.unwrap_err().kind(), ErrorKind::InvalidData);
-            assert!(matches!(unbound_receiver.next().await, Some(StreamEvent::GoAway)));
+            assert_eq!(
+                stream.peek(&mut [0; 1]).await.unwrap_err().kind(),
+                ErrorKind::InvalidData
+            );
+            assert!(matches!(
+                unbound_receiver.next().await,
+                Some(StreamEvent::GoAway)
+            ));
         });
     }
 
