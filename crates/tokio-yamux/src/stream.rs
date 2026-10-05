@@ -147,32 +147,23 @@ impl StreamHandle {
 
     // Send a window update
     pub(crate) fn send_window_update(&mut self) -> Result<(), Error> {
-        // Keep the receive-credit invariant explicit. A violated invariant
-        // must not wrap the advertised credit in release builds.
-        let buf_len = self
-            .read_buf
-            .iter()
-            .try_fold(0u32, |total, buf| {
-                total.checked_add(u32::try_from(buf.len()).ok()?)
-            })
-            .ok_or(Error::InvalidMsgType)?;
-        let delta = self
-            .max_recv_window
-            .checked_sub(buf_len)
-            .and_then(|available| available.checked_sub(self.recv_window))
-            .ok_or(Error::InvalidMsgType)?;
+        let delta = receive_credit_delta(
+            self.max_recv_window,
+            self.recv_window,
+            self.read_buf.iter().map(BytesMut::len),
+        )?;
 
         // Check if we can omit the update
         let flags = self.get_flags();
         if delta < (self.max_recv_window / 2) && flags.value() == 0 {
             return Ok(());
         }
-        // Update our window
-        self.recv_window += delta;
         let frame = Frame::new_window_update(flags, self.id, delta);
         self.unbound_event_sender
             .unbounded_send(StreamEvent::Frame(frame))
-            .map_err(|_| Error::SessionShutdown)
+            .map_err(|_| Error::SessionShutdown)?;
+        self.recv_window += delta;
+        Ok(())
     }
 
     fn send_data(&mut self, data: &[u8]) -> Result<(), Error> {
@@ -498,6 +489,25 @@ impl StreamHandle {
     }
 }
 
+// Calculate the credit to advertise while keeping every conversion and
+// subtraction checked. Keeping this separate makes impossible-to-allocate
+// buffer sizes testable without weakening the stream's bounded buffering.
+fn receive_credit_delta(
+    max_recv_window: u32,
+    recv_window: u32,
+    mut buffered_lengths: impl Iterator<Item = usize>,
+) -> Result<u32, Error> {
+    let buffered = buffered_lengths
+        .try_fold(0u32, |total, len| {
+            total.checked_add(u32::try_from(len).ok()?)
+        })
+        .ok_or(Error::InvalidMsgType)?;
+    max_recv_window
+        .checked_sub(buffered)
+        .and_then(|available| available.checked_sub(recv_window))
+        .ok_or(Error::InvalidMsgType)
+}
+
 impl AsyncRead for StreamHandle {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -755,7 +765,7 @@ pub enum StreamState {
 
 #[cfg(test)]
 mod test {
-    use super::{StreamEvent, StreamHandle, StreamState};
+    use super::{StreamEvent, StreamHandle, StreamState, receive_credit_delta};
     use crate::{
         config::INITIAL_STREAM_WINDOW,
         frame::{Flag, Flags, Frame, Type},
@@ -984,6 +994,81 @@ mod test {
             );
             assert_eq!(stream.recv_window(), INITIAL_STREAM_WINDOW + 1);
             assert!(unbound_receiver.next().now_or_never().is_none());
+        });
+    }
+
+    #[test]
+    fn receive_credit_accounting_checks_conversion_sum_and_available_credit() {
+        assert_eq!(
+            receive_credit_delta(100, 40, [20usize, 10].into_iter()),
+            Ok(30)
+        );
+        assert_eq!(
+            receive_credit_delta(100, 40, [usize::MAX].into_iter()),
+            Err(crate::Error::InvalidMsgType)
+        );
+        assert_eq!(
+            receive_credit_delta(100, 40, [u32::MAX as usize, 1].into_iter()),
+            Err(crate::Error::InvalidMsgType)
+        );
+        assert_eq!(
+            receive_credit_delta(100, 40, [61usize].into_iter()),
+            Err(crate::Error::InvalidMsgType)
+        );
+        assert_eq!(
+            receive_credit_delta(100, 101, [].into_iter()),
+            Err(crate::Error::InvalidMsgType)
+        );
+    }
+
+    #[test]
+    fn stream_flags_force_window_update_below_threshold() {
+        let rt = rt();
+        rt.block_on(async {
+            let (_frame_sender, frame_receiver) = channel(2);
+            let (unbound_sender, mut unbound_receiver) = unbounded();
+            let mut stream = StreamHandle::new(
+                1,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                INITIAL_STREAM_WINDOW * 2,
+            );
+            // Init emits SYN even though the replenished credit is below threshold.
+            stream.recv_window = INITIAL_STREAM_WINDOW * 2 - 1;
+            stream.send_window_update().unwrap();
+            match unbound_receiver.next().await.unwrap() {
+                StreamEvent::Frame(frame) => {
+                    assert!(frame.flags().contains(Flag::Syn));
+                    assert_eq!(frame.length(), 1);
+                }
+                _ => panic!("initial window update must emit a frame"),
+            }
+            assert_eq!(stream.recv_window(), INITIAL_STREAM_WINDOW * 2);
+        });
+    }
+
+    #[test]
+    fn failed_window_update_send_preserves_receive_credit() {
+        let rt = rt();
+        rt.block_on(async {
+            let (_frame_sender, frame_receiver) = channel(2);
+            let (unbound_sender, unbound_receiver) = unbounded();
+            drop(unbound_receiver);
+            let mut stream = StreamHandle::new(
+                1,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                INITIAL_STREAM_WINDOW * 2,
+            );
+            stream.state = StreamState::Established;
+            stream.recv_window = INITIAL_STREAM_WINDOW;
+            assert_eq!(
+                stream.send_window_update(),
+                Err(crate::Error::SessionShutdown)
+            );
+            assert_eq!(stream.recv_window(), INITIAL_STREAM_WINDOW);
         });
     }
 
