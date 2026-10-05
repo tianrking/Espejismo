@@ -744,6 +744,36 @@ mod tests {
     }
 
     #[test]
+    fn reports_location_for_malformed_toml() {
+        let err = parse_config("[shared\nmax_streams = 12\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.to_ascii_lowercase().contains("toml"), "{err}");
+        assert!(err.contains("line 1"), "{err}");
+        assert!(err.contains("column"), "{err}");
+    }
+
+    #[test]
+    fn omitted_sections_and_fields_use_documented_defaults() {
+        let config = parse_config("[local]\nserver = '127.0.0.1:6690'\n").unwrap();
+        let defaults = EspejismoConfig::default();
+        assert_eq!(config.shared.max_streams, defaults.shared.max_streams);
+        assert_eq!(config.shared.clock_skew_secs, defaults.shared.clock_skew_secs);
+        assert_eq!(config.remote.listen, defaults.remote.listen);
+        assert_eq!(config.local.socks5_listen, defaults.local.socks5_listen);
+    }
+
+    #[test]
+    fn invalid_value_type_identifies_field_and_expected_type() {
+        let err = parse_config("[shared]\nmax_streams = 'many'\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("max_streams"), "{err}");
+        assert!(err.contains("expected u32"), "{err}");
+        assert!(err.contains("line 2"), "{err}");
+    }
+
+    #[test]
     fn rejects_unknown_nested_config_fields() {
         let err = parse_config("[local.tun]\nenabeld = true\n")
             .unwrap_err()

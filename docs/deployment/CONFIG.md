@@ -32,6 +32,11 @@ Linux netfilter TPROXY), see [Native TUN Mode](TUN.md).
 Espejismo uses one TOML shape for both binaries. You may keep one file and pass
 it to both sides:
 
+Configuration sections and fields may be omitted; omitted values use the
+documented defaults. Supplied values are type-checked, and invalid TOML reports
+its source location. Unknown fields are rejected with a suggestion when a close
+field name exists, so typos do not silently fall back to defaults.
+
 ```bash
 espejismo-remote --config espejismo.toml
 espejismo-local --config espejismo.toml
