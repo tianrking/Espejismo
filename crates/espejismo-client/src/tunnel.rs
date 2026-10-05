@@ -809,8 +809,12 @@ fn reconnect_backoff(failures: u32, jitter_percent: u64) -> Duration {
 
 async fn apply_reconnect_backoff(lane: &TunnelLane) {
     let failures = lane.health.lock().await.consecutive_failures;
+    tokio::time::sleep(sample_reconnect_backoff(failures)).await;
+}
+
+fn sample_reconnect_backoff(failures: u32) -> Duration {
     let jitter_percent = rand::thread_rng().gen_range(80..=120);
-    tokio::time::sleep(reconnect_backoff(failures, jitter_percent)).await;
+    reconnect_backoff(failures, jitter_percent)
 }
 
 fn unix_now_secs() -> u64 {
@@ -841,8 +845,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        connection_expired, lane_kinds, lane_score, reconnect_backoff, select_and_reserve_lane,
-        stream_open_failure, update_recent_throughput, LaneHealth, LaneKind, TunnelLane,
+        connection_expired, lane_kinds, lane_score, reconnect_backoff, sample_reconnect_backoff,
+        select_and_reserve_lane, stream_open_failure, update_recent_throughput, LaneHealth,
+        LaneKind, TunnelLane,
     };
     use espejismo_core::{StreamPriority, TunnelPoolConfig};
     use std::sync::Arc;
@@ -990,6 +995,22 @@ mod tests {
             reconnect_backoff(u32::MAX, 120),
             Duration::from_millis(15_999)
         );
+    }
+
+    #[test]
+    fn reconnect_storm_samples_spread_lanes_within_the_jitter_window() {
+        const LANES: usize = 256;
+        let delays: Vec<_> = (0..LANES)
+            .map(|_| sample_reconnect_backoff(3).as_millis() as u64)
+            .collect();
+        let low = reconnect_backoff(3, 80).as_millis() as u64;
+        let high = reconnect_backoff(3, 120).as_millis() as u64;
+        assert!(delays.iter().all(|delay| (low..=high).contains(delay)));
+
+        let distinct: std::collections::HashSet<_> = delays.iter().copied().collect();
+        assert!(distinct.len() >= 20, "only {} delay slots sampled", distinct.len());
+        let mean = delays.iter().sum::<u64>() / LANES as u64;
+        assert!((1_900..=2_100).contains(&mean), "unexpected mean delay {mean}ms");
     }
 
     #[test]
