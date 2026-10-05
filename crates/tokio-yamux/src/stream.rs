@@ -777,6 +777,7 @@ mod test {
         channel::mpsc::{channel, unbounded},
         task::{ArcWake, waker_ref},
     };
+    use rand::{Rng, SeedableRng, rngs::StdRng};
     use std::{
         io::ErrorKind,
         pin::Pin,
@@ -1019,6 +1020,66 @@ mod test {
             receive_credit_delta(100, 101, [].into_iter()),
             Err(crate::Error::InvalidMsgType)
         );
+    }
+
+    #[test]
+    fn randomized_receive_credit_updates_preserve_window_invariant() {
+        let rt = rt();
+        rt.block_on(async {
+            let (_frame_sender, frame_receiver) = channel(2);
+            let (unbound_sender, mut unbound_receiver) = unbounded();
+            let max_window = INITIAL_STREAM_WINDOW * 2;
+            let mut stream = StreamHandle::new(
+                7,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                max_window,
+            );
+            stream.state = StreamState::Established;
+            let mut rng = StdRng::seed_from_u64(0xc4ed_17);
+
+            for _ in 0..1000 {
+                let buffered: usize = stream.read_buf.iter().map(BytesMut::len).sum();
+                assert!(u64::from(stream.recv_window) + buffered as u64 <= u64::from(max_window));
+
+                if rng.gen_bool(0.6) && stream.recv_window > 0 {
+                    let len = rng.gen_range(1..=stream.recv_window.min(512));
+                    let frame = Frame::new_data(
+                        Flags::default(),
+                        7,
+                        BytesMut::from(vec![0x5a; len as usize].as_slice()),
+                    );
+                    stream.handle_data(frame).unwrap();
+                } else {
+                    // Model application consumption; credit is replenished below.
+                    stream.read_buf.clear();
+                }
+
+                let buffered: usize = stream.read_buf.iter().map(BytesMut::len).sum();
+                let expected_delta = max_window - buffered as u32 - stream.recv_window;
+                let should_send = expected_delta >= max_window / 2;
+                let recv_before = stream.recv_window;
+                stream.send_window_update().unwrap();
+
+                if should_send {
+                    match unbound_receiver.next().await.unwrap() {
+                        StreamEvent::Frame(frame) => {
+                            assert_eq!(frame.ty(), Type::WindowUpdate);
+                            assert_eq!(frame.length(), expected_delta);
+                        }
+                        _ => panic!("expected window update frame"),
+                    }
+                    assert_eq!(stream.recv_window, recv_before + expected_delta);
+                } else {
+                    assert!(unbound_receiver.next().now_or_never().is_none());
+                    assert_eq!(stream.recv_window, recv_before);
+                }
+
+                let buffered: usize = stream.read_buf.iter().map(BytesMut::len).sum();
+                assert!(u64::from(stream.recv_window) + buffered as u64 <= u64::from(max_window));
+            }
+        });
     }
 
     #[test]
