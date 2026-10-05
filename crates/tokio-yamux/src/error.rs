@@ -63,23 +63,78 @@ impl error::Error for Error {}
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            Error::InvalidVersion => write!(f, "Received a frame with an invalid version"),
-            Error::InvalidMsgType => write!(f, "Received a frame with an invalid message type"),
-            Error::SessionShutdown => write!(f, "Session shutdown"),
-            Error::StreamsExhausted => write!(f, "No more stream ids to issue"),
-            Error::DuplicateStream => write!(f, "Duplicate stream is opened inbound"),
-            Error::RecvWindowExceeded => write!(f, "Received window was exceeded"),
-            Error::Timeout => write!(f, "Reach an IO deadline"),
-            Error::StreamClosed => write!(f, "Using a closed stream"),
-            Error::UnexpectedFlag => write!(f, "Get an unexpected flag"),
-            Error::RemoteGoAway => write!(f, "Go away message from the other side"),
-            Error::ConnectionReset => write!(f, "Stream is reset"),
-            Error::ConnectionWriteTimeout => {
-                write!(f, "Timeout on write to the underlying stream connection")
+            Error::InvalidVersion => write!(f, "yamux: received a frame with an invalid version"),
+            Error::InvalidMsgType => {
+                write!(f, "yamux: received a frame with an invalid message type")
             }
-            Error::KeepAliveTimeout => write!(f, "Keepalive timeout"),
-            Error::SubStreamRemoteClosing => write!(f, "Remote sub stream is closed"),
-            Error::WouldBlock => write!(f, "Sub stream send channel full"),
+            Error::SessionShutdown => write!(f, "yamux: session shut down"),
+            Error::StreamsExhausted => write!(f, "yamux: no stream IDs remain"),
+            Error::DuplicateStream => write!(f, "yamux: received a duplicate inbound stream"),
+            Error::RecvWindowExceeded => write!(f, "yamux: receive window was exceeded"),
+            Error::Timeout => write!(f, "yamux: I/O deadline reached"),
+            Error::StreamClosed => write!(f, "yamux: stream is closed"),
+            Error::UnexpectedFlag => write!(f, "yamux: received an unexpected flag"),
+            Error::RemoteGoAway => {
+                write!(f, "yamux: received a go-away message from the remote peer")
+            }
+            Error::ConnectionReset => write!(f, "yamux: stream was reset"),
+            Error::ConnectionWriteTimeout => {
+                write!(f, "yamux: timed out writing to the underlying connection")
+            }
+            Error::KeepAliveTimeout => write!(f, "yamux: keepalive timed out"),
+            Error::SubStreamRemoteClosing => write!(f, "yamux: remote substream is closed"),
+            Error::WouldBlock => write!(f, "yamux: substream send channel is full"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Error;
+
+    #[test]
+    fn display_messages_have_consistent_prefix_and_text() {
+        let cases = [
+            (
+                Error::InvalidVersion,
+                "yamux: received a frame with an invalid version",
+            ),
+            (
+                Error::InvalidMsgType,
+                "yamux: received a frame with an invalid message type",
+            ),
+            (Error::SessionShutdown, "yamux: session shut down"),
+            (Error::StreamsExhausted, "yamux: no stream IDs remain"),
+            (
+                Error::DuplicateStream,
+                "yamux: received a duplicate inbound stream",
+            ),
+            (
+                Error::RecvWindowExceeded,
+                "yamux: receive window was exceeded",
+            ),
+            (Error::Timeout, "yamux: I/O deadline reached"),
+            (Error::StreamClosed, "yamux: stream is closed"),
+            (Error::UnexpectedFlag, "yamux: received an unexpected flag"),
+            (
+                Error::RemoteGoAway,
+                "yamux: received a go-away message from the remote peer",
+            ),
+            (Error::ConnectionReset, "yamux: stream was reset"),
+            (
+                Error::ConnectionWriteTimeout,
+                "yamux: timed out writing to the underlying connection",
+            ),
+            (Error::KeepAliveTimeout, "yamux: keepalive timed out"),
+            (
+                Error::SubStreamRemoteClosing,
+                "yamux: remote substream is closed",
+            ),
+            (Error::WouldBlock, "yamux: substream send channel is full"),
+        ];
+
+        for (error, expected) in cases {
+            assert_eq!(error.to_string(), expected);
         }
     }
 }

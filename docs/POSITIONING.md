@@ -6,21 +6,26 @@
 
 ## 一句话定位
 
-**Espejismo 是一条原生 Rust 加密隧道：不伪装任何协议，靠认证加密混沌对抗流量分析，
+**Espejismo 是一条原生 Rust 加密隧道：核心隧道协议不伪装其他协议，靠认证加密混沌降低稳定明文特征，
 用最小的运维模型（一个服务端二进制、一个客户端二进制、一个 TOML 配置）跑通私人流量出海。**
 
-English: Espejismo is a native Rust encrypted tunnel. Instead of impersonating
-TLS/HTTP/QUIC, it presents authenticated encrypted chaos; instead of a complex
-multi-protocol suite, it ships one server binary, one client binary, one TOML
-config.
+English: Espejismo is a native Rust encrypted tunnel. Its core tunnel protocol
+does not impersonate TLS/HTTP/QUIC; it presents authenticated encrypted chaos.
+Optional WebSocket and HTTP/2 underlays use those real transports and expose
+their normal protocol characteristics; they are transport adapters, not
+camouflage. Instead of a complex multi-protocol suite, it ships one server
+binary, one client binary, one TOML config.
 
 ## 设计哲学：拒绝伪装
 
 主流做法是"伪装派"：把流量打扮成 TLS、HTTP/2、QUIC，借用大厂协议的指纹做掩护。
 Espejismo 走相反的路：
 
-- **不借用任何协议的指纹**：没有 TLS 握手、没有证书故事、没有 ALPN、没有 HTTP
-  头、不借用 QUIC。被动观察者看不到稳定的明文 TLV 标记、固定握手偏移、固定帧长元数据。
+- **核心隧道不伪装协议**：Espejismo 的握手和加密帧不借用 TLS、HTTP 或 QUIC
+  的握手、证书、ALPN 或应用层格式。默认使用原始 TCP；可选 WebSocket 和 HTTP/2
+  underlay 会正常呈现各自的协议特征，不能视为隐身或伪装。
+- **减少核心协议的稳定明文特征**：核心握手和帧元数据经过掩码或加密；这不意味着
+  被动观察者无法识别连接，也不抹去 underlay、时序、流量大小等可观察特征。
 - **认证加密混沌**：X25519 建会、动态 HKDF 握手窗口、XOR 掩码的变长信封、
   XChaCha20-Poly1305 帧、可选填充。看到的只是不可解析的随机字节。
 - **这不是隐身声明**：文档原话 — "This is not a claim of invisibility. It is a
@@ -50,7 +55,7 @@ Espejismo 走相反的路：
 | 方案 | 路线 | 配置复杂度 | Espejismo 的差异 |
 | --- | --- | --- | --- |
 | Xray / v2ray | 协议伪装派（VLESS+TLS+uTLS） | 高（多入站/出站/路由规则） | 我们不伪装；单配置文件 |
-| Hysteria2 | QUIC 暴力拥塞控制，主打速度 | 中 | 我们走 TCP/yamux 稳定路线；不依赖 UDP |
+| Hysteria2 | QUIC 拥塞控制，主打速度 | 中 | 核心隧道以 TCP/yamux 为主；隧道不依赖 UDP underlay |
 | Shadowsocks | 轻量 AEAD 流 | 低 | 我们有完整握手认证、抗重放、端口跳变 |
 | WireGuard | L3 VPN | 低 | 我们是应用层隧道，代理语义（SOCKS5/HTTP/TUN），更贴近出海场景 |
 

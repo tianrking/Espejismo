@@ -1,3 +1,8 @@
+//! Encrypted framed I/O transport and bidirectional stream copying.
+//!
+//! Copy helpers preserve idle behavior and allow callers to meter bytes without
+//! coupling protocol framing to ingress or egress implementations.
+
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;

@@ -1,3 +1,5 @@
+//! TCP listener and outbound connection helpers with configured socket options.
+
 use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;

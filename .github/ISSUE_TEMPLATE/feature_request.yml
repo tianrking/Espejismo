@@ -1,0 +1,36 @@
+name: Feature request
+description: Describe a use case or improvement for Espejismo
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Search existing issues first. See the
+        [support guide](https://github.com/tianrking/Espejismo/blob/main/docs/SUPPORT.md)
+        for guidance. Do not include credentials, private endpoints, or other
+        sensitive information in a public issue.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or use case
+      description: What are you trying to do, and what is difficult with the current behavior?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Desired outcome
+      description: Describe the outcome that would help. A specific implementation is optional.
+    validations:
+      required: true
+  - type: textarea
+    id: constraints
+    attributes:
+      label: Constraints and context
+      description: Include relevant deployment, compatibility, or operational constraints.
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: What workarounds or alternatives have you tried?

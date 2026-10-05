@@ -1,3 +1,5 @@
+//! Release metadata lookup helpers for optional startup update checks.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 

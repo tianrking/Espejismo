@@ -1,0 +1,8 @@
+[remote]
+users = [{ name = "edge", psk = "seed-secret", quota = { bytes = 1048576, window_secs = 60 }, bandwidth = { bytes_per_sec = 65536 } }]
+[shared]
+max_streams = 65535
+[shared.handshake_window]
+enabled = true
+previous_windows = 4
+future_windows = 0

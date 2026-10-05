@@ -1,5 +1,8 @@
 # Known Issues
 
+This page tracks confirmed or actively investigated limitations that can
+affect current deployments.
+
 ## Long transfers on de → jp break mid-way (under investigation)
 
 64 MiB downloads from de (Germany) to jp (Tokyo) intermittently break around

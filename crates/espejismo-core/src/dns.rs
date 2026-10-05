@@ -1,3 +1,5 @@
+//! Bounded DNS resolution helpers used during connection setup.
+
 use std::{future::Future, net::SocketAddr, time::Duration};
 
 use anyhow::{Context, Result};

@@ -1,0 +1,5 @@
+[local.tun]
+mtu = 575
+prefix = 33
+[shared]
+max_streams = 0
