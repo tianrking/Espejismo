@@ -48,6 +48,7 @@ ureq = { version = "2.12", default-features = true, features = ["json"] }
 webpki-roots = "1.0"
 x25519-dalek = { version = "2.0", features = ["static_secrets"] }
 zeroize = "1.8"
+proptest = "1.6"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
@@ -57,4 +58,3 @@ codegen-units = 1
 lto = "thin"
 panic = "abort"
 strip = "symbols"
-

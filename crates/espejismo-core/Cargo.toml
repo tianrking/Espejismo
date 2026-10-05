@@ -36,3 +36,6 @@ tracing-subscriber.workspace = true
 ureq.workspace = true
 x25519-dalek.workspace = true
 zeroize.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
