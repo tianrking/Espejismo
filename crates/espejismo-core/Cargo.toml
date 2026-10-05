@@ -26,7 +26,6 @@ sha1.workspace = true
 sha2.workspace = true
 socket2.workspace = true
 subtle.workspace = true
-thiserror.workspace = true
 tokio.workspace = true
 tokio-yamux.workspace = true
 toml.workspace = true
