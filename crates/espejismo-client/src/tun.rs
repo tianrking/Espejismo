@@ -24,6 +24,17 @@ const MAX_TUN_UDP_TASKS: usize = 1024;
 // TUN packets should not queue behind an unavailable tunnel stream for long.
 const TUN_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
+fn try_acquire_udp_task(limit: &Arc<Semaphore>) -> Option<tokio::sync::OwnedSemaphorePermit> {
+    limit.clone().try_acquire_owned().ok()
+}
+
+fn tun_udp_response_queue() -> (
+    tokio::sync::mpsc::Sender<(Vec<u8>, SocketAddr, SocketAddr)>,
+    tokio::sync::mpsc::Receiver<(Vec<u8>, SocketAddr, SocketAddr)>,
+) {
+    tokio::sync::mpsc::channel(MAX_TUN_UDP_TASKS)
+}
+
 pub async fn run_tun_ingress(
     config: LocalTunConfig,
     server: String,
@@ -206,7 +217,7 @@ async fn handle_tun_udp(
     let task_limit = Arc::new(Semaphore::new(MAX_TUN_UDP_TASKS));
     // Bound completed responses too: a stalled netstack writer must apply
     // backpressure to relay tasks instead of accumulating datagrams forever.
-    let (tx, mut rx) = tokio::sync::mpsc::channel(MAX_TUN_UDP_TASKS);
+    let (tx, mut rx) = tun_udp_response_queue();
     let (mut read_half, mut write_half) = udp_socket.split();
     tokio::spawn(async move {
         while let Some((payload, local, remote)) = rx.recv().await {
@@ -225,7 +236,7 @@ async fn handle_tun_udp(
             );
             continue;
         }
-        let Ok(permit) = task_limit.clone().try_acquire_owned() else {
+        let Some(permit) = try_acquire_udp_task(&task_limit) else {
             metrics.inc_stream_failed();
             trace!(
                 %local,
@@ -355,6 +366,39 @@ fn authority_from_socket(addr: SocketAddr) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn tun_udp_task_limit_accepts_capacity_then_drops_new_work() {
+        let limit = Arc::new(Semaphore::new(MAX_TUN_UDP_TASKS));
+        let mut permits: Vec<_> = (0..MAX_TUN_UDP_TASKS)
+            .map(|_| try_acquire_udp_task(&limit).expect("within task bound"))
+            .collect();
+
+        assert_eq!(limit.available_permits(), 0);
+        assert!(try_acquire_udp_task(&limit).is_none());
+
+        drop(permits.pop());
+        assert!(try_acquire_udp_task(&limit).is_some());
+    }
+
+    #[tokio::test]
+    async fn tun_udp_response_queue_holds_exactly_the_configured_bound() {
+        let (tx, mut rx) = tun_udp_response_queue();
+        let addr: SocketAddr = "127.0.0.1:53".parse().unwrap();
+
+        for index in 0..MAX_TUN_UDP_TASKS {
+            tx.try_send((vec![index as u8], addr, addr)).unwrap();
+        }
+        assert!(matches!(
+            tx.try_send((vec![0], addr, addr)),
+            Err(tokio::sync::mpsc::error::TrySendError::Full(_))
+        ));
+        assert_eq!(rx.recv().await.unwrap().0, vec![0]);
+        tx.try_send((vec![255], addr, addr)).unwrap();
+        assert_eq!(rx.len(), MAX_TUN_UDP_TASKS);
+    }
+
     #[tokio::test]
     async fn udp_response_queue_applies_backpressure() {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);

@@ -150,6 +150,9 @@ How it works:
 - A userspace netstack converts TUN TCP flows into existing tunnel TCP CONNECT
   streams.
 - UDP datagrams are converted into existing tunnel UDP relay requests.
+- TUN UDP relay admits at most 1,024 in-flight datagrams. At the limit, new
+  datagrams are dropped; completed responses wait in a bounded 1,024-entry
+  queue, applying backpressure to relay tasks if the netstack writer stalls.
 - UDP relay is request/response oriented. UDP/443 is blocked by default to make
   browsers fall back from QUIC to TCP HTTPS, which avoids long-lived QUIC
   timeout bursts in global TUN mode. Set `udp_block_ports = []` if you need
