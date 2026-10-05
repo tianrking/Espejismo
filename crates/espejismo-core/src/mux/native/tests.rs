@@ -469,3 +469,68 @@ async fn native_mux_idle_gc_waits_for_all_concurrent_streams_to_close() {
     .await
     .expect("both sessions should be reclaimed after the final stream closes");
 }
+
+#[tokio::test]
+async fn native_mux_transport_disconnect_wakes_blocked_stream_writer() {
+    let (client_io, server_io) = duplex(64 * 1024);
+    let config = NativeMuxConfig {
+        initial_window_bytes: 4,
+        ..NativeMuxConfig::default()
+    };
+    let (mut client_control, mut client_session) = client_session(client_io, config);
+    let (_server_control, mut server_session) = server_session(server_io, config);
+    let client_session_task =
+        tokio::spawn(async move { while client_session.next().await.is_some() {} });
+
+    let mut client_stream = client_control
+        .open_stream(StreamPriority::Interactive)
+        .await
+        .unwrap();
+    let _server_stream = server_session.next().await.unwrap().unwrap();
+    client_stream.write_all(b"full").await.unwrap();
+
+    let blocked_writer = tokio::spawn(async move { client_stream.write(b"x").await });
+    tokio::task::yield_now().await;
+    drop(server_session);
+
+    let result = tokio::time::timeout(Duration::from_secs(1), blocked_writer)
+        .await
+        .expect("session teardown should wake a writer blocked on flow control")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(result.kind(), io::ErrorKind::BrokenPipe);
+    tokio::time::timeout(Duration::from_secs(1), client_session_task)
+        .await
+        .expect("session task should stop after transport EOF")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn native_mux_goaway_timeout_wakes_blocked_stream_writer() {
+    let (client_io, server_io) = duplex(64 * 1024);
+    let config = NativeMuxConfig {
+        initial_window_bytes: 4,
+        drain_timeout: Duration::from_millis(30),
+        ..NativeMuxConfig::default()
+    };
+    let (mut client_control, mut client_session) = client_session(client_io, config);
+    let (_server_control, mut server_session) = server_session(server_io, config);
+    tokio::spawn(async move { while client_session.next().await.is_some() {} });
+
+    let mut client_stream = client_control
+        .open_stream(StreamPriority::Interactive)
+        .await
+        .unwrap();
+    let _server_stream = server_session.next().await.unwrap().unwrap();
+    client_stream.write_all(b"full").await.unwrap();
+    let blocked_writer = tokio::spawn(async move { client_stream.write(b"x").await });
+    tokio::task::yield_now().await;
+
+    client_control.goaway().unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(1), blocked_writer)
+        .await
+        .expect("drain timeout should close flow state and wake blocked writers")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(result.kind(), io::ErrorKind::BrokenPipe);
+}

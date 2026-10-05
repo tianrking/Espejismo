@@ -63,6 +63,14 @@ pub struct NativeSession {
     task: JoinHandle<()>,
 }
 
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
+}
+
 pub struct NativeStream {
     id: u32,
     priority: StreamPriority,
@@ -434,7 +442,7 @@ async fn run_session<T>(
     let (mut read_half, mut write_half) = tokio::io::split(transport);
     let (frame_tx, mut frame_rx) =
         mpsc::channel::<Result<Option<(u8, u32, Vec<u8>)>>>(COMMAND_CHANNEL_EXTRA_FRAMES);
-    tokio::spawn(async move {
+    let reader_task = AbortOnDrop(tokio::spawn(async move {
         loop {
             match read_frame(&mut read_half).await {
                 Ok(Some(frame)) => {
@@ -452,7 +460,7 @@ async fn run_session<T>(
                 }
             }
         }
-    });
+    }));
 
     loop {
         if flush_pending(&mut write_half, &mut streams, &mut pending)
@@ -538,6 +546,19 @@ async fn run_session<T>(
             }
         }
     }
+
+    // A stream handle can outlive the session task. Wake writers before the
+    // stream table is dropped so they observe a closed stream instead of
+    // waiting forever for window credit that can no longer arrive.
+    for stream in streams.values() {
+        if let Ok(mut flow) = stream.flow.lock() {
+            flow.close();
+        }
+    }
+    // The reader may be waiting for another frame on a transport that remains
+    // alive after the session has failed. Stop it explicitly so the read half
+    // and its task are reclaimed with the session.
+    reader_task.0.abort();
 }
 
 fn should_stop(draining_since: Option<Instant>, drain_timeout: Duration, no_streams: bool) -> bool {
