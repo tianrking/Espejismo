@@ -469,7 +469,30 @@ fn is_egress_denial(err: &anyhow::Error) -> bool {
 
 #[cfg(test)]
 mod error_classification_tests {
-    use super::classify_stream_failure;
+    use super::{classify_stream_failure, is_egress_denial};
+    use anyhow::Context;
+
+    #[test]
+    fn every_egress_denial_marker_is_recognized() {
+        for message in [
+            "egress policy rejected destination",
+            "egress host is not allowed",
+            "egress port is not allowed",
+            "egress IP is not allowed",
+            "no allowed UDP egress",
+        ] {
+            let err = anyhow::anyhow!(message);
+            assert!(is_egress_denial(&err), "not recognized: {message}");
+            assert_eq!(classify_stream_failure(&err), "user_error");
+        }
+    }
+
+    #[test]
+    fn only_policy_markers_increment_the_egress_classification() {
+        for message in ["quota exceeded", "timed out", "unexpected failure"] {
+            assert!(!is_egress_denial(&anyhow::anyhow!(message)));
+        }
+    }
 
     #[test]
     fn stream_failures_have_stable_operational_classes() {
@@ -490,6 +513,17 @@ mod error_classification_tests {
                 std::io::ErrorKind::ConnectionReset,
                 "peer reset"
             ))),
+            "network_error"
+        );
+        assert_eq!(
+            classify_stream_failure(
+                &Err::<(), _>(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "refused",
+                ))
+                .context("connecting to upstream")
+                .unwrap_err()
+            ),
             "network_error"
         );
         assert_eq!(
