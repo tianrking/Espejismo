@@ -182,6 +182,51 @@ async fn native_mux_enforces_max_streams() {
 }
 
 #[tokio::test]
+async fn native_mux_bounds_aggregate_unread_data_across_many_streams() {
+    const STREAMS: usize = 32;
+    const WINDOW: usize = 8;
+    let (client_io, server_io) = duplex(64 * 1024);
+    let config = NativeMuxConfig {
+        max_streams: STREAMS,
+        initial_window_bytes: WINDOW,
+        stream_buffer_frames: 2,
+        ..NativeMuxConfig::default()
+    };
+    let (mut client_control, mut client_session) = client_session(client_io, config);
+    let (_server_control, mut server_session) = server_session(server_io, config);
+    tokio::spawn(async move { while client_session.next().await.is_some() {} });
+
+    let mut client_streams = Vec::with_capacity(STREAMS);
+    let mut server_streams = Vec::with_capacity(STREAMS);
+    for _ in 0..STREAMS {
+        client_streams.push(
+            client_control
+                .open_stream(StreamPriority::Bulk)
+                .await
+                .unwrap(),
+        );
+        server_streams.push(server_session.next().await.unwrap().unwrap());
+    }
+
+    // Every stream can fill its byte window, but an unread peer cannot grow
+    // aggregate in-flight payload beyond max_streams * initial_window_bytes.
+    for stream in &mut client_streams {
+        assert_eq!(stream.write(&[0; WINDOW]).await.unwrap(), WINDOW);
+    }
+    for stream in &mut client_streams {
+        assert!(tokio::time::timeout(Duration::from_millis(25), stream.write(b"x"))
+            .await
+            .is_err());
+    }
+
+    for stream in &mut server_streams {
+        let mut data = [0; WINDOW];
+        stream.read_exact(&mut data).await.unwrap();
+        assert_eq!(data, [0; WINDOW]);
+    }
+}
+
+#[tokio::test]
 async fn native_mux_enforces_send_window_until_remote_reads() {
     let (client_io, server_io) = duplex(64 * 1024);
     let config = NativeMuxConfig {

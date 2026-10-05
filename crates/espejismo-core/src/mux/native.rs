@@ -810,6 +810,9 @@ fn new_stream(
     stream_buffer_frames: usize,
     send_queue_frames: usize,
 ) -> (NativeStream, StreamEntry) {
+    // The receive channel is also bounded, but the advertised byte window is
+    // the tighter payload bound: a peer cannot send more than this many bytes
+    // per stream until the application consumes data and returns credit.
     let (tx, rx) = mpsc::channel(stream_buffer_frames);
     let flow = Arc::new(Mutex::new(FlowState::new(
         initial_window_bytes,
