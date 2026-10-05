@@ -24,6 +24,8 @@ const MAX_TUN_UDP_TASKS: usize = 1024;
 // TUN packets should not queue behind an unavailable tunnel stream for long.
 const TUN_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(10);
 
+// Admission is deliberately non-blocking: when every UDP task slot is occupied,
+// the caller drops the new datagram instead of building an unbounded task backlog.
 fn try_acquire_udp_task(limit: &Arc<Semaphore>) -> Option<tokio::sync::OwnedSemaphorePermit> {
     limit.clone().try_acquire_owned().ok()
 }
@@ -413,5 +415,13 @@ mod tests {
         assert_eq!(rx.recv().await.unwrap().0, vec![1]);
         blocked_send.await.unwrap().unwrap();
         assert_eq!(rx.recv().await.unwrap().0, vec![2]);
+    }
+
+    #[tokio::test]
+    async fn udp_response_queue_reports_closed_receiver() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<(Vec<u8>, &str, &str)>(1);
+        drop(rx);
+
+        assert!(tx.send((vec![3], "local", "remote")).await.is_err());
     }
 }
