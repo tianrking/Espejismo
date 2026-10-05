@@ -913,6 +913,54 @@ mod test {
         });
     }
 
+    #[test]
+    fn write_after_reset_is_broken_pipe() {
+        let rt = rt();
+        rt.block_on(async {
+            let (_frame_sender, frame_receiver) = channel(2);
+            let (unbound_sender, _unbound_receiver) = unbounded();
+            let mut stream = StreamHandle::new(
+                0, unbound_sender, frame_receiver, StreamState::Init, INITIAL_STREAM_WINDOW,
+            );
+            stream.state = StreamState::Reset;
+            assert_eq!(stream.write(b"x").await.unwrap_err().kind(), ErrorKind::BrokenPipe);
+        });
+    }
+
+    #[test]
+    fn write_after_local_close_is_broken_pipe() {
+        let rt = rt();
+        rt.block_on(async {
+            let (_frame_sender, frame_receiver) = channel(2);
+            let (unbound_sender, _unbound_receiver) = unbounded();
+            let mut stream = StreamHandle::new(
+                0, unbound_sender, frame_receiver, StreamState::Init, INITIAL_STREAM_WINDOW,
+            );
+            stream.state = StreamState::LocalClosing;
+            assert_eq!(stream.write(b"x").await.unwrap_err().kind(), ErrorKind::BrokenPipe);
+        });
+    }
+
+    #[test]
+    fn peek_reports_invalid_frame_as_invalid_data() {
+        let rt = rt();
+        rt.block_on(async {
+            let (mut frame_sender, frame_receiver) = channel(2);
+            let (unbound_sender, mut unbound_receiver) = unbounded();
+            let mut stream = StreamHandle::new(
+                0, unbound_sender, frame_receiver, StreamState::Init, INITIAL_STREAM_WINDOW,
+            );
+            stream.recv_window = 0;
+            // A payload larger than the receive window is rejected by recv_frames.
+            frame_sender
+                .send(Frame::new_data(Flags::from(Flag::Syn), 0, BytesMut::from("x")))
+                .await
+                .unwrap();
+            assert_eq!(stream.peek(&mut [0; 1]).await.unwrap_err().kind(), ErrorKind::InvalidData);
+            assert!(matches!(unbound_receiver.next().await, Some(StreamEvent::GoAway)));
+        });
+    }
+
     // https://github.com/nervosnetwork/tentacle/issues/297
     //
     // As you can see from the description, the real cause of the problem
