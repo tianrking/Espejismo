@@ -204,7 +204,9 @@ async fn handle_tun_udp(
     policy: UdpTunPolicy,
 ) {
     let task_limit = Arc::new(Semaphore::new(MAX_TUN_UDP_TASKS));
-    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+    // Bound completed responses too: a stalled netstack writer must apply
+    // backpressure to relay tasks instead of accumulating datagrams forever.
+    let (tx, mut rx) = tokio::sync::mpsc::channel(MAX_TUN_UDP_TASKS);
     let (mut read_half, mut write_half) = udp_socket.split();
     tokio::spawn(async move {
         while let Some((payload, local, remote)) = rx.recv().await {
@@ -250,7 +252,9 @@ async fn handle_tun_udp(
             match relay_udp_authority(tunnel, &authority, &payload, policy.timeout).await {
                 Ok(response) => {
                     metrics.add_tunnel_bytes(payload.len() as u64, response.len() as u64);
-                    let _ = tx.send((response, local, remote));
+                    if tx.send((response, local, remote)).await.is_err() {
+                        trace!(%local, %remote, "TUN UDP response writer stopped");
+                    }
                 }
                 Err(err) => {
                     metrics.inc_stream_failed();
@@ -347,4 +351,23 @@ async fn warm_up_tunnel(tunnel: Arc<TunnelService>) -> Result<()> {
 
 fn authority_from_socket(addr: SocketAddr) -> String {
     addr.to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    #[tokio::test]
+    async fn udp_response_queue_applies_backpressure() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel(1);
+        tx.send((vec![1], "local", "remote")).await.unwrap();
+
+        let blocked_send = tokio::spawn(async move {
+            tx.send((vec![2], "local", "remote")).await
+        });
+        tokio::task::yield_now().await;
+        assert!(!blocked_send.is_finished());
+
+        assert_eq!(rx.recv().await.unwrap().0, vec![1]);
+        blocked_send.await.unwrap().unwrap();
+        assert_eq!(rx.recv().await.unwrap().0, vec![2]);
+    }
 }

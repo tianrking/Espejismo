@@ -1,5 +1,8 @@
 # Vendored `tokio-yamux`
 
+This note records the upstream source, local patch, and validation for the
+vendored `tokio-yamux` dependency.
+
 ## Provenance
 
 - Upstream: `tokio-yamux 0.3.18` from crates.io (part of

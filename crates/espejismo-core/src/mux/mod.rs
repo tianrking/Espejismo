@@ -1,3 +1,8 @@
+//! Multiplexed tunnel sessions and runtime configuration.
+//!
+//! The native implementation is available through [`native`]; the shared
+//! runtime adapter supports the configured Yamux and native mux modes.
+
 pub mod native;
 
 use std::pin::Pin;

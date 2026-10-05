@@ -1,3 +1,8 @@
+//! HTTP/2 and WebSocket stream adapters for carrying tunnel bytes.
+//!
+//! These underlays provide protocol-compatible carriers; they do not replace
+//! Espejismo's authenticated encrypted tunnel layer.
+
 use std::collections::HashMap;
 
 use anyhow::{bail, ensure, Context, Result};

@@ -37,6 +37,11 @@ portable userspace limiter, so it works on Linux, macOS, and Windows without
 kernel-specific socket telemetry. Omitting it disables bandwidth limiting for
 that user.
 
+Treat every configured PSK as a credential: give each user a separate random
+key, distribute only that user's key to their client, and rotate it on the
+remote and corresponding client together. See [Authentication and Key
+Management](AUTHENTICATION.md) for key storage and rotation guidance.
+
 If no `[[remote.users]]` entries are configured, the server uses `shared.psk`
 or `--psk` as a single fallback user named `default`, with no quota or bandwidth
 limit.

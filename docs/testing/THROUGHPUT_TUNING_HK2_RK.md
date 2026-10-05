@@ -209,6 +209,7 @@ Both A/B runs used:
 
 ```toml
 [local.tunnel_pool]
+max_connections = 5
 interactive_lanes = 1
 bulk_lanes = 4
 ```

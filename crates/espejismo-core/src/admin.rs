@@ -1,3 +1,8 @@
+//! Local administrative HTTP endpoint and runtime control actions.
+//!
+//! The endpoint exposes operational state and authenticated actions; it is
+//! intended for a trusted local management network, not public proxy traffic.
+
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -92,7 +97,10 @@ async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<(
     let path = parts.next().unwrap_or("/");
     let headers: Vec<&str> = lines.filter(|line| !line.is_empty()).collect();
 
-    if !authorized(&headers, state.token.as_deref()) {
+    // Keep the fixed liveness response usable by load balancers without
+    // granting unauthenticated access to runtime or administrative data.
+    let health_probe = is_health_probe(method, path);
+    if !health_probe && !authorized(&headers, state.token.as_deref()) {
         write_response(&mut stream, 401, "text/plain", b"unauthorized").await?;
         return Ok(());
     }
@@ -231,6 +239,10 @@ fn authorized(headers: &[&str], token: Option<&str>) -> bool {
                     && token_matches(value, token))
         })
     })
+}
+
+fn is_health_probe(method: &str, path: &str) -> bool {
+    method == "GET" && path == "/healthz"
 }
 
 fn token_matches(candidate: &str, expected: &str) -> bool {
@@ -449,7 +461,7 @@ fn escape_label_value(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{authorized, content_length, render_runtime_prometheus};
+    use super::{authorized, content_length, is_health_probe, render_runtime_prometheus};
     use crate::runtime_state::{RuntimeStateSnapshot, TunnelLaneSnapshot};
 
     #[test]
@@ -467,6 +479,29 @@ mod tests {
             &["Authorization: Bearer wrong-secret"],
             Some("admin-secret")
         ));
+        assert!(!authorized(&[], Some("admin-secret")));
+        assert!(!authorized(
+            &["Authorization: Basic admin-secret"],
+            Some("admin-secret")
+        ));
+        assert!(!authorized(
+            &["Authorization: Bearer admin-secret-extra"],
+            Some("admin-secret")
+        ));
+        assert!(authorized(
+            &[
+                "Authorization: Bearer wrong-secret",
+                "X-Espejismo-Admin-Token: admin-secret"
+            ],
+            Some("admin-secret")
+        ));
+    }
+
+    #[test]
+    fn only_get_health_probe_bypasses_admin_authorization() {
+        assert!(is_health_probe("GET", "/healthz"));
+        assert!(!is_health_probe("POST", "/healthz"));
+        assert!(!is_health_probe("GET", "/status"));
     }
 
     #[test]

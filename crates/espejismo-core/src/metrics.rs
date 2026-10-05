@@ -1,3 +1,5 @@
+//! Bounded-cardinality counters and snapshots for operational monitoring.
+
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};

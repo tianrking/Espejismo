@@ -1,3 +1,5 @@
+//! Importable client profiles encoded as Espejismo profile URLs.
+
 use anyhow::{Context, Result};
 use base64::Engine;
 use serde::{Deserialize, Serialize};

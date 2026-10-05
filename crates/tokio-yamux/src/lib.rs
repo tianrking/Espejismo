@@ -1,6 +1,6 @@
 //! A Rust implementation of yamux
 //!
-//! Spec: https://github.com/hashicorp/yamux/blob/master/spec.md
+//! Spec: <https://github.com/hashicorp/yamux/blob/master/spec.md>
 
 #![deny(missing_docs)]
 

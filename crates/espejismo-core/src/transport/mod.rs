@@ -1,3 +1,8 @@
+//! Encrypted framed I/O transport and bidirectional stream copying.
+//!
+//! Copy helpers preserve idle behavior and allow callers to meter bytes without
+//! coupling protocol framing to ingress or egress implementations.
+
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
@@ -567,6 +572,33 @@ mod tests {
         let copied = idle_copy_bidirectional(&mut left, &mut right, Duration::from_millis(5)).await;
 
         assert_eq!(copied.unwrap(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn idle_copy_bidirectional_refreshes_timeout_on_traffic() {
+        let (mut left, mut left_peer) = duplex(64);
+        let (mut right, mut right_peer) = duplex(64);
+        let idle = Duration::from_millis(100);
+
+        let task = tokio::spawn(async move {
+            idle_copy_bidirectional(&mut left, &mut right, idle).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        left_peer.write_all(b"activity").await.unwrap();
+        let mut received = [0_u8; 8];
+        right_peer.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, b"activity");
+
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(!task.is_finished(), "traffic must refresh the idle deadline");
+
+        let copied = tokio::time::timeout(Duration::from_millis(150), task)
+            .await
+            .expect("connection should close after traffic stops")
+            .unwrap()
+            .unwrap();
+        assert_eq!(copied, (8, 0));
     }
 
     #[tokio::test]

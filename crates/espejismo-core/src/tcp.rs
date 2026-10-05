@@ -1,19 +1,18 @@
+//! TCP listener and outbound connection helpers with configured socket options.
+
 use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use socket2::{Domain, Protocol, SockAddr, SockRef, Socket, TcpKeepalive, Type};
-use tokio::net::{lookup_host, TcpListener, TcpSocket, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 
 use crate::config::TcpConfig;
 
 pub async fn connect_tcp_stream(authority: &str, options: &TcpConfig) -> Result<TcpStream> {
     let mut last_error = None;
-    for addr in lookup_host(authority)
-        .await
-        .with_context(|| format!("resolve {authority}"))?
-    {
+    for addr in crate::dns::resolve_socket_addrs(authority).await? {
         match connect_tcp_addr(addr, options).await {
             Ok(stream) => return Ok(stream),
             Err(err) => last_error = Some(err),

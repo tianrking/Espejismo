@@ -24,7 +24,11 @@ pub struct UdpPacket {
 
 impl SocksTarget {
     pub fn authority(&self) -> String {
-        format!("{}:{}", self.host, self.port)
+        if self.host.parse::<Ipv6Addr>().is_ok() {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
     }
 }
 
@@ -265,6 +269,19 @@ where
 #[cfg(test)]
 mod tests {
     use super::{build_udp_packet, parse_udp_packet, SocksTarget};
+
+    #[test]
+    fn ipv6_target_authority_is_bracketed() {
+        let target = SocksTarget {
+            host: "2001:db8::1".to_string(),
+            port: 443,
+        };
+        assert_eq!(target.authority(), "[2001:db8::1]:443");
+        assert_eq!(
+            crate::egress::split_authority(&target.authority()).unwrap(),
+            ("2001:db8::1".to_string(), 443)
+        );
+    }
 
     #[test]
     fn udp_packet_roundtrips_domain_target() {

@@ -1,3 +1,5 @@
+//! Logging initialization and guard for non-blocking file output.
+
 use std::fs;
 use std::path::Path;
 

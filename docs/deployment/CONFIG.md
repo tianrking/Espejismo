@@ -1,5 +1,34 @@
 # Configuration
 
+For the supported runtime, installer, and benchmark environment variables, see
+[Environment Variables](ENVIRONMENT.md).
+
+For a walkthrough of traffic shaping profiles, stealth settings, and their
+trade-offs, see [Traffic Shaping and Obfuscation](OBFUSCATION.md).
+
+For the authentication flow, PSK handling, and credential-rotation procedure,
+see [Authentication and Key Management](AUTHENTICATION.md).
+
+For a categorized list of the maintained full config and deployment
+scenarios, see [Configuration Examples](CONFIG-EXAMPLES.md).
+
+For workload-oriented profile selection, parameter trade-offs, and a repeatable
+throughput tuning process, see [Performance Tuning](PERFORMANCE.md).
+
+For IPv4/IPv6 listener and destination behavior, see [IPv6 deployment notes](IPV6.md).
+
+For SOCKS5 listener configuration, local proxy authentication, UDP support,
+and DNS behavior, see [SOCKS5 Ingress](SOCKS5.md).
+
+For HTTP proxy listener configuration, authentication, supported request forms,
+and request-size lane selection, see [HTTP Proxy Ingress](HTTP.md).
+
+For stream priority classes, automatic HTTP classification, and tunnel lane
+configuration, see [Traffic Priority and QoS](QOS.md).
+
+For system-level traffic capture using native TUN (and the distinction from
+Linux netfilter TPROXY), see [Native TUN Mode](TUN.md).
+
 Espejismo uses one TOML shape for both binaries. You may keep one file and pass
 it to both sides:
 
@@ -52,6 +81,150 @@ If `remote.users` is empty, the remote authenticates with `shared.psk`. If
 `remote.users` is configured, each user has its own PSK and the client must use
 the matching PSK in `shared.psk`.
 
+## Complete Scenario Examples
+
+These examples are complete single-file configs: put the same file on the
+remote and local machines, then run the binary for that role. Each binary
+ignores the other role's section. Replace every example PSK and admin token
+with deployment-specific random values before use.
+
+### One user with a local SOCKS5 proxy
+
+This is the usual single-user VPS setup. The proxy listens only on loopback;
+applications on the client machine connect to `127.0.0.1:6680`.
+
+```toml
+[shared]
+psk = "replace-with-a-long-random-secret"
+
+[local]
+server = "203.0.113.10:6690"
+socks5_listen = "127.0.0.1:6680"
+http_listen = "127.0.0.1:6681"
+
+[remote]
+listen = "0.0.0.0:6690"
+
+[remote.egress]
+deny_private_ips = true
+allow_ports = [80, 443]
+
+[logging]
+level = "info"
+format = "compact"
+```
+
+Allow TCP port 6690 through the server firewall. The server and client must
+use the same `shared.psk`.
+
+### Multiple users with per-user limits
+
+For a small shared server, keep the user list on the remote and give each
+client its own `shared.psk`. The remote matches that key to the user's entry;
+do not put other users' secrets in a client's config.
+
+```toml
+[shared]
+psk = "alice-long-random-secret"
+
+[local]
+server = "203.0.113.10:6690"
+socks5_listen = "127.0.0.1:6680"
+http_listen = "127.0.0.1:6681"
+
+[remote]
+listen = "0.0.0.0:6690"
+
+[[remote.users]]
+name = "alice"
+psk = "alice-long-random-secret"
+
+[remote.users.quota]
+bytes = 5368709120
+window_secs = 2592000
+
+[remote.users.bandwidth]
+bytes_per_sec = 10485760
+
+[[remote.users]]
+name = "bob"
+psk = "bob-long-random-secret"
+
+[remote.users.quota]
+bytes = 10737418240
+window_secs = 2592000
+
+[remote.users.bandwidth]
+bytes_per_sec = 20971520
+
+[remote.egress]
+deny_private_ips = true
+allow_ports = [80, 443]
+
+[logging]
+level = "info"
+format = "compact"
+```
+
+Install the same remote user list on the server. Alice's client uses Alice's
+PSK and Bob's client uses Bob's PSK. Quotas are in bytes per `window_secs`;
+bandwidth is bytes per second. Omit either limit table value when that limit
+is not needed.
+
+### TUN client with route and DNS takeover
+
+Use this when applications should use the tunnel without per-application
+proxy settings. The route settings apply on the local machine; run with the
+permissions needed to create a TUN interface and change routes. Confirm that
+the server address remains reachable directly before enabling route takeover.
+
+```toml
+[shared]
+psk = "replace-with-a-long-random-secret"
+
+[local]
+server = "203.0.113.10:6690"
+socks5_listen = "127.0.0.1:6680"
+http_listen = "127.0.0.1:6681"
+
+[local.tun]
+enabled = true
+name = "esptun0"
+address = "10.255.0.2"
+prefix = 24
+destination = "10.255.0.1"
+mtu = 1400
+udp_enabled = false
+
+[local.tun.route]
+enabled = true
+protect_server_route = true
+dns_enabled = true
+dns_servers = ["1.1.1.1", "8.8.8.8"]
+
+[local.tunnel_pool]
+min_connections = 1
+max_connections = 4
+interactive_lanes = 1
+bulk_lanes = 2
+
+[remote]
+listen = "0.0.0.0:6690"
+
+[remote.egress]
+deny_private_ips = true
+allow_ports = [80, 443]
+
+[logging]
+level = "info"
+format = "compact"
+```
+
+The server uses the same `shared.psk`; it does not need the client's TUN
+settings. This example disables UDP relay for a TCP-only baseline. Keep route
+takeover disabled until the interface and direct server route have been
+checked on the target operating system.
+
 ## Full Example
 
 The maintained one-file example is:
@@ -76,6 +249,41 @@ Validate before running:
 espejismo-remote --config espejismo.toml --check-config
 espejismo-local --config espejismo.toml --check-config
 ```
+
+### Startup validation and errors
+
+Configuration is checked in stages. File and base64 input must first decode as
+UTF-8 TOML and match the known configuration fields and types. Unknown keys
+are errors (the diagnostic may suggest a close spelling); this helps catch
+misspellings and options removed by an upgrade. The parser then checks
+cross-field constraints and supported ranges. For example, TUN prefix must be
+`0..=32`, MTU at least `576`, stream and physical connection limits
+`1..=65535`, and the tunnel pool must have at least one lane with its lane sum
+no greater than `max_connections`. Conditional checks apply when a feature is
+enabled: DNS takeover needs at least one DNS server, pacing needs positive
+burst and minimum-write sizes, and enabled port hopping needs unique nonzero
+ports, a positive window, and a nonempty seed. Errors name the field or fields
+to correct and often include the accepted range or an example value.
+
+Parsing does not prove that the process can start on this machine. The
+role-specific `--check-config` command also checks required role settings,
+resolves `local.server`, checks bindability of configured proxy/admin/tunnel
+listeners, and detects listener address reuse. Server checks require either
+`remote.users` or a shared PSK; client checks require `local.server` and a PSK.
+These checks report `ERROR` for blockers and return a failure status. `WARNING`
+messages identify advisory conditions such as a short PSK or broad egress
+policy; they do not by themselves fail the check. `--doctor` includes these
+checks and adds reachability and feature diagnostics, so network-dependent
+warnings can reflect the current environment. A successful check is a snapshot:
+DNS answers, port availability, permissions, and remote reachability can
+change before the next startup.
+
+For example, a message such as `unknown config field` points to a TOML key to
+rename or remove; `must be in ...` or `must be greater than 0` identifies a
+value constraint; `cannot bind` means the address is occupied or unavailable
+to this process; and `cannot resolve` means the configured hostname did not
+resolve during the check. Fix the indicated input or environment issue, then
+rerun the check for the same binary role.
 
 ## Accepted Config Parameters
 
@@ -125,6 +333,31 @@ an applied profile take precedence.
 The table describes omitted fields, not the values selected by built-in
 profiles. For example, the `auto-throughput` profile overlays several buffer,
 chunk, socket, threshold, and lane settings described below.
+
+### Tuning guidance
+
+Keep the defaults as the starting point. Change one group at a time and compare
+latency, throughput, memory use, and reconnect behavior on the actual path;
+larger buffers and more lanes consume more memory and do not guarantee higher
+throughput. Settings that must agree across peers are marked below.
+
+| Goal | Settings to consider | Guidance |
+| --- | --- | --- |
+| High bandwidth-delay product | `shared.obfuscation.chunk_policy`, `randomize_chunks`, `max_chunk`; `shared.tunnel_buffer`; `shared.underlay.http2` windows; `local.tunnel_pool` | Try the documented bulk profile or `auto-throughput` overlay first. Increase chunk sizes/windows or bulk lanes only when measurement shows a throughput ceiling. Keep peer values aligned where the field is shared. |
+| Low latency or constrained memory | `local.tunnel_pool.max_connections`, `shared.tunnel_buffer`, `shared.pacing.burst_bytes`, `shared.obfuscation` | Reduce lanes and buffering if memory is constrained. Prefer the `low_latency` chunk policy for small interactive exchanges; validate that bulk transfers remain acceptable. |
+| Rate limiting | `shared.pacing.max_bytes_per_sec`; `remote.users[].bandwidth.bytes_per_sec` | Set an application-wide cap with pacing, or a per-user cap on the server. `0` means uncapped for pacing; leave user bandwidth unset for no per-user cap. |
+| Replay tolerance | `shared.handshake_window.*`, `shared.clock_skew_secs`, `remote.replay_window_secs` | Keep handshake-window settings identical on both peers. Increase accepted previous windows only for measured clock or path delay; keep the replay cache window at least as large as accepted handshake tolerance. |
+| TCP behavior | `shared.tcp.keepalive_secs`, `heartbeat_secs`, `user_timeout_ms`, `send_buffer_bytes`, `recv_buffer_bytes` | Keep OS buffer defaults (`0`) unless measurements or platform guidance indicate otherwise. Shorter keepalive/heartbeat intervals detect dead paths sooner but add traffic; `user_timeout_ms = 0` leaves the OS policy in effect. |
+| TUN routing | `local.tun.route.*`, `local.tun.udp_enabled`, `udp_block_ports`, `mtu` | Leave route takeover and DNS takeover disabled until explicitly needed. Protect the server route when takeover is enabled. The default UDP block for port 443 avoids QUIC; clear or change it only when UDP/443 should pass through. |
+| Egress restrictions | `remote.egress.deny_private_ips`, `allow_hosts`, `block_hosts`, `allow_ports`, `block_ports` | Set policy to match the server's intended destinations. `deny_private_ips` defaults to `false`; enable it for public-relay deployments that must not reach private or special addresses. Review allow/block rules together before exposure. |
+| Stealth shaping | `shared.obfuscation.profile`, `shared.stealth.*`, `shared.stealth_shaper.*` | Use the `stealth` profile on both peers when its traffic pattern is intended. The shaper is disabled by default; idle padding consumes the configured budget and may add latency. Do not treat these settings as protocol camouflage. |
+| Port hopping | `shared.port_hopping.*` | Enable only when both peers share the same nonempty seed, port list, and window. Bind/firewall every candidate port on the remote. |
+| Diagnostics and admin | `logging.level`, `format`, `file`; `admin.listen`, `token` | Use `info` for routine operation and temporarily increase verbosity to investigate. Enable admin only when needed, keep it on loopback where possible, and use a token for non-loopback binds. |
+
+Optional credentials and endpoints have no default value: configure `shared.psk`
+and `local.server` for their roles, and configure admin tokens, egress proxies,
+fallback upstreams, user quotas, or bandwidth limits only when required. Avoid
+copying example secrets into a deployment.
 
 ### shared
 
@@ -190,15 +423,49 @@ padding temporarily.
 
 `shared.max_physical_connections`: Remote physical TCP connection cap.
 
+#### Connection and stream limits
+
+These limits apply at different scopes and are independent:
+
+| Setting | Scope | At capacity |
+| --- | --- | --- |
+| `local.tunnel_pool.max_connections` | Client process; maximum authenticated physical tunnel lanes in its pool | The client does not create additional lanes. New proxy flows use available lanes and may wait/fail according to the lane reconnect and stream-open path. |
+| `shared.max_physical_connections` | Remote process; all accepted physical TCP tunnel connections across its listeners | The accept loop drops newly accepted sockets immediately and logs at debug level. Existing connections keep their permits until their handler ends. |
+| `shared.max_streams` | Remote process-wide logical streams, and separately per authenticated physical connection | A stream at the process-wide cap causes the peer handler to end, closing that physical connection and its streams. At the per-connection cap, the handler waits up to its bounded permit timeout; if no stream finishes in time, it ends that physical connection. |
+
+`shared.max_streams` therefore bounds aggregate server stream work and also
+sets the per-connection ceiling; it is not a per-user quota. Both configured
+server limits default to `max_physical_connections = 1024` and `max_streams =
+256`. They must be in `1..=65535`; zero is rejected during config validation.
+The client pool defaults to `min_connections = 1` and `max_connections = 4`.
+
+The server's physical connection limit also bounds the number of simultaneous
+handshakes, since a connection permit is acquired before peer authentication.
+`remote.tarpit_max` is a separate cap on connections held by the fallback
+tarpit and does not increase the physical connection limit. OS listen backlog
+and file-descriptor limits can impose lower effective admission limits.
+
 `shared.key_update_frames`: Frame interval for AEAD traffic-key rotation.
 
 ### shared.tcp
 
 `nodelay`: Enable TCP_NODELAY.
 
-`keepalive_secs`: TCP keepalive interval.
+`keepalive_secs`: TCP socket keepalive idle interval in seconds. Defaults to
+`30`; set to `0` to leave TCP keepalive disabled by this configuration. The
+operating system controls the subsequent probe schedule and failure policy,
+which vary by platform. Where the socket setup supports it, this value sets the
+idle time before probes begin. This option applies to TCP sockets; it is
+distinct from the encrypted framing heartbeat and from Yamux session pings.
 
-`heartbeat_secs`: Encrypted heartbeat interval.
+`heartbeat_secs`: Interval in seconds for an encrypted empty padding frame when
+the normal (non-stealth) framing writer has no application data to send. Defaults
+to `30`; `0` disables these idle frames. The peer's ordinary frame read path
+receives them, so they keep traffic moving through the encrypted tunnel, but
+they are not a configurable Yamux ping timeout or TCP failure timer. In stealth
+profile, the stealth framing path is used instead and this setting does not
+schedule these heartbeat frames. Regular heartbeats can create a timing signal;
+the runtime warns about this for non-stealth profiles.
 
 `user_timeout_ms`: Linux TCP_USER_TIMEOUT, 0 disables it.
 
@@ -223,13 +490,33 @@ defaults.
 
 ### shared.pacing
 
-`enabled`: Enable application-level pacing.
+Pacing limits bytes written by the local application-level frame sender. Since
+`shared` settings are read by both binaries, configure the same policy on both
+peers to cap traffic in both directions; a one-sided setting caps only that
+peer's outbound tunnel traffic. This is an aggregate cap for that sender, not a
+per-user policy.
 
-`max_bytes_per_sec`: Rate cap. `0` means uncapped.
+`enabled`: Enable application-level pacing. It defaults to `true`.
 
-`burst_bytes`: Uncharged burst budget.
+`max_bytes_per_sec`: Rate cap in bytes per second. `0` means uncapped, which
+is the default. For example, `1250000` is approximately 10 Mbit/s before
+protocol overhead.
 
-`min_write_bytes`: Minimum pacing write charge.
+`burst_bytes`: Uncharged burst budget in bytes; defaults to `65536`.
+
+`min_write_bytes`: Minimum charge per paced write in bytes; defaults to
+`1024`. With pacing enabled, `burst_bytes` and `min_write_bytes` must be
+positive. The burst permits short transfers to start promptly, so observed
+short-term throughput can exceed the configured average cap.
+
+For a server-side per-user aggregate relay cap, configure
+`remote.users[].bandwidth.bytes_per_sec`; omit it for no per-user cap. The
+per-user limiter applies across that user's TCP and UDP relay traffic in both
+directions. The shared pacing cap and per-user cap can be used together: traffic
+is constrained by whichever applicable cap is tighter. See [Users, Quotas, and
+Bandwidth Limits](USERS.md) for user configuration and [Connection and stream
+limits](#connection-and-stream-limits) for admission limits, which control
+concurrency rather than transfer rate.
 
 ### shared.obfuscation
 
@@ -502,6 +789,10 @@ to `[443]` so QUIC falls back to TCP HTTPS; use `[]` to allow UDP/443.
 `dns_enabled`: Apply DNS takeover.
 
 `dns_servers`: DNS servers to apply when DNS takeover is enabled.
+These are server IP addresses for the host operating system's DNS client; they
+do not configure an Espejismo resolver or DNS-over-HTTPS (DoH). DNS takeover is
+opt-in and disabled by default. See [DNS behavior](DNS.md) for hostname
+resolution paths and platform details.
 
 ### remote
 
@@ -528,7 +819,10 @@ server response is sent.
 
 `mode`: `silent` or `http_fallback`.
 
-`enabled`: Legacy fallback switch.
+`mode = "http_fallback"` enables HTTP fallback routing. `enabled = true` is a
+legacy compatibility switch that also enables it, even when `mode` is
+`"silent"`; leave both at their defaults to silently reject unrecognized
+traffic.
 
 `upstream`: Optional fallback upstream endpoint.
 

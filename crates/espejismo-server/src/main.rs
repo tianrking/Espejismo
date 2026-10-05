@@ -15,9 +15,11 @@ use espejismo_core::{
     ReplayCache, RuntimeState, TcpConfig, TrafficObserver,
 };
 use serde_json::json;
-use tokio::net::lookup_host;
 use tokio::sync::{mpsc, RwLock, Semaphore};
 use tracing::{debug, info};
+
+const ACCEPT_RESOURCE_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
+const ACCEPT_RESOURCE_RETRY_MAX_DELAY: Duration = Duration::from_secs(16);
 
 mod fallback;
 mod handler;
@@ -265,21 +267,38 @@ async fn main() -> Result<()> {
         runtime.replay_window_secs,
     )));
     let mux_mode = runtime.settings.read().await.mux.mode;
-    info!(listen = %runtime.listen, mux = ?mux_mode, listeners = listeners.len(), "remote listening with mux tunnel support");
+    info!(
+        role = "remote",
+        version = env!("CARGO_PKG_VERSION"),
+        listen = %runtime.listen,
+        mux = ?mux_mode,
+        underlay = ?runtime.settings.read().await.underlay.mode,
+        listeners = listeners.len(),
+        "service started"
+    );
     let (accepted_tx, mut accepted_rx) = mpsc::channel(1024);
     for listener in listeners {
         let accepted_tx = accepted_tx.clone();
         tokio::spawn(async move {
+            let mut resource_failures = 0_u32;
             loop {
                 match listener.accept().await {
                     Ok((socket, peer)) => {
+                        resource_failures = 0;
                         if accepted_tx.send((socket, peer)).await.is_err() {
                             break;
                         }
                     }
                     Err(err) => {
-                        debug!(error = %err, "remote listener accept failed");
-                        break;
+                        if is_temporary_resource_exhaustion(&err) {
+                            resource_failures = resource_failures.saturating_add(1);
+                            let delay = accept_resource_retry_delay(resource_failures);
+                            debug!(error = %err, retry_ms = delay.as_millis(), "remote listener temporarily out of resources; retrying accept");
+                            tokio::time::sleep(delay).await;
+                        } else {
+                            debug!(error = %err, "remote listener accept failed");
+                            break;
+                        }
                     }
                 }
             }
@@ -287,7 +306,17 @@ async fn main() -> Result<()> {
     }
     drop(accepted_tx);
 
-    while let Some((socket, peer)) = accepted_rx.recv().await {
+    loop {
+        let accepted = tokio::select! {
+            accepted = accepted_rx.recv() => accepted,
+            _ = shutdown_signal() => {
+                info!("shutdown signal received");
+                break;
+            }
+        };
+        let Some((socket, peer)) = accepted else {
+            break;
+        };
         let _ = apply_tcp_options(&socket, &runtime.tcp);
         let Some(connection_permit) = try_connection_permit(&runtime.global_connection_limit)
         else {
@@ -307,6 +336,57 @@ async fn main() -> Result<()> {
         });
     }
     Ok(())
+}
+
+fn accept_resource_retry_delay(consecutive_failures: u32) -> Duration {
+    if consecutive_failures == 0 {
+        return Duration::ZERO;
+    }
+    let exponent = consecutive_failures.saturating_sub(1).min(6);
+    ACCEPT_RESOURCE_RETRY_BASE_DELAY
+        .saturating_mul(1_u32 << exponent)
+        .min(ACCEPT_RESOURCE_RETRY_MAX_DELAY)
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let terminate = async {
+            if let Ok(mut sigterm) = signal(SignalKind::terminate()) {
+                sigterm.recv().await;
+            }
+        };
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = terminate => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await;
+    }
+}
+
+fn is_temporary_resource_exhaustion(err: &std::io::Error) -> bool {
+    if err.kind() == std::io::ErrorKind::OutOfMemory {
+        return true;
+    }
+
+    match err.raw_os_error() {
+        // Linux: ENFILE, EMFILE, ENOMEM. Windows: ERROR_NOT_ENOUGH_MEMORY,
+        // ERROR_OUTOFMEMORY. Tokio reports these as OS errors on accept.
+        #[cfg(target_os = "linux")]
+        Some(23) | Some(24) | Some(12) => true,
+        #[cfg(windows)]
+        Some(8) | Some(14) => true,
+        _ => false,
+    }
 }
 
 fn try_connection_permit(limit: &Arc<Semaphore>) -> Option<tokio::sync::OwnedSemaphorePermit> {
@@ -469,9 +549,9 @@ async fn check_remote_config(config: &EspejismoConfig, args: &Args, doctor: bool
         );
     }
     if let Some(proxy) = EgressPolicy::from(config.remote.egress.clone()).upstream_proxy()? {
-        match lookup_host(proxy.endpoint.as_str()).await {
+        match espejismo_core::resolve_socket_addrs(proxy.endpoint.as_str()).await {
             Ok(addrs) => {
-                if addrs.count() > 0 {
+                if !addrs.is_empty() {
                     println!("OK egress proxy resolves: {}", proxy.endpoint);
                 } else {
                     warnings.push(format!(
@@ -496,9 +576,9 @@ async fn check_remote_config(config: &EspejismoConfig, args: &Args, doctor: bool
                 .split('/')
                 .next()
                 .unwrap_or(upstream);
-            match lookup_host(host).await {
+            match espejismo_core::resolve_socket_addrs(host).await {
                 Ok(addrs) => {
-                    if addrs.count() > 0 {
+                    if !addrs.is_empty() {
                         println!("OK fallback upstream resolves: {upstream}");
                     } else {
                         warnings.push(format!(
@@ -794,6 +874,57 @@ mod connection_limit_tests {
         );
         drop(second);
         assert_eq!(limit.available_permits(), 2);
+    }
+}
+
+#[cfg(test)]
+mod accept_resource_tests {
+    use super::{accept_resource_retry_delay, is_temporary_resource_exhaustion};
+    use std::time::Duration;
+
+    #[test]
+    fn retry_delay_grows_and_stays_bounded() {
+        assert_eq!(accept_resource_retry_delay(0), Duration::ZERO);
+        assert_eq!(accept_resource_retry_delay(1), Duration::from_millis(250));
+        assert_eq!(accept_resource_retry_delay(2), Duration::from_millis(500));
+        assert_eq!(accept_resource_retry_delay(3), Duration::from_millis(1_000));
+        assert_eq!(
+            accept_resource_retry_delay(7),
+            Duration::from_millis(16_000)
+        );
+        assert_eq!(
+            accept_resource_retry_delay(u32::MAX),
+            Duration::from_millis(16_000)
+        );
+    }
+
+    #[test]
+    fn retries_known_descriptor_and_memory_exhaustion_errors() {
+        #[cfg(target_os = "linux")]
+        for code in [12, 23, 24] {
+            assert!(is_temporary_resource_exhaustion(
+                &std::io::Error::from_raw_os_error(code)
+            ));
+        }
+        #[cfg(windows)]
+        for code in [8, 14] {
+            assert!(is_temporary_resource_exhaustion(
+                &std::io::Error::from_raw_os_error(code)
+            ));
+        }
+        assert!(is_temporary_resource_exhaustion(&std::io::Error::from(
+            std::io::ErrorKind::OutOfMemory
+        )));
+    }
+
+    #[test]
+    fn does_not_retry_permanent_accept_errors() {
+        assert!(!is_temporary_resource_exhaustion(&std::io::Error::from(
+            std::io::ErrorKind::PermissionDenied
+        )));
+        assert!(!is_temporary_resource_exhaustion(&std::io::Error::from(
+            std::io::ErrorKind::ConnectionAborted
+        )));
     }
 }
 

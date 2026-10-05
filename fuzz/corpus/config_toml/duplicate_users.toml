@@ -1,0 +1,6 @@
+[[remote.users]]
+name = "same"
+psk = "a"
+[[remote.users]]
+name = "same"
+psk = "b"

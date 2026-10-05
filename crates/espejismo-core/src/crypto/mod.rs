@@ -1,3 +1,8 @@
+//! Authenticated key exchange and traffic-key primitives.
+//!
+//! Handshake helpers establish authenticated sessions from configured
+//! pre-shared credentials; frame encryption uses the resulting session keys.
+
 use std::fmt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -1579,6 +1584,27 @@ mod tests {
         client_task.await.unwrap().unwrap();
         let session = server_task.await.unwrap().unwrap();
         assert_eq!(session.user, "good");
+    }
+
+    #[tokio::test]
+    async fn malformed_peer_handshake_error_does_not_disclose_configured_secrets() {
+        let server_secret = b"server-secret-that-is-long-enough";
+        let users = vec![HandshakeUser {
+            name: "private-user-name".to_string(),
+            config: HandshakeConfig::new(server_secret.to_vec(), 30, 128, 2),
+        }];
+        let replay = Arc::new(Mutex::new(ReplayCache::new(60)));
+        let (mut client, mut server) = duplex(4096);
+        client.write_all(b"invalid-peer-handshake").await.unwrap();
+        drop(client);
+        let err = match accept_handshake_with_users(&mut server, &users, replay).await {
+            Ok(_) => panic!("malformed peer handshake should be rejected"),
+            Err(err) => err.to_string(),
+        };
+
+        assert!(err.contains("client handshake nonce failed"), "{err}");
+        assert!(!err.contains(std::str::from_utf8(server_secret).unwrap()));
+        assert!(!err.contains("private-user-name"));
     }
 
     #[tokio::test]
