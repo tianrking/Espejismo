@@ -260,6 +260,7 @@ the tunnel does not replay or automatically resume it.
 | Remote physical session | accepted | authenticating | Apply handshake timeout and configured auth/fallback policy. |
 | Remote physical session | authentication succeeds | mux-serving | Yield streams to independent handlers until the mux session ends. |
 | Remote physical session | authentication rejects/times out | closed or fallback | Does not enter mux service. |
+| Native mux session | no active streams for the idle timeout | draining, then closed | Send `GOAWAY`; a session with any open stream stays alive, and the final stream closing starts the idle window again. |
 | Remote physical session | mux/session error | closed | All streams on this physical session lose their carrier. |
 | Logical stream | mux yields stream | request pending | Read one tunnel command under the request timeout. |
 | Logical stream | valid TCP command | relaying | Apply egress policy, connect destination, then relay with idle/quota limits. |

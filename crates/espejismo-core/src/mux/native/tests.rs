@@ -422,3 +422,50 @@ async fn native_mux_idle_session_exits() {
         .unwrap();
     assert!(next.is_none());
 }
+
+#[tokio::test]
+async fn native_mux_idle_gc_waits_for_all_concurrent_streams_to_close() {
+    const STREAMS: usize = 8;
+    let (client_io, server_io) = duplex(64 * 1024);
+    let config = NativeMuxConfig {
+        session_idle_timeout: Duration::from_millis(40),
+        drain_timeout: Duration::from_millis(20),
+        ..NativeMuxConfig::default()
+    };
+    let (mut client_control, mut client_session) = client_session(client_io, config);
+    let (_server_control, mut server_session) = server_session(server_io, config);
+
+    let client_session_task = tokio::spawn(async move {
+        while client_session.next().await.is_some() {}
+    });
+    let server_session_task = tokio::spawn(async move {
+        let mut accepted_streams = Vec::with_capacity(STREAMS);
+        while let Some(stream) = server_session.next().await {
+            accepted_streams.push(stream.unwrap());
+        }
+        accepted_streams
+    });
+
+    let mut client_streams = Vec::with_capacity(STREAMS);
+    for _ in 0..STREAMS {
+        client_streams.push(
+            client_control
+                .open_stream(StreamPriority::Interactive)
+                .await
+                .unwrap(),
+        );
+    }
+
+    // Idle time must not reclaim a session while any logical stream remains open.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!client_session_task.is_finished());
+    assert!(!server_session_task.is_finished());
+
+    drop(client_streams);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        client_session_task.await.unwrap();
+        drop(server_session_task.await.unwrap());
+    })
+    .await
+    .expect("both sessions should be reclaimed after the final stream closes");
+}
