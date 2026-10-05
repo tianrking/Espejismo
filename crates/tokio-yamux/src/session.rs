@@ -154,10 +154,10 @@ where
         let time_mock = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let keepalive = if config.enable_keepalive {
             #[cfg(not(all(target_family = "wasm", not(target_os = "unknown"))))]
-            let interval = interval(config.keepalive_interval);
+            let interval = interval(sanitize_keepalive_interval(config.keepalive_interval));
 
             #[cfg(all(target_family = "wasm", not(target_os = "unknown")))]
-            let mut interval = interval(config.keepalive_interval);
+            let mut interval = interval(sanitize_keepalive_interval(config.keepalive_interval));
             #[cfg(all(target_family = "wasm", not(target_os = "unknown")))]
             interval.mock_instant(time_mock.clone());
 
@@ -298,8 +298,8 @@ where
         // it is a protocol exception and should be disconnected.
         if self
             .pings
-            .iter()
-            .any(|(_id, time)| ping_at.saturating_duration_since(*time) > TIMEOUT)
+            .values()
+            .any(|time| ping_timed_out(ping_at.saturating_duration_since(*time)))
         {
             #[cfg(feature = "metrics")]
             metrics::counter!("yamux.ping_timeout").increment(1);
@@ -651,6 +651,16 @@ where
     }
 }
 
+fn sanitize_keepalive_interval(interval: Duration) -> Duration {
+    // Tokio intervals reject zero; keep malformed caller config from panicking.
+    interval.max(Duration::from_millis(1))
+}
+
+fn ping_timed_out(age: Duration) -> bool {
+    // A ping is still valid at the exact timeout boundary.
+    age > TIMEOUT
+}
+
 impl<T> Stream for Session<T>
 where
     T: AsyncRead + AsyncWrite + Unpin,
@@ -940,7 +950,7 @@ pub(crate) fn rt() -> &'static tokio::runtime::Runtime {
 
 #[cfg(test)]
 mod test {
-    use super::{Session, rt};
+    use super::{Session, TIMEOUT, ping_timed_out, rt, sanitize_keepalive_interval};
     use crate::{
         config::Config,
         frame::{Flag, Flags, Frame, FrameCodec, GoAwayCode, Type},
@@ -956,6 +966,40 @@ mod test {
         task::{Context, Poll},
         time::Duration,
     };
+
+    #[test]
+    fn keepalive_timeout_and_interval_boundaries_are_sanitized() {
+        assert!(!ping_timed_out(TIMEOUT - Duration::from_nanos(1)));
+        assert!(!ping_timed_out(TIMEOUT));
+        assert!(ping_timed_out(TIMEOUT + Duration::from_nanos(1)));
+
+        assert_eq!(
+            sanitize_keepalive_interval(Duration::ZERO),
+            Duration::from_millis(1)
+        );
+        assert_eq!(
+            sanitize_keepalive_interval(Duration::from_millis(1)),
+            Duration::from_millis(1)
+        );
+        assert_eq!(
+            sanitize_keepalive_interval(Duration::from_millis(2)),
+            Duration::from_millis(2)
+        );
+
+        // Constructing a session with zero must not hit Tokio's zero-period panic.
+        rt().block_on(async {
+            let (remote, local) = MockSocket::new();
+            let _session = Session::new_client(
+                local,
+                Config {
+                    enable_keepalive: true,
+                    keepalive_interval: Duration::ZERO,
+                    ..Default::default()
+                },
+            );
+            drop(remote);
+        });
+    }
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
     use tokio_util::codec::Framed;
 
