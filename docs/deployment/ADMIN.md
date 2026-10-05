@@ -27,7 +27,8 @@ other route requires that token in either the `Authorization: Bearer` header
 or the `X-Espejismo-Admin-Token` header. If no token is configured, the server
 does not authenticate requests; configuration validation requires a token for
 non-loopback admin listeners. Keep an unauthenticated listener bound to
-loopback.
+loopback. With a token configured, missing or invalid credentials receive
+HTTP 401 before request bodies are read or administrative actions are run.
 
 For probe behavior and container/orchestrator examples, see
 [Health Checks](HEALTHCHECK.md).

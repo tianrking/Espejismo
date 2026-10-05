@@ -12,8 +12,8 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::json;
 use subtle::ConstantTimeEq;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpListener;
 use tokio::time::{timeout, Duration};
 use tracing::{debug, info};
 
@@ -71,7 +71,10 @@ async fn run_admin_server(addr: SocketAddr, state: AdminState) -> Result<()> {
     }
 }
 
-async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<()> {
+async fn handle_admin_peer<S>(mut stream: S, state: AdminState) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut buffer = Vec::with_capacity(2048);
     let mut byte = [0_u8; 1];
     while !buffer.ends_with(b"\r\n\r\n") {
@@ -261,12 +264,10 @@ fn content_length(headers: &[&str]) -> Result<usize> {
     value.parse().context("invalid content-length")
 }
 
-async fn write_response(
-    stream: &mut TcpStream,
-    code: u16,
-    content_type: &str,
-    body: &[u8],
-) -> Result<()> {
+async fn write_response<S>(stream: &mut S, code: u16, content_type: &str, body: &[u8]) -> Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
     let reason = match code {
         200 => "OK",
         401 => "Unauthorized",
@@ -461,8 +462,107 @@ fn escape_label_value(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{authorized, content_length, is_health_probe, render_runtime_prometheus};
+    use super::{
+        authorized, content_length, handle_admin_peer, is_health_probe, render_runtime_prometheus,
+        AdminState,
+    };
     use crate::runtime_state::{RuntimeStateSnapshot, TunnelLaneSnapshot};
+    use crate::{metrics::Metrics, runtime_state::RuntimeState};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+
+    async fn request(state: AdminState, request: &str) -> String {
+        let (mut client, server_stream) = duplex(4096);
+        let server = tokio::spawn(async move {
+            handle_admin_peer(server_stream, state).await.unwrap();
+        });
+        client.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        server.await.unwrap();
+        String::from_utf8(response).unwrap()
+    }
+
+    fn admin_state(reload: Option<super::AdminAction>) -> AdminState {
+        AdminState {
+            role: "test".to_string(),
+            metrics: Metrics::default(),
+            runtime: RuntimeState::default(),
+            token: Some("admin-secret".to_string()),
+            reload,
+        }
+    }
+
+    #[tokio::test]
+    async fn protected_admin_routes_reject_missing_and_invalid_credentials() {
+        for path in ["/status", "/connections", "/metrics"] {
+            let response = request(
+                admin_state(None),
+                &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+            )
+            .await;
+            assert!(response.starts_with("HTTP/1.1 401"), "{path}: {response}");
+            assert!(response.ends_with("unauthorized"));
+        }
+
+        for auth in [
+            "Authorization: Bearer wrong",
+            "Authorization: Basic admin-secret",
+        ] {
+            let response = request(
+                admin_state(None),
+                &format!("GET /status HTTP/1.1\r\nHost: localhost\r\n{auth}\r\n\r\n"),
+            )
+            .await;
+            assert!(response.starts_with("HTTP/1.1 401"), "{auth}: {response}");
+        }
+
+        let response = request(
+            admin_state(None),
+            "POST /apply HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\n\r\nx=1",
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 401"));
+    }
+
+    #[tokio::test]
+    async fn only_health_is_public_and_unauthorized_apply_has_no_side_effect() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let action_calls = calls.clone();
+        let action: super::AdminAction = Arc::new(move |_| {
+            let calls = action_calls.clone();
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({"ok": true}))
+            })
+        });
+
+        let health = request(
+            admin_state(Some(action.clone())),
+            "GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )
+        .await;
+        assert!(health.starts_with("HTTP/1.1 200"));
+        assert!(health.ends_with("ok\n"));
+
+        let denied = request(
+            admin_state(Some(action.clone())),
+            "POST /apply HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\n\r\nx=1",
+        )
+        .await;
+        assert!(denied.starts_with("HTTP/1.1 401"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let accepted = request(
+            admin_state(Some(action)),
+            "POST /apply HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer admin-secret\r\nContent-Length: 3\r\n\r\nx=1",
+        ).await;
+        assert!(accepted.starts_with("HTTP/1.1 200"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
 
     #[test]
     fn authorization_accepts_bearer_and_legacy_header() {
