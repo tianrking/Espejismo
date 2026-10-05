@@ -140,6 +140,8 @@ impl Metrics {
         self.inner.key_updates.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Add payload byte totals in each direction. Per-user byte counters are
+    /// updated separately by [`Self::add_user_tunnel_bytes`].
     pub fn add_tunnel_bytes(&self, client_to_remote: u64, remote_to_client: u64) {
         self.inner
             .bytes_client_to_remote
@@ -476,5 +478,38 @@ mod tests {
             snapshot.stream_failed,
             (MAX_FAILURE_REASON_SERIES + 20) as u64
         );
+    }
+
+    #[test]
+    fn byte_counters_accumulate_independently_and_match_user_totals() {
+        let metrics = Metrics::default();
+        metrics.add_tunnel_bytes(7, 13);
+        metrics.add_tunnel_bytes(5, 0);
+        metrics.add_user_tunnel_bytes("alice", 7, 13);
+        metrics.add_user_tunnel_bytes("alice", 5, 0);
+        metrics.add_user_tunnel_bytes("bob", 0, 9);
+
+        let snapshot = metrics.snapshot("server");
+        assert_eq!(snapshot.bytes_client_to_remote, 12);
+        assert_eq!(snapshot.bytes_remote_to_client, 13);
+        let alice = snapshot.users.iter().find(|user| user.user == "alice").unwrap();
+        assert_eq!(alice.bytes_client_to_remote, 12);
+        assert_eq!(alice.bytes_remote_to_client, 13);
+        let bob = snapshot.users.iter().find(|user| user.user == "bob").unwrap();
+        assert_eq!(bob.bytes_client_to_remote, 0);
+        assert_eq!(bob.bytes_remote_to_client, 9);
+    }
+
+    #[test]
+    fn cloned_metrics_share_counter_updates() {
+        let metrics = Metrics::default();
+        let clone = metrics.clone();
+        clone.inc_accepted();
+        clone.add_tunnel_bytes(3, 11);
+
+        let snapshot = metrics.snapshot("client");
+        assert_eq!(snapshot.accepted_connections, 1);
+        assert_eq!(snapshot.bytes_client_to_remote, 3);
+        assert_eq!(snapshot.bytes_remote_to_client, 11);
     }
 }
