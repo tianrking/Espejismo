@@ -974,14 +974,20 @@ mod reload_safety_tests {
 
         let mut next_config = old_config;
         next_config.remote.users.pop();
+        next_config.shared.idle_timeout_secs += 17;
+        next_config.shared.max_streams += 3;
         let next =
             build_remote_settings(&next_config, &test_args()).expect("replacement settings build");
         let expected_users = next.users.len();
+        let expected_idle_timeout = next.idle_timeout;
+        let expected_max_streams = next.max_streams;
 
         let committed_users = replace_remote_settings(&settings, next).await;
         let committed = settings.read().await;
         assert_eq!(committed_users, expected_users);
         assert_eq!(committed.users.len(), expected_users);
+        assert_eq!(committed.idle_timeout, expected_idle_timeout);
+        assert_eq!(committed.max_streams, expected_max_streams);
     }
 
     #[tokio::test]
@@ -989,6 +995,8 @@ mod reload_safety_tests {
         let config = parse_config(&example_config()).expect("example config parses");
         let initial = build_remote_settings(&config, &test_args()).expect("initial settings build");
         let original_user_count = initial.users.len();
+        let original_idle_timeout = initial.idle_timeout;
+        let original_max_streams = initial.max_streams;
         let settings = RwLock::new(initial);
 
         let candidate = build_remote_settings(
@@ -1000,5 +1008,7 @@ mod reload_safety_tests {
 
         let current = settings.read().await;
         assert_eq!(current.users.len(), original_user_count);
+        assert_eq!(current.idle_timeout, original_idle_timeout);
+        assert_eq!(current.max_streams, original_max_streams);
     }
 }
