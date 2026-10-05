@@ -147,8 +147,20 @@ impl StreamHandle {
 
     // Send a window update
     pub(crate) fn send_window_update(&mut self) -> Result<(), Error> {
-        let buf_len = self.read_buf.iter().map(|b| b.len()).sum::<usize>() as u32;
-        let delta = self.max_recv_window - buf_len - self.recv_window;
+        // Keep the receive-credit invariant explicit. A violated invariant
+        // must not wrap the advertised credit in release builds.
+        let buf_len = self
+            .read_buf
+            .iter()
+            .try_fold(0u32, |total, buf| {
+                total.checked_add(u32::try_from(buf.len()).ok()?)
+            })
+            .ok_or(Error::InvalidMsgType)?;
+        let delta = self
+            .max_recv_window
+            .checked_sub(buf_len)
+            .and_then(|available| available.checked_sub(self.recv_window))
+            .ok_or(Error::InvalidMsgType)?;
 
         // Check if we can omit the update
         let flags = self.get_flags();
@@ -947,6 +959,31 @@ mod test {
                 _ => panic!("half-window credit must emit a window update"),
             }
             assert_eq!(stream.recv_window(), max_window);
+        });
+    }
+
+    #[test]
+    fn invalid_receive_credit_does_not_emit_wrapped_window_update() {
+        let rt = rt();
+        rt.block_on(async {
+            let (_frame_sender, frame_receiver) = channel(2);
+            let (unbound_sender, mut unbound_receiver) = unbounded();
+            let mut stream = StreamHandle::new(
+                1,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                INITIAL_STREAM_WINDOW,
+            );
+            stream.state = StreamState::Established;
+            stream.recv_window = INITIAL_STREAM_WINDOW + 1;
+
+            assert_eq!(
+                stream.send_window_update(),
+                Err(crate::Error::InvalidMsgType)
+            );
+            assert_eq!(stream.recv_window(), INITIAL_STREAM_WINDOW + 1);
+            assert!(unbound_receiver.next().now_or_never().is_none());
         });
     }
 
