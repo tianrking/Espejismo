@@ -260,6 +260,9 @@ or capability bit.
 ## Error Handling
 
 Invalid or incomplete handshakes MUST NOT receive Espejismo application data.
+The parser reads the plain envelope in nonce, masked-length, then payload order;
+EOF at any boundary is a handshake error. Stealth mode requires one complete
+configured-size block, so a truncated block is also rejected before a reply.
 The remote MAY silently delay closure or place the socket in a bounded silent
 tarpit. Any tarpit MUST have a hard capacity and time-to-live.
 

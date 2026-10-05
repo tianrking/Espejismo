@@ -1608,6 +1608,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn handshake_rejects_truncated_and_reordered_client_packets() {
+        let cfg = HandshakeConfig::new(b"fuzz-shape-secret-is-long-enough".to_vec(), 30, 128, 0);
+        let secret = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let auth_key = cfg.client_auth_key().unwrap();
+        let hello =
+            super::build_client_hello(&cfg, &secret, cfg.max_handshake_padding, &auth_key).unwrap();
+        let envelope = super::mask_variable_handshake_envelope(
+            &auth_key,
+            b"plain-client",
+            &[],
+            &hello.wire,
+            VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+        )
+        .unwrap();
+
+        // Exercise EOF at each variable-envelope boundary and within its payload.
+        for cut in [1, 23, 24, 27, 28, envelope.len() - 1] {
+            let (mut peer, mut server) = tokio::io::duplex(4096);
+            peer.write_all(&envelope[..cut]).await.unwrap();
+            drop(peer);
+            assert!(
+                accept_handshake(&mut server, &cfg).await.is_err(),
+                "cut={cut}"
+            );
+        }
+
+        // A complete header in the wrong field order must be rejected before payload parsing.
+        let mut reordered = envelope.clone();
+        reordered[..24].copy_from_slice(&envelope[24..28].repeat(6)[..24]);
+        reordered[24..28].copy_from_slice(&envelope[..4]);
+        let (mut peer, mut server) = tokio::io::duplex(4096);
+        peer.write_all(&reordered).await.unwrap();
+        drop(peer);
+        assert!(accept_handshake(&mut server, &cfg).await.is_err());
+
+        let stealth_cfg = cfg.clone().with_stealth_frame_size(Some(4096));
+        let (mut peer, mut server) = tokio::io::duplex(8192);
+        peer.write_all(&vec![0_u8; 4095]).await.unwrap();
+        drop(peer);
+        assert!(accept_handshake(&mut server, &stealth_cfg).await.is_err());
+    }
+
+    #[tokio::test]
     async fn stealth_handshake_supports_multiple_users() {
         let good = HandshakeConfig::new(b"good-stealth-secret-that-is-long".to_vec(), 30, 128, 2)
             .with_stealth_frame_size(Some(4096));
