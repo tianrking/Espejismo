@@ -64,6 +64,76 @@ fn native_pending_frames_enforce_limit() {
         .is_err());
 }
 
+#[test]
+fn native_pending_frames_bound_bulk_starvation_under_interactive_load() {
+    use super::pending::{PendingFrame, PendingFrames};
+
+    let mut pending = PendingFrames::new(32);
+    for id in 0..10 {
+        pending
+            .push_data(
+                StreamPriority::Interactive,
+                PendingFrame {
+                    kind: super::FRAME_DATA,
+                    stream_id: id,
+                    payload: vec![],
+                    queued_stream: Some(id),
+                },
+            )
+            .unwrap();
+    }
+    pending
+        .push_data(
+            StreamPriority::Bulk,
+            PendingFrame {
+                kind: super::FRAME_DATA,
+                stream_id: 99,
+                payload: vec![],
+                queued_stream: Some(99),
+            },
+        )
+        .unwrap();
+
+    let sent: Vec<_> = (0..9)
+        .map(|_| pending.pop_next().unwrap().stream_id)
+        .collect();
+    assert_eq!(sent, vec![0, 1, 2, 3, 4, 5, 6, 7, 99]);
+}
+
+#[test]
+fn native_pending_frames_preserve_priority_when_bulk_is_not_backlogged() {
+    use super::pending::{PendingFrame, PendingFrames};
+
+    let mut pending = PendingFrames::new(4);
+    for id in [1, 2] {
+        pending
+            .push_data(
+                StreamPriority::Bulk,
+                PendingFrame {
+                    kind: super::FRAME_DATA,
+                    stream_id: id,
+                    payload: vec![],
+                    queued_stream: Some(id),
+                },
+            )
+            .unwrap();
+    }
+    pending
+        .push_data(
+            StreamPriority::Interactive,
+            PendingFrame {
+                kind: super::FRAME_DATA,
+                stream_id: 3,
+                payload: vec![],
+                queued_stream: Some(3),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(pending.pop_next().unwrap().stream_id, 3);
+    assert_eq!(pending.pop_next().unwrap().stream_id, 1);
+}
+
 #[tokio::test]
 async fn native_mux_opens_stream_and_roundtrips_data() {
     let (client_io, server_io) = duplex(64 * 1024);
