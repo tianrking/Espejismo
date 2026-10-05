@@ -3,12 +3,14 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use base64::Engine;
 use espejismo_core::{EgressProxy, EgressProxyKind, TransportStream};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio::time::{Duration, timeout};
 use tokio_rustls::TlsConnector;
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
 const MAX_HTTP_CONNECT_RESPONSE: usize = 16 * 1024;
+const HTTPS_PROXY_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) async fn connect_via_http_proxy(
     proxy: &EgressProxy,
@@ -55,6 +57,17 @@ async fn connect_tls_to_proxy(
     stream: TcpStream,
     host: &str,
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
+    connect_tls_to_proxy_with_timeout(stream, host, HTTPS_PROXY_TLS_HANDSHAKE_TIMEOUT).await
+}
+
+async fn connect_tls_to_proxy_with_timeout<S>(
+    stream: S,
+    host: &str,
+    handshake_timeout: Duration,
+) -> Result<tokio_rustls::client::TlsStream<S>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut roots = RootCertStore::empty();
     roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
     let config = ClientConfig::builder()
@@ -62,10 +75,13 @@ async fn connect_tls_to_proxy(
         .with_no_client_auth();
     let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from(host.to_string())
         .with_context(|| format!("invalid HTTPS proxy TLS server name {host}"))?;
-    TlsConnector::from(Arc::new(config))
-        .connect(server_name, stream)
-        .await
-        .context("TLS handshake with HTTPS proxy")
+    timeout(
+        handshake_timeout,
+        TlsConnector::from(Arc::new(config)).connect(server_name, stream),
+    )
+    .await
+    .context("TLS handshake with HTTPS proxy timed out")?
+    .context("TLS handshake with HTTPS proxy")
 }
 
 async fn read_connect_response<S>(stream: &mut S) -> Result<()>
@@ -103,9 +119,36 @@ where
 
 #[cfg(test)]
 mod tests {
-    use espejismo_core::{EgressProxy, EgressProxyKind};
+    use std::time::Duration;
 
-    use super::build_connect_request;
+    use espejismo_core::{EgressProxy, EgressProxyKind};
+    use tokio::{
+        io::{AsyncReadExt, duplex},
+        time::timeout,
+    };
+
+    use super::{build_connect_request, connect_tls_to_proxy_with_timeout};
+
+    #[tokio::test]
+    async fn https_proxy_tls_handshake_times_out_and_closes_connection() {
+        let (client, mut peer) = duplex(4096);
+        let server = tokio::spawn(async move {
+            let mut received = [0_u8; 1024];
+            let n = peer.read(&mut received).await.unwrap();
+            assert!(n > 0, "client should send a TLS ClientHello");
+            let n = timeout(Duration::from_secs(1), peer.read(&mut received))
+                .await
+                .expect("client socket should close after timeout")
+                .unwrap();
+            assert_eq!(n, 0, "cancelled TLS handshake must close its socket");
+        });
+
+        let result =
+            connect_tls_to_proxy_with_timeout(client, "localhost", Duration::from_millis(30)).await;
+        let error = result.expect_err("stalled TLS peer should hit handshake deadline");
+        assert!(format!("{error:#}").contains("TLS handshake with HTTPS proxy timed out"));
+        server.await.unwrap();
+    }
 
     #[test]
     fn builds_http_connect_request_with_basic_auth() {
