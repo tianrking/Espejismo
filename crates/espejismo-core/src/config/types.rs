@@ -171,6 +171,9 @@ impl Default for MuxConfig {
 }
 
 impl SharedConfig {
+    /// Capture the current shared settings for a runtime consumer. The returned
+    /// options own copied values, including the stealth frame-size list, so
+    /// later config edits only affect subsequently created runtime options.
     pub fn frame_options(&self, overrides: &FrameOptionOverrides) -> FrameOptions {
         FrameOptions {
             max_padding: overrides.max_padding.unwrap_or(self.max_padding),

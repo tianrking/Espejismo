@@ -813,6 +813,39 @@ mod tests {
     }
 
     #[test]
+    fn frame_options_are_consistent_runtime_snapshots() {
+        let mut config = EspejismoConfig::default();
+        config.shared.max_padding = 73;
+        config.shared.stealth.frame_size_candidates = vec![1024, 2048];
+        config.shared.stealth_shaper.enabled = true;
+        config.shared.pacing.max_bytes_per_sec = 900_000;
+        let overrides = super::FrameOptionOverrides {
+            max_padding: Some(91),
+            ..Default::default()
+        };
+
+        let snapshot = config.shared.frame_options(&overrides);
+        config.shared.max_padding = 120;
+        config.shared.stealth.frame_size_candidates.push(4096);
+        config.shared.stealth_shaper.enabled = false;
+        config.shared.pacing.max_bytes_per_sec = 0;
+
+        assert_eq!(snapshot.max_padding, 91);
+        assert_eq!(snapshot.stealth_frame_size_candidates, vec![1024, 2048]);
+        assert!(snapshot.stealth_shaper_enabled);
+        assert_eq!(snapshot.pacing_max_bytes_per_sec, 900_000);
+
+        let refreshed = config.shared.frame_options(&Default::default());
+        assert_eq!(refreshed.max_padding, 120);
+        assert_eq!(
+            refreshed.stealth_frame_size_candidates,
+            vec![1024, 2048, 4096]
+        );
+        assert!(!refreshed.stealth_shaper_enabled);
+        assert_eq!(refreshed.pacing_max_bytes_per_sec, 0);
+    }
+
+    #[test]
     fn rejects_invalid_tun_prefix_and_mtu() {
         let bad_prefix = r#"
             [local.tun]
