@@ -268,23 +268,7 @@ impl TunnelManager {
     ) -> Self {
         let mut frames = config.frames;
         frames.metrics = Some(metrics.clone());
-        let mut kinds = Vec::new();
-        for _ in 0..config.pool.interactive_lanes.max(1) {
-            kinds.push(LaneKind::Interactive);
-        }
-        for _ in 0..config.pool.bulk_lanes {
-            kinds.push(LaneKind::Bulk);
-        }
-        kinds.truncate(config.pool.max_connections.max(1));
-        while kinds.len()
-            < config
-                .pool
-                .min_connections
-                .min(config.pool.max_connections)
-                .max(1)
-        {
-            kinds.push(LaneKind::Interactive);
-        }
+        let kinds = lane_kinds(&config.pool);
         let lanes = kinds
             .into_iter()
             .enumerate()
@@ -332,14 +316,14 @@ impl TunnelManager {
     }
 
     pub(crate) async fn open_stream(&self, priority: StreamPriority) -> Result<TunnelStream> {
-        let lane = {
-            let _select_guard = self.select_lock.lock().await;
-            let lane = self
-                .select_lane(priority)
-                .context("no tunnel lanes configured")?;
-            self.reserve_lane_open(&lane).await;
-            lane
-        };
+        let lane = select_and_reserve_lane(&self.lanes, &self.select_lock, priority)
+            .await
+            .context("no tunnel lanes configured")?;
+        {
+            let mut health = lane.health.lock().await;
+            health.last_activity_unix_secs = Some(unix_now_secs());
+            self.publish_lane(&lane, &health, "connected");
+        }
         let lane_id = lane.id;
         match self.open_stream_on_lane(lane.clone(), priority).await {
             Ok(inner) => Ok(TunnelStream {
@@ -448,11 +432,11 @@ impl TunnelManager {
     }
 
     async fn lane_connection_expired(&self, lane: &Arc<TunnelLane>) -> bool {
-        lane.health
-            .lock()
-            .await
-            .connected_at
-            .is_some_and(|connected_at| connected_at.elapsed() >= self.max_connection_age)
+        connection_expired(
+            lane.health.lock().await.connected_at,
+            self.max_connection_age,
+            Instant::now(),
+        )
     }
 
     async fn connect_lane(&self, lane: Arc<TunnelLane>) -> Result<MuxControl> {
@@ -554,19 +538,6 @@ impl TunnelManager {
         Ok(control)
     }
 
-    fn select_lane(&self, priority: StreamPriority) -> Option<Arc<TunnelLane>> {
-        let preferred = match priority {
-            StreamPriority::Interactive => LaneKind::Interactive,
-            StreamPriority::Bulk => LaneKind::Bulk,
-        };
-        self.lanes
-            .iter()
-            .filter(|lane| lane.kind == preferred)
-            .min_by_key(|lane| lane_score(lane))
-            .or_else(|| self.lanes.iter().min_by_key(|lane| lane_score(lane)))
-            .cloned()
-    }
-
     async fn record_open_success(&self, lane: &Arc<TunnelLane>, elapsed: Duration) {
         let mut health = lane.health.lock().await;
         health.pending_stream_opens = health.pending_stream_opens.saturating_sub(1);
@@ -588,13 +559,6 @@ impl TunnelManager {
         health.last_error_unix_secs = Some(unix_now_secs());
         self.publish_lane(lane, &health, "degraded");
         self.runtime_state.record_error(error);
-    }
-
-    async fn reserve_lane_open(&self, lane: &Arc<TunnelLane>) {
-        let mut health = lane.health.lock().await;
-        health.pending_stream_opens = health.pending_stream_opens.saturating_add(1);
-        health.last_activity_unix_secs = Some(unix_now_secs());
-        self.publish_lane(lane, &health, "connected");
     }
 
     async fn release_lane_reservation(&self, lane: &Arc<TunnelLane>) {
@@ -636,6 +600,45 @@ impl TunnelManager {
             last_error_unix_secs: health.last_error_unix_secs,
         });
     }
+}
+
+fn lane_kinds(pool: &TunnelPoolConfig) -> Vec<LaneKind> {
+    let mut kinds = vec![LaneKind::Interactive; pool.interactive_lanes.max(1)];
+    kinds.extend(std::iter::repeat(LaneKind::Bulk).take(pool.bulk_lanes));
+    kinds.truncate(pool.max_connections.max(1));
+    while kinds.len() < pool.min_connections.min(pool.max_connections).max(1) {
+        kinds.push(LaneKind::Interactive);
+    }
+    kinds
+}
+
+fn connection_expired(connected_at: Option<Instant>, max_age: Duration, now: Instant) -> bool {
+    connected_at.is_some_and(|at| now.duration_since(at) >= max_age)
+}
+
+async fn select_and_reserve_lane(
+    lanes: &[Arc<TunnelLane>],
+    select_lock: &Mutex<()>,
+    priority: StreamPriority,
+) -> Option<Arc<TunnelLane>> {
+    // Keep selection and reservation atomic so concurrent openers account for
+    // one another when scoring the next lane.
+    let _guard = select_lock.lock().await;
+    let lane = lanes
+        .iter()
+        .filter(|lane| {
+            lane.kind
+                == match priority {
+                    StreamPriority::Interactive => LaneKind::Interactive,
+                    StreamPriority::Bulk => LaneKind::Bulk,
+                }
+        })
+        .min_by_key(|lane| lane_score(lane))
+        .or_else(|| lanes.iter().min_by_key(|lane| lane_score(lane)))?
+        .clone();
+    let mut health = lane.health.lock().await;
+    health.pending_stream_opens = health.pending_stream_opens.saturating_add(1);
+    Some(lane.clone())
 }
 
 fn lane_score(lane: &TunnelLane) -> u64 {
@@ -838,9 +841,11 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        lane_score, reconnect_backoff, stream_open_failure, update_recent_throughput, LaneHealth,
-        LaneKind, TunnelLane,
+        connection_expired, lane_kinds, lane_score, reconnect_backoff, select_and_reserve_lane,
+        stream_open_failure, update_recent_throughput, LaneHealth, LaneKind, TunnelLane,
     };
+    use espejismo_core::{StreamPriority, TunnelPoolConfig};
+    use std::sync::Arc;
     use tokio::sync::Mutex;
 
     fn lane_with_health(health: LaneHealth) -> TunnelLane {
@@ -852,6 +857,79 @@ mod tests {
             health: Mutex::new(health),
             inflight_client_to_remote: Default::default(),
             inflight_remote_to_client: Default::default(),
+        }
+    }
+
+    #[test]
+    fn pool_layout_respects_minimum_and_hard_maximum() {
+        let config = TunnelPoolConfig {
+            min_connections: 3,
+            max_connections: 3,
+            interactive_lanes: 1,
+            bulk_lanes: 8,
+            ..TunnelPoolConfig::default()
+        };
+        assert_eq!(
+            lane_kinds(&config),
+            vec![LaneKind::Interactive, LaneKind::Bulk, LaneKind::Bulk]
+        );
+
+        let undersized = TunnelPoolConfig {
+            min_connections: 9,
+            max_connections: 2,
+            interactive_lanes: 0,
+            bulk_lanes: 0,
+            ..TunnelPoolConfig::default()
+        };
+        assert_eq!(lane_kinds(&undersized), vec![LaneKind::Interactive; 2]);
+    }
+
+    #[test]
+    fn idle_connection_expires_at_age_limit_only_after_connection() {
+        let now = std::time::Instant::now();
+        let age = Duration::from_secs(60);
+        assert!(!connection_expired(None, age, now));
+        assert!(!connection_expired(
+            Some(now - age + Duration::from_millis(1)),
+            age,
+            now
+        ));
+        assert!(connection_expired(Some(now - age), age, now));
+    }
+
+    #[tokio::test]
+    async fn concurrent_acquisitions_reserve_distinct_idle_lanes() {
+        let lanes = Arc::new(vec![
+            Arc::new(lane_with_health(LaneHealth::default())),
+            Arc::new(TunnelLane {
+                id: 1,
+                kind: LaneKind::Bulk,
+                control: Mutex::new(None),
+                connect_lock: Mutex::new(()),
+                health: Mutex::new(LaneHealth::default()),
+                inflight_client_to_remote: Default::default(),
+                inflight_remote_to_client: Default::default(),
+            }),
+        ]);
+        let select_lock = Arc::new(Mutex::new(()));
+        let tasks = (0..32).map(|_| {
+            let lanes = lanes.clone();
+            let lock = select_lock.clone();
+            tokio::spawn(async move {
+                select_and_reserve_lane(&lanes, &lock, StreamPriority::Bulk)
+                    .await
+                    .unwrap()
+                    .id
+            })
+        });
+        let mut selected = Vec::new();
+        for task in tasks {
+            selected.push(task.await.unwrap());
+        }
+        assert_eq!(selected.iter().filter(|&&id| id == 0).count(), 16);
+        assert_eq!(selected.iter().filter(|&&id| id == 1).count(), 16);
+        for lane in lanes.iter() {
+            assert_eq!(lane.health.lock().await.pending_stream_opens, 16);
         }
     }
 
