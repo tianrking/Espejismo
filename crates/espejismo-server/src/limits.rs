@@ -163,6 +163,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn quota_window_rolls_over_and_allows_new_bytes() {
+        let limits = UserLimitRegistry::new([(
+            "alice".to_string(),
+            UserLimitConfig {
+                quota_bytes: Some(10),
+                quota_window: Duration::from_secs(60),
+                bandwidth_bytes_per_sec: None,
+            },
+        )]);
+
+        limits.account_and_throttle("alice", 10).await.unwrap();
+        assert!(limits.ensure_open("alice").await.is_err());
+
+        {
+            let mut states = limits.inner.lock().await;
+            let state = states.get_mut("alice").unwrap();
+            state.window_started -= Duration::from_secs(61);
+        }
+
+        limits.ensure_open("alice").await.unwrap();
+        limits.account_and_throttle("alice", 10).await.unwrap();
+        assert!(limits.account_and_throttle("alice", 1).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn zero_byte_accounting_does_not_consume_quota() {
+        let limits = UserLimitRegistry::new([(
+            "alice".to_string(),
+            UserLimitConfig {
+                quota_bytes: Some(1),
+                quota_window: Duration::from_secs(60),
+                bandwidth_bytes_per_sec: None,
+            },
+        )]);
+
+        limits.account_and_throttle("alice", 0).await.unwrap();
+        limits.account_and_throttle("alice", 1).await.unwrap();
+        assert!(limits.ensure_open("alice").await.is_err());
+    }
+
+    #[tokio::test]
     async fn bandwidth_without_backlog_allows_first_chunk() {
         let limits = UserLimitRegistry::new([(
             "alice".to_string(),

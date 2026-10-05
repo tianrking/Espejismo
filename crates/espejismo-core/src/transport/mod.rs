@@ -411,6 +411,7 @@ async fn stealth_pre_write_delay(options: &FrameOptions) {
     }
 }
 
+/// Token bucket for optional idle-padding traffic, independent of relay pacing.
 #[derive(Debug)]
 struct StealthPaddingBudget {
     enabled: bool,
@@ -544,6 +545,37 @@ mod tests {
         assert!(budget.allow(DEFAULT_STEALTH_FRAME_SIZE));
         assert!(budget.allow(DEFAULT_STEALTH_FRAME_SIZE));
         assert!(!budget.allow(DEFAULT_STEALTH_FRAME_SIZE));
+    }
+
+    #[test]
+    fn stealth_padding_budget_refills_tokens_after_elapsed_time() {
+        let options = FrameOptions {
+            stealth_shaper_enabled: true,
+            stealth_padding_budget_bps: 10,
+            stealth_frame_size: 10,
+            ..FrameOptions::default()
+        };
+        let mut budget = StealthPaddingBudget::new(&options);
+
+        assert!(budget.allow(10));
+        assert!(budget.allow(10));
+        assert!(!budget.allow(1));
+
+        budget.last_refill -= Duration::from_secs(1);
+        assert!(budget.allow(10));
+        assert!(!budget.allow(11));
+    }
+
+    #[test]
+    fn disabled_stealth_padding_budget_does_not_block_padding() {
+        let options = FrameOptions {
+            stealth_shaper_enabled: false,
+            stealth_padding_budget_bps: 0,
+            ..FrameOptions::default()
+        };
+        let mut budget = StealthPaddingBudget::new(&options);
+
+        assert!(budget.allow(usize::MAX));
     }
 
     #[test]

@@ -26,8 +26,10 @@ window_secs = 86400
 ```
 
 `quota.bytes` counts relay bytes in both directions for TCP streams and UDP
-datagrams. When a user exceeds the current rolling window, new logical streams
-are rejected and active streams stop at the next accounted chunk.
+datagrams. Each user's window starts when the server builds its limit registry
+and resets after `window_secs` has elapsed; it is a fixed-duration window, not
+a sliding per-request window. When a user reaches the quota, new logical
+streams are rejected and active streams stop at the next accounted chunk.
 
 `quota.window_secs` defaults to 86400. Omitting `quota.bytes` disables quota for
 that user.
