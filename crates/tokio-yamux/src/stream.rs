@@ -1288,6 +1288,59 @@ mod test {
     }
 
     #[test]
+    fn test_half_close_preserves_reverse_direction_until_peer_fin() {
+        let rt = rt();
+        rt.block_on(async {
+            let (mut frame_sender, frame_receiver) = channel(4);
+            let (unbound_sender, mut unbound_receiver) = unbounded();
+            let mut stream = StreamHandle::new(
+                7,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                INITIAL_STREAM_WINDOW,
+            );
+
+            stream.write_all(b"request").await.unwrap();
+            let StreamEvent::Frame(request) = unbound_receiver.next().await.unwrap() else {
+                panic!("request must produce a data frame");
+            };
+            assert_eq!(request.ty(), Type::Data);
+            assert_eq!(request.flags(), Flags::from(Flag::Syn));
+            let (_, body) = request.into_parts();
+            assert_eq!(&body.unwrap()[..], b"request");
+
+            stream.shutdown().await.unwrap();
+            assert_eq!(stream.state, StreamState::LocalClosing);
+            let StreamEvent::Frame(fin) = unbound_receiver.next().await.unwrap() else {
+                panic!("shutdown must produce a FIN frame");
+            };
+            assert!(fin.flags().contains(Flag::Fin));
+
+            // A peer may continue sending its response after our write half closes.
+            frame_sender
+                .send(Frame::new_data(
+                    Flags::from(Flag::Ack),
+                    7,
+                    BytesMut::from("response"),
+                ))
+                .await
+                .unwrap();
+            let mut response = [0; 16];
+            let n = stream.read(&mut response).await.unwrap();
+            assert_eq!(&response[..n], b"response");
+            assert_eq!(stream.state, StreamState::LocalClosing);
+
+            frame_sender
+                .send(Frame::new_window_update(Flags::from(Flag::Fin), 7, 0))
+                .await
+                .unwrap();
+            assert_eq!(stream.read(&mut response).await.unwrap(), 0);
+            assert_eq!(stream.state, StreamState::Closed);
+        });
+    }
+
+    #[test]
     fn test_frame_read_more_than_one() {
         let rt = rt();
         rt.block_on(async {

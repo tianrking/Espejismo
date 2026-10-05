@@ -274,6 +274,10 @@ describes the application-level outcome shared by the mux wrapper. Yamux has
 its own internal stream/session machinery. Neither mux mode migrates a stream
 to another physical lane after failure.
 
+For Yamux, `FIN` closes only the sender's write direction. The stream remains
+readable until the peer sends its own `FIN`; data traveling in that reverse
+direction remains valid in between.
+
 On the remote, invalid or timed-out authentication follows the configured
 fallback-or-reject path and does not enter mux service. Once authenticated,
 mux session errors end the physical session. A zero per-session stream limit
