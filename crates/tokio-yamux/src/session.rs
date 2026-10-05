@@ -419,6 +419,10 @@ where
         let buf = ::std::mem::replace(&mut self.read_pending_frames, new);
         for frame in buf {
             let stream_id = frame.stream_id();
+            // Once a reset has been delivered, no more frames belong in this
+            // stream's queue. Dropping the session-side sender promptly also
+            // releases the map entry if the application has not polled its handle.
+            let reset = frame.flags().contains(Flag::Rst);
             // Guarantee the order in which messages are sent
             if block_substream.contains(&stream_id) {
                 trace!("substream({}) blocked", stream_id);
@@ -461,11 +465,15 @@ where
                     self.write_pending_frames.push_back(frame);
                 }
             }
+            let mut delivered = false;
             let disconnected = {
                 match self.streams.get_mut(&stream_id) {
                     Some(frame_sender) => match frame_sender.poll_ready(cx) {
                         Poll::Ready(Ok(())) => match frame_sender.try_send(frame) {
-                            Ok(_) => false,
+                            Ok(_) => {
+                                delivered = true;
+                                false
+                            }
                             Err(err) => {
                                 if err.is_full() {
                                     trace!("substream({}) try_send but full", stream_id);
@@ -499,7 +507,7 @@ where
                     }
                 }
             };
-            if disconnected {
+            if disconnected || (reset && delivered) {
                 debug!("substream({}) removed, session.ty={:?}", stream_id, self.ty);
                 self.streams.remove(&stream_id);
             }
@@ -950,6 +958,38 @@ mod test {
     };
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
     use tokio_util::codec::Framed;
+
+    #[test]
+    fn reset_storm_releases_session_stream_entries_before_handles_are_polled() {
+        rt().block_on(async {
+            let (remote, local) = MockSocket::new();
+            let mut session = Session::new_client(local, Config::default());
+            let mut handles = Vec::new();
+            for _ in 0..512 {
+                handles.push(session.open_stream().unwrap());
+            }
+            assert_eq!(session.streams.len(), handles.len());
+
+            let waker = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&waker);
+            for id in (1..=1023).step_by(2) {
+                let frame = Frame::new_window_update(Flags::from(Flag::Rst), id, 0);
+                session.handle_stream_message(&mut cx, frame).unwrap();
+            }
+
+            assert!(session.streams.is_empty());
+            // Handles remain alive and can still observe the queued reset frame.
+            assert_eq!(handles.len(), 512);
+            for mut handle in handles {
+                let mut byte = [0; 1];
+                assert_eq!(
+                    handle.read(&mut byte).await.unwrap_err().kind(),
+                    io::ErrorKind::ConnectionReset
+                );
+            }
+            drop(remote);
+        });
+    }
 
     struct MockSocket {
         sender: Sender<Vec<u8>>,
