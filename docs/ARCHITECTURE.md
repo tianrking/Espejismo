@@ -284,6 +284,11 @@ stream shutdown complete the relay normally. AEAD/frame errors
 are fail-fast at the physical transport and therefore terminate its mux
 session and streams. The listener remains available for subsequent peers.
 
+For Yamux, receiving a remote `GoAway` marks the session as remote-closing,
+rejects subsequent stream opens, and sends a normal `GoAway` response when the
+local side has not already sent one. With both close flags set, the session
+stream ends; a regression test exercises this response and termination path.
+
 This is an implementation map, not a promise of transparent recovery: there is
 no stream migration, replay, or automatic retry of an established proxy flow.
 The state labels above describe control flow in the client lane and server
