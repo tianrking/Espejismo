@@ -19,8 +19,9 @@ Current targets:
 
 The native mux target checks both panic freedom and parser invariants: complete
 frames stay valid when trailing bytes are present, and selected header/payload
-truncation boundaries stay incomplete. Its regression counterpart lives in the
-core frame unit tests.
+truncation boundaries stay incomplete. For each valid frame it checks all nine
+incomplete header lengths and the final payload truncation boundary. Its
+regression counterpart lives in the core frame unit tests.
 
 Each target has a checked-in starter corpus under `corpus/<target>/`. The cases are small,
 hand-built valid and near-valid inputs intended to expose structural and boundary branches

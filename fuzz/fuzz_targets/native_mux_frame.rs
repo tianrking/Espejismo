@@ -21,12 +21,21 @@ fuzz_target!(|data: &[u8]| {
                 .unwrap(),
             Some((kind, stream_id, payload_len))
         );
-        let truncation_points = [0, 8, frame_end.saturating_sub(1)];
-        for end in truncation_points {
+        // Exercise every partial header length as well as a truncated payload.
+        // This makes mutations around individual header fields observable to
+        // libFuzzer instead of only checking the empty and almost-complete cases.
+        for end in 0..9 {
             assert_eq!(
                 espejismo_core::mux::native::validate_frame_bytes_for_fuzz(&data[..end]).unwrap(),
                 None
             );
         }
+        assert_eq!(
+            espejismo_core::mux::native::validate_frame_bytes_for_fuzz(
+                &data[..frame_end.saturating_sub(1)]
+            )
+            .unwrap(),
+            None
+        );
     }
 });
