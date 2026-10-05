@@ -131,4 +131,29 @@ mod tests {
         oversized.extend_from_slice(&((MAX_PAYLOAD as u32) + 1).to_be_bytes());
         assert!(validate_frame_bytes_for_fuzz(&oversized).is_err());
     }
+
+    #[test]
+    fn complete_frame_validation_is_stable_under_truncation_and_trailing_bytes() {
+        let kind = FRAME_DATA;
+        let stream_id = 0x1234_5678_u32;
+        let payload = b"frame payload";
+        let mut frame = vec![kind];
+        frame.extend_from_slice(&stream_id.to_be_bytes());
+        frame.extend_from_slice(&(payload.len() as u32).to_be_bytes());
+        frame.extend_from_slice(payload);
+
+        assert_eq!(
+            validate_frame_bytes_for_fuzz(&frame).unwrap(),
+            Some((kind, stream_id, payload.len()))
+        );
+        for end in 0..frame.len() {
+            assert_eq!(validate_frame_bytes_for_fuzz(&frame[..end]).unwrap(), None);
+        }
+
+        frame.extend_from_slice(&[0xaa, 0x55]);
+        assert_eq!(
+            validate_frame_bytes_for_fuzz(&frame).unwrap(),
+            Some((kind, stream_id, payload.len()))
+        );
+    }
 }
