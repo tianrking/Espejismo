@@ -892,6 +892,29 @@ mod tests {
     }
 
     #[test]
+    fn reconnect_backoff_stays_within_jitter_bounds_for_all_failure_counts() {
+        for failures in 1..=128 {
+            let low = reconnect_backoff(failures, 80);
+            let nominal = reconnect_backoff(failures, 100);
+            let high = reconnect_backoff(failures, 120);
+            assert!(low <= nominal, "low jitter exceeded nominal at {failures}");
+            assert!(
+                nominal <= high,
+                "nominal exceeded high jitter at {failures}"
+            );
+            assert!(high <= Duration::from_secs(16));
+        }
+        assert_eq!(
+            reconnect_backoff(u32::MAX, 100),
+            Duration::from_millis(13_333)
+        );
+        assert_eq!(
+            reconnect_backoff(u32::MAX, 120),
+            Duration::from_millis(15_999)
+        );
+    }
+
+    #[test]
     fn lane_score_penalizes_stream_open_failures() {
         let healthy = lane_with_health(LaneHealth {
             streams_opened: 10,

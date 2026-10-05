@@ -899,6 +899,19 @@ mod accept_resource_tests {
     }
 
     #[test]
+    fn retry_delay_is_monotonic_and_remains_capped_after_saturation() {
+        let mut previous = Duration::ZERO;
+        for failures in 0..=32 {
+            let delay = accept_resource_retry_delay(failures);
+            assert!(delay >= previous, "delay decreased at failure {failures}");
+            assert!(delay <= Duration::from_secs(16));
+            previous = delay;
+        }
+        assert_eq!(accept_resource_retry_delay(7), Duration::from_secs(16));
+        assert_eq!(accept_resource_retry_delay(32), Duration::from_secs(16));
+    }
+
+    #[test]
     fn retries_known_descriptor_and_memory_exhaustion_errors() {
         #[cfg(target_os = "linux")]
         for code in [12, 23, 24] {
