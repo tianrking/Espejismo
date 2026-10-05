@@ -1112,7 +1112,7 @@ fn validate_admin_listener(
     http: Option<SocketAddr>,
 ) -> Result<()> {
     anyhow::ensure!(
-        admin.map_or(true, |addr| Some(addr) != socks5 && Some(addr) != http),
+        admin.is_none_or(|addr| Some(addr) != socks5 && Some(addr) != http),
         "admin.listen must not reuse a proxy listener address"
     );
     Ok(())
@@ -1193,8 +1193,10 @@ mod tests {
     #[test]
     fn rejects_admin_listener_reusing_proxy_address() {
         let proxy: SocketAddr = "127.0.0.1:6680".parse().unwrap();
+        let http: SocketAddr = "127.0.0.1:6681".parse().unwrap();
         let admin: SocketAddr = "127.0.0.1:9090".parse().unwrap();
         assert!(validate_admin_listener(Some(proxy), Some(proxy), None).is_err());
+        assert!(validate_admin_listener(Some(http), None, Some(http)).is_err());
         assert!(validate_admin_listener(Some(admin), Some(proxy), None).is_ok());
         assert!(validate_admin_listener(None, Some(proxy), None).is_ok());
     }
