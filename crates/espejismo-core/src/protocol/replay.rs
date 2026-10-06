@@ -46,6 +46,30 @@ impl ReplayCache {
             .map_err(|_| anyhow::anyhow!("replayed first packet digest"))
     }
 
+    /// Records both authenticated identifiers together so a failed replay
+    /// check cannot leave only one half of a handshake in the cache.
+    pub fn check_and_insert_handshake(
+        &mut self,
+        now: i64,
+        digest: [u8; 32],
+        public_key: [u8; 32],
+    ) -> Result<()> {
+        self.prune(now);
+        let digest_key = ReplayKey::FirstPacketDigest(digest);
+        let public_key_key = ReplayKey::EphemeralPublicKey(public_key);
+        if self.seen.contains(&digest_key) {
+            bail!("replayed first packet digest");
+        }
+        if self.seen.contains(&public_key_key) {
+            bail!("replayed ephemeral public key");
+        }
+        for key in [digest_key, public_key_key] {
+            self.seen.insert(key);
+            self.order.push_back((now, key));
+        }
+        Ok(())
+    }
+
     fn check_and_insert_key(&mut self, now: i64, key: ReplayKey) -> Result<()> {
         self.prune(now);
         if self.seen.contains(&key) {
@@ -109,5 +133,20 @@ mod tests {
             .check_and_insert_first_packet_digest(100, same_bytes)
             .unwrap();
         cache.check_and_insert(100, same_bytes).unwrap();
+    }
+
+    #[test]
+    fn rejected_handshake_does_not_partially_insert_its_digest() {
+        let mut cache = ReplayCache::new(60);
+        let seen_public_key = [12_u8; 32];
+        let digest = [13_u8; 32];
+        cache.check_and_insert(100, seen_public_key).unwrap();
+
+        assert!(cache
+            .check_and_insert_handshake(101, digest, seen_public_key)
+            .is_err());
+        cache
+            .check_and_insert_handshake(102, digest, [14_u8; 32])
+            .unwrap();
     }
 }

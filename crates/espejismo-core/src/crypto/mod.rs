@@ -882,8 +882,11 @@ async fn verify_client_hello(
     let client_public_bytes = slice_32(&client_hello.fixed_body[32..64])?;
     if let Some(replay) = replay {
         let mut replay = replay.lock().await;
-        replay.check_and_insert_first_packet_digest(now, client_hello.first_packet_digest)?;
-        replay.check_and_insert_ephemeral_public_key(now, client_public_bytes)?;
+        replay.check_and_insert_handshake(
+            now,
+            client_hello.first_packet_digest,
+            client_public_bytes,
+        )?;
     }
     Ok(())
 }
@@ -1520,6 +1523,47 @@ mod tests {
             Err(err) => err.to_string(),
         };
         assert!(err.contains("first packet"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn server_rejects_replayed_plain_hello_in_fresh_envelope() {
+        let cfg = HandshakeConfig::new(b"fresh-envelope-replay-secret".to_vec(), 30, 128, 0);
+        let auth_key = cfg.client_auth_key().unwrap();
+        let secret = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let hello =
+            super::build_client_hello(&cfg, &secret, cfg.max_handshake_padding, &auth_key).unwrap();
+        let first_envelope = super::mask_variable_handshake_envelope(
+            &auth_key,
+            b"plain-client",
+            &[],
+            &hello.wire,
+            VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+        )
+        .unwrap();
+        let second_envelope = super::mask_variable_handshake_envelope(
+            &auth_key,
+            b"plain-client",
+            &[],
+            &hello.wire,
+            VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+        )
+        .unwrap();
+        assert_ne!(first_envelope, second_envelope);
+        let replay = Arc::new(Mutex::new(ReplayCache::new(60)));
+
+        let (mut first_peer, mut first_server) = duplex(4096);
+        first_peer.write_all(&first_envelope).await.unwrap();
+        accept_handshake_with_replay(&mut first_server, &cfg, replay.clone())
+            .await
+            .unwrap();
+
+        let (mut replay_peer, mut replay_server) = duplex(4096);
+        replay_peer.write_all(&second_envelope).await.unwrap();
+        let err = match accept_handshake_with_replay(&mut replay_server, &cfg, replay).await {
+            Ok(_) => panic!("replayed authenticated hello should fail"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("ephemeral public key"), "{err}");
     }
 
     #[tokio::test]

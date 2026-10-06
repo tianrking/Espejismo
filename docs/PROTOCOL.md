@@ -274,7 +274,10 @@ and the X25519 client ephemeral public key. The first-packet digest is computed
 over the bytes observed on the wire for the initial client handshake envelope
 or stealth block. This makes exact active-probe replays inside the accepted
 handshake time window fail before the server sends a response, while preserving
-the public-key replay check as a second guard.
+the public-key replay check as a second guard. The two identifiers are checked
+and inserted together: if either has been seen, neither new identifier is
+retained. Re-encoding an already authenticated hello in a fresh outer envelope
+therefore still fails on its repeated ephemeral public key.
 
 HTTP-looking probes MAY be routed to a configured fallback upstream or a built-in
 HTTP response when probe fallback is enabled. Fallback behavior MUST remain
