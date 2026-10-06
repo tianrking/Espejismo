@@ -39,6 +39,11 @@ upstream proxy. SOCKS5 UDP relay is an application-level flow over the same TCP
 tunnel. The diagram does not represent the experimental UDP underlay primitives
 as a production path.
 
+Native mux streams are scoped to their physical session. If a carrier ends
+while a caller still holds an unclosed stream handle, that handle reaches EOF
+for reads and rejects writes; it does not keep the session's stream table or
+frame reader alive.
+
 This map shows component ownership and the ordinary data path. The following
 sections detail handshake and frame formats, underlay choices, mux behavior,
 failure scopes, configuration, and egress policy.

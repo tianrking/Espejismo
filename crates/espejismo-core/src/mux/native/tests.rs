@@ -219,6 +219,43 @@ async fn native_mux_opens_stream_and_roundtrips_data() {
 }
 
 #[tokio::test]
+async fn native_mux_session_end_reclaims_unclosed_stream_state() {
+    let (client_io, server_io) = duplex(64 * 1024);
+    let (mut client_control, mut client_session) =
+        client_session(client_io, NativeMuxConfig::default());
+    let (_server_control, mut server_session) =
+        server_session(server_io, NativeMuxConfig::default());
+
+    let client_session_task =
+        tokio::spawn(async move { while client_session.next().await.is_some() {} });
+    let mut client_stream = client_control
+        .open_stream(StreamPriority::Interactive)
+        .await
+        .unwrap();
+    let mut server_stream = server_session.next().await.unwrap().unwrap();
+
+    // Neither endpoint sends FIN/RST. Losing the carrier must still end the
+    // session and wake handles retained by the caller.
+    drop(server_session);
+    tokio::time::timeout(Duration::from_secs(1), client_session_task)
+        .await
+        .expect("session task should exit after its peer disappears")
+        .unwrap();
+
+    let mut byte = [0; 1];
+    assert_eq!(client_stream.read(&mut byte).await.unwrap(), 0);
+    assert_eq!(server_stream.read(&mut byte).await.unwrap(), 0);
+    assert_eq!(
+        client_stream.write(b"x").await.unwrap_err().kind(),
+        io::ErrorKind::BrokenPipe
+    );
+    assert_eq!(
+        server_stream.write(b"x").await.unwrap_err().kind(),
+        io::ErrorKind::BrokenPipe
+    );
+}
+
+#[tokio::test]
 async fn native_mux_bulk_transfer_preserves_integrity() {
     // Pure native mux over an in-memory duplex: NO encrypted pump, NO TCP.
     // If this desyncs, the bug is inside the native mux itself.
