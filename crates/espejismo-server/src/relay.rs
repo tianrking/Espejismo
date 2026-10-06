@@ -10,6 +10,8 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpStream, UdpSocket};
 use tokio::time::timeout;
 
+const EGRESS_CONNECT_TIMEOUT: Duration = Duration::from_secs(5);
+
 use crate::http_chain::connect_via_http_proxy;
 use crate::limits::UserLimitRegistry;
 use crate::socks5_chain::{
@@ -106,19 +108,44 @@ async fn connect_egress_tcp_inner(authority: &str, egress: &EgressPolicy) -> Res
             }
         };
     }
+    connect_first_allowed(
+        espejismo_core::resolve_socket_addrs(authority).await?,
+        egress,
+        |addr| async move {
+            timeout(EGRESS_CONNECT_TIMEOUT, TcpStream::connect(addr))
+                .await
+                .map_err(|_| anyhow::anyhow!("connection to {addr} timed out"))?
+                .map_err(Into::into)
+        },
+    )
+    .await
+    .map(|stream| Box::new(stream) as EgressStream)
+    .with_context(|| format!("connect {authority}"))
+}
+
+// Each DNS result gets a bounded attempt so an unresponsive first address cannot
+// prevent failover to later IPv4/IPv6 results.
+async fn connect_first_allowed<T, F, Fut>(
+    addrs: Vec<std::net::SocketAddr>,
+    egress: &EgressPolicy,
+    mut connect: F,
+) -> Result<T>
+where
+    F: FnMut(std::net::SocketAddr) -> Fut,
+    Fut: Future<Output = Result<T>>,
+{
     let mut last_error = None;
-    for addr in espejismo_core::resolve_socket_addrs(authority).await? {
+    for addr in addrs {
         if let Err(err) = egress.validate_resolved_addr(addr) {
             last_error = Some(err);
             continue;
         }
-        match TcpStream::connect(addr).await {
-            Ok(stream) => return Ok(Box::new(stream)),
-            Err(err) => last_error = Some(err.into()),
+        match connect(addr).await {
+            Ok(stream) => return Ok(stream),
+            Err(err) => last_error = Some(err),
         }
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no resolved egress address")))
-        .with_context(|| format!("connect {authority}"))
 }
 
 pub(crate) async fn relay_udp_datagram(
@@ -184,12 +211,55 @@ async fn relay_udp_datagram_inner(
 #[cfg(test)]
 mod tests {
     use tokio::{
-        io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
+        io::{copy_bidirectional, AsyncReadExt, AsyncWriteExt},
         net::{TcpListener, TcpStream},
     };
 
-    use super::connect_egress_tcp_inner;
+    use std::net::SocketAddr;
+
+    use super::{connect_egress_tcp_inner, connect_first_allowed};
     use espejismo_core::EgressPolicy;
+
+    #[tokio::test]
+    async fn egress_connect_failure_advances_to_next_resolved_address() {
+        let first: SocketAddr = "192.0.2.10:443".parse().unwrap();
+        let second: SocketAddr = "192.0.2.11:443".parse().unwrap();
+        let mut attempted = Vec::new();
+        let result = connect_first_allowed(vec![first, second], &EgressPolicy::default(), |addr| {
+            attempted.push(addr);
+            async move {
+                if addr == first {
+                    Err(anyhow::anyhow!("simulated unreachable egress"))
+                } else {
+                    Ok(addr)
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(result, second);
+        assert_eq!(attempted, vec![first, second]);
+    }
+
+    #[tokio::test]
+    async fn rejected_address_is_skipped_before_connect_attempt() {
+        let denied: SocketAddr = "127.0.0.1:443".parse().unwrap();
+        let allowed: SocketAddr = "8.8.8.8:443".parse().unwrap();
+        let mut attempted = Vec::new();
+        let policy = EgressPolicy {
+            deny_private_ips: true,
+            ..EgressPolicy::default()
+        };
+        let result = connect_first_allowed(vec![denied, allowed], &policy, |addr| {
+            attempted.push(addr);
+            std::future::ready(Ok(addr))
+        })
+        .await
+        .unwrap();
+        assert_eq!(result, allowed);
+        assert_eq!(attempted, vec![allowed]);
+    }
 
     async fn socks5_hop(listener: TcpListener) {
         loop {
@@ -210,7 +280,10 @@ mod tests {
                 let authority = format!("{}:{port}", String::from_utf8(host).unwrap());
                 let upstream = TcpStream::connect(authority).await.unwrap();
                 let mut upstream = upstream;
-                client.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0]).await.unwrap();
+                client
+                    .write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0])
+                    .await
+                    .unwrap();
                 let _ = copy_bidirectional(&mut client, &mut upstream).await;
             });
         }
