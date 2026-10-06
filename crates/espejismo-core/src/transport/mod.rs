@@ -754,6 +754,44 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn frame_sent_immediately_after_handshake_is_released_to_transport() {
+        use super::spawn_frame_transport;
+        use crate::crypto::{accept_handshake, connect_handshake, HandshakeConfig};
+        use crate::protocol::framing::{Frame, FrameOptions, FrameType, FrameWriter};
+
+        let (mut client, mut server) = duplex(16 * 1024);
+        let cfg = HandshakeConfig::new(b"test-secret-that-is-long-enough".to_vec(), 30, 128, 0);
+        let client_cfg = cfg.clone();
+        let client_task = tokio::spawn(async move {
+            let keys = connect_handshake(&mut client, &client_cfg).await?;
+            Ok::<_, anyhow::Error>((client, keys))
+        });
+        let server_cfg = cfg.clone();
+        let server_task = tokio::spawn(async move {
+            let keys = accept_handshake(&mut server, &server_cfg).await?;
+            Ok::<_, anyhow::Error>((server, keys))
+        });
+        let (mut client, client_keys) = client_task.await.unwrap().unwrap();
+        let (server, server_keys) = server_task.await.unwrap().unwrap();
+
+        let options = FrameOptions::default();
+        let payload = b"first application bytes after authentication";
+        let mut writer = FrameWriter::new(&mut client, client_keys, options.clone());
+        writer.send(Frame { ty: FrameType::Data, payload: payload.to_vec() }).await.unwrap();
+        drop(writer);
+
+        // The peer may have written these bytes before the server starts its
+        // frame pump. They must remain queued on the underlay until released.
+        let mut app = spawn_frame_transport(server, server_keys, options, 1024);
+        let mut received = vec![0; payload.len()];
+        tokio::time::timeout(std::time::Duration::from_secs(1), app.read_exact(&mut received))
+            .await
+            .expect("early frame was not released")
+            .unwrap();
+        assert_eq!(received, payload);
+    }
+
     // Reproduces the real production stack end-to-end:
     //   native mux <-> encrypted frame transport (duplex + pumps) <-> "TCP" (duplex)
     // If this desyncs while the pure-native-mux test passes, the bug is in the
