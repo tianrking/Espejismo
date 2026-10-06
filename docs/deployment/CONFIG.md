@@ -575,7 +575,9 @@ less regular idle timing.
 
 `padding_budget_bps`: Maximum idle padding bytes per second. `0` disables idle
 padding while the shaper is enabled. Real data frames are never charged against
-this budget.
+this budget. The token bucket starts full and caps accumulated credit at the
+larger of this rate and two configured stealth frame sizes, so a long idle
+period cannot create an unbounded padding burst.
 
 `min_delay_ms` / `max_delay_ms`: Active stealth tick delay range.
 

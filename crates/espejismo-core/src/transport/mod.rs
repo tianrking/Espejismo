@@ -457,6 +457,10 @@ impl StealthPaddingBudget {
 
     fn refill(&mut self) {
         let now = Instant::now();
+        self.refill_at(now);
+    }
+
+    fn refill_at(&mut self, now: Instant) {
         let elapsed = now.saturating_duration_since(self.last_refill);
         self.last_refill = now;
         let refill = elapsed.as_secs_f64() * self.bytes_per_sec as f64;
@@ -564,6 +568,25 @@ mod tests {
         budget.last_refill -= Duration::from_secs(1);
         assert!(budget.allow(10));
         assert!(!budget.allow(11));
+    }
+
+    #[test]
+    fn stealth_padding_budget_caps_long_idle_refill_at_burst_limit() {
+        let options = FrameOptions {
+            stealth_shaper_enabled: true,
+            stealth_padding_budget_bps: 10,
+            stealth_frame_size: 10,
+            ..FrameOptions::default()
+        };
+        let mut budget = StealthPaddingBudget::new(&options);
+
+        assert!(budget.allow(20));
+        let later = budget.last_refill + Duration::from_secs(30);
+        budget.refill_at(later);
+
+        assert_eq!(budget.tokens, budget.burst);
+        assert!(budget.allow(20));
+        assert!(!budget.allow(1));
     }
 
     #[test]
