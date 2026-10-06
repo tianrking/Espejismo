@@ -14,7 +14,8 @@ use serde_json::json;
 use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
-use tokio::time::{timeout, Duration};
+use tokio::sync::Semaphore;
+use tokio::time::{Duration, timeout};
 use tracing::{debug, info};
 
 use crate::metrics::Metrics;
@@ -23,6 +24,8 @@ use crate::runtime_state::{RuntimeState, RuntimeStateSnapshot};
 // Bound local control-plane clients that stop sending an unauthenticated request midway.
 const ADMIN_HEADER_TIMEOUT: Duration = Duration::from_secs(15);
 const ADMIN_BODY_TIMEOUT: Duration = Duration::from_secs(15);
+const ADMIN_ACTION_TIMEOUT: Duration = Duration::from_secs(30);
+const ADMIN_MAX_CONCURRENT_CLIENTS: usize = 32;
 
 pub type AdminAction = Arc<
     dyn Fn(Option<String>) -> Pin<Box<dyn Future<Output = Result<serde_json::Value>> + Send>>
@@ -60,15 +63,32 @@ async fn run_admin_server(addr: SocketAddr, state: AdminState) -> Result<()> {
         .await
         .with_context(|| format!("bind admin endpoint {addr}"))?;
     info!(listen = %addr, role = %state.role, "admin endpoint listening");
+    let clients = Arc::new(Semaphore::new(ADMIN_MAX_CONCURRENT_CLIENTS));
     loop {
         let (stream, peer) = listener.accept().await?;
         let state = state.clone();
+        let clients = clients.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle_admin_peer(stream, state).await {
+            if let Err(err) = handle_admin_peer_limited(stream, state, clients).await {
                 debug!(%peer, error = %err, "admin request ended");
             }
         });
     }
+}
+
+async fn handle_admin_peer_limited<S>(
+    mut stream: S,
+    state: AdminState,
+    clients: Arc<Semaphore>,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let Ok(_permit) = clients.try_acquire_owned() else {
+        write_response(&mut stream, 503, "text/plain", b"admin capacity reached").await?;
+        return Ok(());
+    };
+    handle_admin_peer(stream, state).await
 }
 
 async fn handle_admin_peer<S>(mut stream: S, state: AdminState) -> Result<()>
@@ -172,7 +192,16 @@ where
                 .await?;
                 return Ok(());
             };
-            match reload(None).await {
+            match run_admin_action(reload, None, ADMIN_ACTION_TIMEOUT).await {
+                Err(err) if err.to_string() == "admin action timed out" => {
+                    write_response(
+                        &mut stream,
+                        504,
+                        "application/json",
+                        br#"{"error":"admin action timed out"}"#,
+                    )
+                    .await?;
+                }
                 Ok(value) => {
                     let body = serde_json::to_vec_pretty(&value)?;
                     write_response(&mut stream, 200, "application/json", &body).await?;
@@ -199,7 +228,16 @@ where
                 return Ok(());
             };
             let body = String::from_utf8(body).context("apply body is not UTF-8")?;
-            match reload(Some(body)).await {
+            match run_admin_action(reload, Some(body), ADMIN_ACTION_TIMEOUT).await {
+                Err(err) if err.to_string() == "admin action timed out" => {
+                    write_response(
+                        &mut stream,
+                        504,
+                        "application/json",
+                        br#"{"error":"admin action timed out"}"#,
+                    )
+                    .await?;
+                }
                 Ok(value) => {
                     let body = serde_json::to_vec_pretty(&value)?;
                     write_response(&mut stream, 200, "application/json", &body).await?;
@@ -225,6 +263,16 @@ where
         }
     }
     Ok(())
+}
+
+async fn run_admin_action(
+    action: AdminAction,
+    body: Option<String>,
+    limit: Duration,
+) -> Result<serde_json::Value> {
+    timeout(limit, action(body))
+        .await
+        .map_err(|_| anyhow::anyhow!("admin action timed out"))?
 }
 
 fn authorized(headers: &[&str], token: Option<&str>) -> bool {
@@ -277,6 +325,7 @@ where
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
         503 => "Service Unavailable",
+        504 => "Gateway Timeout",
         _ => "Error",
     };
     let header = format!(
@@ -463,16 +512,18 @@ fn escape_label_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        authorized, content_length, handle_admin_peer, is_health_probe, render_runtime_prometheus,
-        AdminState,
+        AdminState, authorized, content_length, handle_admin_peer, handle_admin_peer_limited,
+        is_health_probe, render_runtime_prometheus,
     };
     use crate::runtime_state::{RuntimeStateSnapshot, TunnelLaneSnapshot};
     use crate::{metrics::Metrics, runtime_state::RuntimeState};
     use std::sync::{
-        atomic::{AtomicUsize, Ordering},
         Arc,
+        atomic::{AtomicUsize, Ordering},
     };
-    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
+    use tokio::sync::Semaphore;
+    use tokio::time::Duration;
 
     async fn request(state: AdminState, request: &str) -> String {
         let (mut client, server_stream) = duplex(4096);
@@ -484,6 +535,39 @@ mod tests {
         client.read_to_end(&mut response).await.unwrap();
         server.await.unwrap();
         String::from_utf8(response).unwrap()
+    }
+
+    #[tokio::test]
+    async fn admin_action_timeout_returns_gateway_timeout() {
+        let action: super::AdminAction = Arc::new(|_| {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                Ok(serde_json::json!({"ok": true}))
+            })
+        });
+        let result = super::run_admin_action(action, None, Duration::from_millis(1)).await;
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn admin_client_limit_rejects_excess_connection() {
+        let permits = Arc::new(Semaphore::new(1));
+        let held = permits.clone().try_acquire_owned().unwrap();
+        let (mut client, server_stream) = duplex(256);
+        let server = tokio::spawn(async move {
+            handle_admin_peer_limited(server_stream, admin_state(None), permits)
+                .await
+                .unwrap();
+        });
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        server.await.unwrap();
+        drop(held);
+        assert!(
+            String::from_utf8(response)
+                .unwrap()
+                .starts_with("HTTP/1.1 503")
+        );
     }
 
     fn admin_state(reload: Option<super::AdminAction>) -> AdminState {

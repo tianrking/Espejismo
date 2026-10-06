@@ -29,6 +29,10 @@ does not authenticate requests; configuration validation requires a token for
 non-loopback admin listeners. Keep an unauthenticated listener bound to
 loopback. With a token configured, missing or invalid credentials receive
 HTTP 401 before request bodies are read or administrative actions are run.
+The endpoint handles at most 32 client connections at once; additional
+connections receive HTTP 503. Reload and apply actions have a 30-second limit
+and return HTTP 504 if the action does not finish in time. Header and body
+reads each retain their separate 15-second limits.
 
 For probe behavior and container/orchestrator examples, see
 [Health Checks](HEALTHCHECK.md).
