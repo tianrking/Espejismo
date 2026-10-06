@@ -920,8 +920,8 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        connection_expired, idle_long_enough_at, lane_kinds, lane_score, record_lane_failure,
-        reconnect_backoff, sample_reconnect_backoff, select_and_reserve_lane,
+        connection_expired, idle_long_enough_at, lane_kinds, lane_score, reconnect_backoff,
+        record_lane_failure, sample_reconnect_backoff, select_and_reserve_lane,
         should_prune_idle_lane, stream_open_failure, update_recent_throughput, LaneHealth,
         LaneKind, TunnelLane,
     };
@@ -1010,7 +1010,14 @@ mod tests {
 
         assert_eq!(pruned, 3);
         assert_eq!(connected, minimum);
-        assert!(!should_prune_idle_lane(connected, minimum, 0, 0, Some(100), 1_000));
+        assert!(!should_prune_idle_lane(
+            connected,
+            minimum,
+            0,
+            0,
+            Some(100),
+            1_000
+        ));
     }
 
     #[tokio::test]
@@ -1146,7 +1153,9 @@ mod tests {
     }
 
     #[test]
-    fn reconnect_storm_samples_spread_lanes_within_the_jitter_window() {
+    fn handshake_timeout_backoff_samples_spread_lanes_within_the_jitter_window() {
+        // A handshake timeout is recorded as a lane failure before retry, so
+        // all lanes at this failure count must receive independent delays.
         const LANES: usize = 256;
         let delays: Vec<_> = (0..LANES)
             .map(|_| sample_reconnect_backoff(3).as_millis() as u64)
@@ -1158,8 +1167,8 @@ mod tests {
         let distinct: std::collections::HashSet<_> = delays.iter().copied().collect();
         assert!(
             distinct.len() >= 20,
-            "only {} delay slots sampled",
-            distinct.len()
+            "only {} of 41 delay slots sampled",
+            distinct.len(),
         );
         let mean = delays.iter().sum::<u64>() / LANES as u64;
         assert!(
