@@ -1634,14 +1634,26 @@ mod tests {
             );
         }
 
-        // A complete header in the wrong field order must be rejected before payload parsing.
-        let mut reordered = envelope.clone();
-        reordered[..24].copy_from_slice(&envelope[24..28].repeat(6)[..24]);
-        reordered[24..28].copy_from_slice(&envelope[..4]);
-        let (mut peer, mut server) = tokio::io::duplex(4096);
-        peer.write_all(&reordered).await.unwrap();
-        drop(peer);
-        assert!(accept_handshake(&mut server, &cfg).await.is_err());
+        // The envelope header is [nonce: 24][masked length: 4]. Keep nonce and
+        // payload intact while permuting every length-byte order; only the
+        // original byte order may decode to an admissible payload length.
+        let length = [envelope[24], envelope[25], envelope[26], envelope[27]];
+        for order in [
+            [0, 1, 3, 2], [0, 2, 1, 3], [0, 2, 3, 1], [0, 3, 1, 2], [0, 3, 2, 1],
+            [1, 0, 2, 3], [1, 0, 3, 2], [1, 2, 0, 3], [1, 2, 3, 0], [1, 3, 0, 2],
+            [1, 3, 2, 0], [2, 0, 1, 3], [2, 0, 3, 1], [2, 1, 0, 3], [2, 1, 3, 0],
+            [2, 3, 0, 1], [2, 3, 1, 0], [3, 0, 1, 2], [3, 0, 2, 1], [3, 1, 0, 2],
+            [3, 1, 2, 0], [3, 2, 0, 1], [3, 2, 1, 0],
+        ] {
+            let mut reordered = envelope.clone();
+            for (dst, src) in order.into_iter().enumerate() {
+                reordered[24 + dst] = length[src];
+            }
+            let (mut peer, mut server) = tokio::io::duplex(4096);
+            peer.write_all(&reordered).await.unwrap();
+            drop(peer);
+            assert!(accept_handshake(&mut server, &cfg).await.is_err(), "order={order:?}");
+        }
 
         let stealth_cfg = cfg.clone().with_stealth_frame_size(Some(4096));
         let (mut peer, mut server) = tokio::io::duplex(8192);

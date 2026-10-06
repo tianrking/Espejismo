@@ -76,7 +76,10 @@ Plain mode starts with a variable-length masked client envelope:
 ```
 
 The payload length and payload are XOR-masked with HMAC-derived streams keyed by
-the handshake authentication key. When `shared.handshake_window.enabled = true`,
+the handshake authentication key. The four masked length bytes retain their
+wire order and decode as one big-endian `u32`; parsers consume the nonce, all
+four length bytes, then exactly the bounded payload. When
+`shared.handshake_window.enabled = true`,
 that key is derived from the PSK and the current time slot:
 
 ```text
