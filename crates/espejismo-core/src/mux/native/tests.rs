@@ -8,6 +8,19 @@ use super::{client_session, server_session, NativeMuxConfig};
 use crate::protocol::request::StreamPriority;
 
 #[test]
+fn native_stream_id_allocator_uses_last_ids_before_exhaustion() {
+    let mut next_odd = u64::from(u32::MAX - 2);
+    assert_eq!(super::allocate_stream_id(&mut next_odd), Some(u32::MAX - 2));
+    assert_eq!(super::allocate_stream_id(&mut next_odd), Some(u32::MAX));
+    assert_eq!(super::allocate_stream_id(&mut next_odd), None);
+
+    let mut next_even = u64::from(u32::MAX - 3);
+    assert_eq!(super::allocate_stream_id(&mut next_even), Some(u32::MAX - 3));
+    assert_eq!(super::allocate_stream_id(&mut next_even), Some(u32::MAX - 1));
+    assert_eq!(super::allocate_stream_id(&mut next_even), None);
+}
+
+#[test]
 fn native_frame_parser_rejects_unknown_types_and_large_payloads() {
     assert!(super::validate_frame_bytes_for_fuzz(&[99, 0, 0, 0, 0, 0, 0, 0, 0]).is_err());
     let mut frame = vec![super::FRAME_DATA, 0, 0, 0, 1];

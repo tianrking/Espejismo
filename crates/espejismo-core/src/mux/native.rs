@@ -202,7 +202,7 @@ where
         command_tx,
         command_rx,
         accept_tx,
-        first_stream_id,
+        u64::from(first_stream_id),
         config,
     ));
     (control, NativeSession { accept_rx, task })
@@ -420,7 +420,7 @@ async fn run_session<T>(
     command_tx: mpsc::Sender<Command>,
     mut command_rx: mpsc::Receiver<Command>,
     accept_tx: mpsc::Sender<Result<NativeStream, io::Error>>,
-    mut next_stream_id: u32,
+    mut next_stream_id: u64,
     config: NativeMuxConfig,
 ) where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -580,7 +580,7 @@ enum FrameEffect {
 struct CommandContext<'a> {
     command_tx: &'a mpsc::Sender<Command>,
     streams: &'a mut HashMap<u32, StreamEntry>,
-    next_stream_id: &'a mut u32,
+    next_stream_id: &'a mut u64,
     config: &'a NativeMuxConfig,
     pending: &'a mut PendingFrames,
     pending_pings: &'a mut HashMap<u64, (Instant, oneshot::Sender<Duration>)>,
@@ -598,8 +598,7 @@ async fn handle_command(command: Command, ctx: CommandContext<'_>) -> Result<Com
                 let _ = reply.send(Err(anyhow::anyhow!("native mux max streams reached")));
                 return Ok(CommandEffect::Continue);
             }
-            let stream_id = *ctx.next_stream_id;
-            let Some(next_stream_id) = ctx.next_stream_id.checked_add(2) else {
+            let Some(stream_id) = allocate_stream_id(ctx.next_stream_id) else {
                 let _ = reply.send(Err(anyhow::anyhow!("native mux stream id exhausted")));
                 return Ok(CommandEffect::StartDrain);
             };
@@ -607,7 +606,6 @@ async fn handle_command(command: Command, ctx: CommandContext<'_>) -> Result<Com
                 let _ = reply.send(Err(anyhow::anyhow!("native mux stream id collision")));
                 return Ok(CommandEffect::StartDrain);
             }
-            *ctx.next_stream_id = next_stream_id;
             let (stream, entry) = new_stream(
                 stream_id,
                 priority,
@@ -661,6 +659,13 @@ async fn handle_command(command: Command, ctx: CommandContext<'_>) -> Result<Com
         }
     }
     Ok(CommandEffect::Continue)
+}
+
+// Keep the cursor wider than the wire ID so the final parity-matching ID is usable.
+fn allocate_stream_id(next_stream_id: &mut u64) -> Option<u32> {
+    let stream_id = u32::try_from(*next_stream_id).ok()?;
+    *next_stream_id += 2;
+    Some(stream_id)
 }
 
 struct FrameContext<'a> {
