@@ -75,7 +75,7 @@ pub async fn run_tun_ingress(
         .enable_tcp(true)
         .enable_udp(true)
         .enable_icmp(false)
-        .mtu(config.mtu as usize)
+        .mtu(usize::from(config.mtu))
         .build()
         .context("create userspace netstack")?;
 
@@ -423,5 +423,22 @@ mod tests {
         drop(rx);
 
         assert!(tx.send((vec![3], "local", "remote")).await.is_err());
+    }
+
+    #[test]
+    fn userspace_netstack_builds_with_common_tun_mtu_values() {
+        // Match the values commonly used for direct Ethernet, IPv6-minimum,
+        // and conservative tunnel paths. This verifies MTU plumbing/building;
+        // netstack-smoltcp does not enable IP fragmentation.
+        for mtu in [576_u16, 1280, 1400, 1500] {
+            let result = StackBuilder::default()
+                .enable_tcp(true)
+                .enable_udp(true)
+                .enable_icmp(false)
+                .mtu(usize::from(mtu))
+                .build();
+
+            assert!(result.is_ok(), "netstack failed to build at MTU {mtu}");
+        }
     }
 }
