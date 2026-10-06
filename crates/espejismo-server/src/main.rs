@@ -20,6 +20,7 @@ use tracing::{debug, info};
 
 const ACCEPT_RESOURCE_RETRY_BASE_DELAY: Duration = Duration::from_millis(250);
 const ACCEPT_RESOURCE_RETRY_MAX_DELAY: Duration = Duration::from_secs(16);
+const PEER_SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
 mod fallback;
 mod handler;
@@ -308,6 +309,7 @@ async fn main() -> Result<()> {
 
     let mut sighup = register_sighup()?;
 
+    let mut peer_tasks = tokio::task::JoinSet::new();
     loop {
         let accepted = tokio::select! {
             accepted = accepted_rx.recv() => accepted,
@@ -338,14 +340,28 @@ async fn main() -> Result<()> {
         let tarpit = tarpit.clone();
         let metrics = metrics.clone();
         metrics.inc_accepted();
-        tokio::spawn(async move {
+        peer_tasks.spawn(async move {
             let _connection_permit = connection_permit;
             if let Err(err) = handle_peer(socket, runtime, replay, tarpit, metrics).await {
                 debug!(%peer, error = %err, "remote peer ended");
             }
         });
     }
+    // Stop accepting first, then give established tunnels a bounded chance to
+    // finish before the process exits. This is connection draining, not
+    // cross-process migration: unfinished streams are still interrupted.
+    drain_peer_tasks(&mut peer_tasks, PEER_SHUTDOWN_GRACE).await;
     Ok(())
+}
+
+async fn drain_peer_tasks(tasks: &mut tokio::task::JoinSet<()>, grace: Duration) {
+    if tokio::time::timeout(grace, async { while tasks.join_next().await.is_some() {} })
+        .await
+        .is_err()
+    {
+        tasks.abort_all();
+        while tasks.join_next().await.is_some() {}
+    }
 }
 
 #[cfg(unix)]
@@ -924,6 +940,37 @@ mod connection_limit_tests {
         );
         drop(second);
         assert_eq!(limit.available_permits(), 2);
+    }
+}
+
+#[cfg(test)]
+mod restart_drain_tests {
+    use super::drain_peer_tasks;
+    use std::time::Duration;
+    use tokio::sync::oneshot;
+
+    #[tokio::test]
+    async fn shutdown_waits_for_an_existing_peer_to_finish() {
+        let (finish_tx, finish_rx) = oneshot::channel::<()>();
+        let mut tasks = tokio::task::JoinSet::new();
+        tasks.spawn(async move {
+            let _ = finish_rx.await;
+        });
+
+        finish_tx.send(()).unwrap();
+        drain_peer_tasks(&mut tasks, Duration::from_secs(1)).await;
+        assert!(
+            tasks.is_empty(),
+            "existing peer task must finish before exit"
+        );
+    }
+
+    #[tokio::test]
+    async fn shutdown_aborts_peer_tasks_after_grace_expires() {
+        let mut tasks = tokio::task::JoinSet::new();
+        tasks.spawn(std::future::pending::<()>());
+        drain_peer_tasks(&mut tasks, Duration::from_millis(1)).await;
+        assert!(tasks.is_empty(), "overdue peer task must be aborted");
     }
 }
 

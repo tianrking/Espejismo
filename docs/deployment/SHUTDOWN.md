@@ -3,11 +3,13 @@
 Espejismo handles Ctrl-C/SIGINT and, on Unix, SIGTERM in both service
 binaries. Receiving either signal stops the service loop and lets the process
 exit. This is a prompt process shutdown, not a coordinated drain of active
-tunnels: the binaries do not expose a readiness transition, wait for peer
-connections or proxy streams to finish, or impose a process-level drain period.
+tunnels: the binaries do not expose a readiness transition or transfer active
+sessions to a replacement process. The remote does impose a bounded peer
+handler drain period.
 Active connections can be interrupted when the process exits. The local
 service also aborts its listener tasks on a shutdown signal. The remote stops
-its accept loop; active peer handlers are not joined before exit.
+its accept loop, then gives active peer handlers up to 10 seconds to finish
+before aborting remaining work.
 
 ## Signals handled by the service binaries
 
@@ -26,18 +28,18 @@ its accept loop; active peer handlers are not joined before exit.
 - SIGKILL and SIGSTOP cannot be handled by an application. Other signals are
   not converted into shutdown requests by these handlers.
 - The local process aborts and joins its listener tasks after a handled
-  shutdown event. The remote process stops accepting connections, but does not
-  join already spawned peer handlers. Neither path promises completion of
-  active proxy streams.
+  shutdown event. The remote process stops accepting connections and waits up
+  to 10 seconds for peer handlers to finish. Neither path migrates a live
+  tunnel to the replacement process; unfinished work can be interrupted.
 
 ## Production deployments
 
 A restart is a stop followed by a fresh process start; it does not transfer
 sessions or proxy work to the replacement process. On the local side, the
 shutdown handler aborts its listener tasks, so local SOCKS5, HTTP, and TUN
-traffic can fail while it is stopped. On the remote side, the accept loop
-ends, but active peer handlers are not joined; process exit interrupts their
-tunnels as well. Once the replacement is healthy, clients can establish new
+traffic can fail while it is stopped. On the remote side, active peer handlers
+have up to 10 seconds to complete before remaining work is interrupted. Once
+the replacement is healthy, clients can establish new
 connections, but applications must retry interrupted requests or transfers.
 
 - Treat a restart or stop as a brief outage for clients using that process.
