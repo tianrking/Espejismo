@@ -443,7 +443,10 @@ mod tests {
     fn user_metric_series_are_bounded_with_overflow_bucket() {
         let metrics = Metrics::default();
         for index in 0..(MAX_USER_METRIC_SERIES + 20) {
-            metrics.inc_user_handshake_success(&format!("user-{index}"));
+            let user = format!("user-{index}");
+            metrics.inc_user_handshake_success(&user);
+            metrics.inc_user_stream_opened(&user);
+            metrics.add_user_tunnel_bytes(&user, index as u64 + 1, (index as u64 + 1) * 10);
         }
 
         let snapshot = metrics.snapshot("server");
@@ -454,6 +457,37 @@ mod tests {
             .find(|user| user.user == OTHER_USER)
             .unwrap();
         assert_eq!(overflow.handshake_success, 21);
+        assert_eq!(overflow.stream_opened, 21);
+        // The first 127 distinct users keep their own series; all later users
+        // share `other`, including both directional byte counters.
+        assert_eq!(overflow.bytes_client_to_remote, (128_u64..=148).sum::<u64>());
+        assert_eq!(
+            overflow.bytes_remote_to_client,
+            (128_u64..=148).map(|n| n * 10).sum::<u64>()
+        );
+
+        let rendered = metrics.render_prometheus("remote");
+        for metric_name in [
+            "user_handshake_success_total",
+            "user_stream_opened_total",
+            "user_bytes_client_to_remote_total",
+            "user_bytes_remote_to_client_total",
+        ] {
+            assert_eq!(
+                rendered
+                    .lines()
+                    .filter(|line| line.starts_with(&format!("espejismo_{metric_name}{{")))
+                    .count(),
+                MAX_USER_METRIC_SERIES,
+                "unexpected series count for {metric_name}"
+            );
+        }
+        assert!(rendered.contains(
+            "espejismo_user_bytes_client_to_remote_total{role=\"remote\",user=\"other\"} 2898\n"
+        ));
+        assert!(rendered.contains(
+            "espejismo_user_bytes_remote_to_client_total{role=\"remote\",user=\"other\"} 28980\n"
+        ));
     }
 
     #[test]

@@ -41,8 +41,12 @@ each role separately to compare the observations.
 | `lane_kind` | Configured lane class, such as `bulk` or `interactive`. Present on lane series. |
 | `state` | Lane runtime state at scrape time. Present on lane series. |
 
-Per-user and per-reason label sets are bounded per process (128 user series and
-32 reason series, including the `other` bucket). Lane labels represent the
+Per-user labels are bounded per process to 128 distinct `user` values,
+including `user="other"`. Each admitted user value has four metric series:
+handshake successes, streams opened, and payload bytes in each of the two
+tunnel directions. Excess users share the `other` value across all four
+series. Per-reason labels are bounded to 32 values, including the `other`
+bucket. Lane labels represent the
 configured local pool and current runtime state; do not treat lane IDs or
 states as stable across restarts or configuration changes. No peer address is
 exported as a label.
