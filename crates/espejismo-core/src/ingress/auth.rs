@@ -2,10 +2,19 @@ use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ProxyAuth {
     pub username: String,
     pub password: String,
+}
+
+impl std::fmt::Debug for ProxyAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyAuth")
+            .field("username", &"<redacted>")
+            .field("password", &"<redacted>")
+            .finish()
+    }
 }
 
 impl ProxyAuth {
@@ -32,5 +41,21 @@ impl ProxyAuth {
             return false;
         }
         bool::from(username.ct_eq(expected_user) & password.ct_eq(expected_pass))
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    use super::ProxyAuth;
+
+    #[test]
+    fn debug_output_redacts_local_proxy_credentials() {
+        let output = format!("{:?}", ProxyAuth {
+            username: "private-user".into(),
+            password: "private-password".into(),
+        });
+        assert!(output.contains("<redacted>"));
+        assert!(!output.contains("private-user"));
+        assert!(!output.contains("private-password"));
     }
 }

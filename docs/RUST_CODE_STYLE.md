@@ -54,6 +54,8 @@ and [project positioning](POSITIONING.md).
   encryption, replay defense, and resource-limit checks explicit and reviewable.
 - Treat all network data as untrusted. Validate lengths and structure before
   allocation or use, and avoid logging credentials, keys, or private payloads.
+- Credential-bearing types should redact secrets in `Debug` output so routine
+  diagnostic formatting cannot expose proxy usernames, passwords, or URIs.
 - Add focused regression tests for behavior changes. Keep unit tests near the
   implementation when practical and integration tests under the crate's
   `tests/` directory. Test malformed input and boundary conditions for parsers

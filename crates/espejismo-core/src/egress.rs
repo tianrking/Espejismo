@@ -5,7 +5,7 @@ use std::net::{IpAddr, SocketAddr};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct EgressPolicy {
     #[serde(default)]
     pub deny_private_ips: bool,
@@ -21,6 +21,20 @@ pub struct EgressPolicy {
     pub proxy: Option<String>,
     #[serde(default)]
     pub socks5_proxy: Option<String>,
+}
+
+impl std::fmt::Debug for EgressPolicy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EgressPolicy")
+            .field("deny_private_ips", &self.deny_private_ips)
+            .field("allow_hosts", &self.allow_hosts)
+            .field("block_hosts", &self.block_hosts)
+            .field("allow_ports", &self.allow_ports)
+            .field("block_ports", &self.block_ports)
+            .field("proxy", &self.proxy.as_ref().map(|_| "<redacted>"))
+            .field("socks5_proxy", &self.socks5_proxy.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl EgressPolicy {
@@ -98,12 +112,23 @@ pub enum EgressProxyKind {
     Https,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct EgressProxy {
     pub kind: EgressProxyKind,
     pub endpoint: String,
     pub username: Option<String>,
     pub password: Option<String>,
+}
+
+impl std::fmt::Debug for EgressProxy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EgressProxy")
+            .field("kind", &self.kind)
+            .field("endpoint", &self.endpoint)
+            .field("username", &self.username.as_ref().map(|_| "<redacted>"))
+            .field("password", &self.password.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
 }
 
 impl EgressProxy {
@@ -288,5 +313,22 @@ mod tests {
     fn rejects_unsupported_upstream_proxy_urls() {
         assert!(EgressProxy::parse("socks5://proxy.example.com").is_err());
         assert!(EgressProxy::parse("http://proxy.example.com:8080/path").is_err());
+    }
+
+    #[test]
+    fn debug_output_redacts_upstream_proxy_credentials() {
+        let proxy = EgressProxy::parse("socks://private-user:private-password@127.0.0.1:1080").unwrap();
+        let output = format!("{proxy:?}");
+        assert!(output.contains("<redacted>"));
+        assert!(!output.contains("private-user"));
+        assert!(!output.contains("private-password"));
+
+        let policy = EgressPolicy {
+            proxy: Some("https://private-user:private-password@example.com:443".into()),
+            ..EgressPolicy::default()
+        };
+        let output = format!("{policy:?}");
+        assert!(!output.contains("private-user"));
+        assert!(!output.contains("private-password"));
     }
 }
