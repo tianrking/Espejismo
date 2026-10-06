@@ -320,6 +320,46 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn concurrent_ingress_burst_keeps_socks_requests_isolated() {
+        let burst = (1..=128).map(|port| {
+            let request = vec![
+                5,
+                1,
+                0,
+                5,
+                1,
+                0,
+                3,
+                12,
+                b'e',
+                b'x',
+                b'a',
+                b'm',
+                b'p',
+                b'l',
+                b'e',
+                b'.',
+                b't',
+                b'e',
+                b's',
+                b't',
+                (port >> 8) as u8,
+                port as u8,
+            ];
+            exchange(request, None)
+        });
+
+        let results = futures::future::join_all(burst).await;
+        assert_eq!(results.len(), 128);
+        for (index, (result, response)) in results.into_iter().enumerate() {
+            let port = index as u16 + 1;
+            assert!(matches!(result.unwrap(), SocksRequest::Connect(target)
+                if target.host == "example.test" && target.port == port));
+            assert_eq!(&response[..4], [5, 0, 5, 0]);
+        }
+    }
+
+    #[tokio::test]
     async fn udp_associate_accepts_unspecified_ipv4_client_endpoint() {
         let request = vec![5, 1, 0, 5, 3, 0, 1, 0, 0, 0, 0, 0, 0];
         let (result, response) = exchange(request, None).await;
