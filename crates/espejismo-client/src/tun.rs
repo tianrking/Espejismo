@@ -11,7 +11,7 @@ use espejismo_core::{
 };
 use futures::{SinkExt, StreamExt};
 use netstack_smoltcp::{StackBuilder, TcpListener, UdpSocket};
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncRead, AsyncReadExt};
 use tokio::sync::Semaphore;
 use tokio::time::timeout;
 use tracing::{debug, info, trace, warn};
@@ -291,9 +291,7 @@ async fn relay_udp_authority(
     let started = Instant::now();
     let result = async {
         write_udp_datagram_with_priority(&mut stream, authority, priority, payload).await?;
-        let len = timeout(response_timeout, stream.read_u16()).await?? as usize;
-        response = vec![0_u8; len];
-        timeout(response_timeout, stream.read_exact(&mut response)).await??;
+        response = read_udp_response(&mut stream, response_timeout).await?;
         anyhow::Ok(())
     }
     .await;
@@ -307,6 +305,18 @@ async fn relay_udp_authority(
         )
         .await;
     result?;
+    Ok(response)
+}
+
+// UDP traffic is relayed as independent datagrams. Start a fresh inactivity
+// window for each response so later packets on the same NAT flow stay usable.
+async fn read_udp_response<R>(reader: &mut R, response_timeout: Duration) -> Result<Vec<u8>>
+where
+    R: AsyncRead + Unpin,
+{
+    let len = timeout(response_timeout, reader.read_u16()).await?? as usize;
+    let mut response = vec![0_u8; len];
+    timeout(response_timeout, reader.read_exact(&mut response)).await??;
     Ok(response)
 }
 
@@ -423,6 +433,25 @@ mod tests {
         drop(rx);
 
         assert!(tx.send((vec![3], "local", "remote")).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn udp_response_timeout_expires_and_next_datagram_gets_a_fresh_window() {
+        let (mut writer, mut reader) = tokio::io::duplex(16);
+        let timeout = Duration::from_millis(40);
+
+        // The per-datagram response wait expires when no response arrives.
+        assert!(read_udp_response(&mut reader, timeout).await.is_err());
+
+        // A subsequent datagram starts a new window; delayed data is still accepted.
+        let response = async {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            tokio::io::AsyncWriteExt::write_all(&mut writer, &[0, 3, b'o', b'k', b'!'])
+                .await
+                .unwrap();
+        };
+        let (result, ()) = tokio::join!(read_udp_response(&mut reader, timeout), response);
+        assert_eq!(result.unwrap(), b"ok!");
     }
 
     #[test]

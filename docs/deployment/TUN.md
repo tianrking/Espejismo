@@ -205,9 +205,9 @@ Important deployment notes:
   `--tun-route-cleanup` to replay that state and remove the saved file.
 - The current TUN implementation is intended for TCP-first deployments. UDP is
   supported as application-level datagram relay over the encrypted TCP mux tunnel.
-- `local.tun.udp_timeout_secs` controls how long a single UDP relay waits for a
-  response. Keep it short for desktop global TUN use so unanswered UDP probes do
-  not occupy relay tasks for too long.
+- `local.tun.udp_timeout_secs` controls how long a single UDP datagram waits for
+  its response. Each later datagram in the same address pair gets a fresh
+  response window; unanswered probes do not keep a relay task alive indefinitely.
 - Use `espejismo-local --doctor --tun-enabled --tun-auto-route --tun-auto-dns`
   before route takeover when possible. Doctor checks listener conflicts,
   server resolution/reachability, IPv4 server-route requirements, DNS inputs,
