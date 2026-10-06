@@ -259,6 +259,12 @@ where
         cx: &mut Context,
         code: GoAwayCode,
     ) -> Result<(), io::Error> {
+        // Multiple Control handles may request shutdown concurrently. Once a
+        // GoAway has been sent, keep its original deadline and avoid emitting
+        // duplicate frames for later requests.
+        if self.local_go_away {
+            return Ok(());
+        }
         // clear all pending write and then send go away to close session
         self.write_pending_frames.clear();
         let frame = Frame::new_go_away(code);
@@ -998,6 +1004,27 @@ mod test {
                 },
             );
             drop(remote);
+        });
+    }
+
+    #[test]
+    fn repeated_session_close_requests_send_one_go_away() {
+        rt().block_on(async {
+            let (mut remote, local) = MockSocket::new();
+            let mut session = Session::new_client(local, Config::default());
+            let waker = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&waker);
+
+            // Separate Control handles can enqueue redundant shutdown requests.
+            // Exercise the same serialized handling repeatedly at the session.
+            for _ in 0..16 {
+                session.send_go_away(&mut cx).unwrap();
+            }
+
+            assert!(session.local_go_away);
+            let first = remote.receiver.try_recv().unwrap();
+            assert!(!first.is_empty());
+            assert!(remote.receiver.try_recv().is_err());
         });
     }
     use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};

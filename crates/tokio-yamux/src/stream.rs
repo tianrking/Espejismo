@@ -775,6 +775,7 @@ mod test {
     use futures::{
         FutureExt, SinkExt, StreamExt,
         channel::mpsc::{channel, unbounded},
+        future::join_all,
         task::{ArcWake, waker_ref},
     };
     use rand::{Rng, SeedableRng, rngs::StdRng};
@@ -827,6 +828,44 @@ mod test {
                 StreamEvent::Closed(_) => (),
                 _ => panic!("must be state closed"),
             }
+        });
+    }
+
+    #[test]
+    fn concurrent_stream_shutdowns_emit_one_fin_and_close_each_stream() {
+        rt().block_on(async {
+            let (event_sender, mut events) = unbounded();
+            let mut streams = (0..64)
+                .map(|id| {
+                    let (_frame_sender, frame_receiver) = channel(2);
+                    StreamHandle::new(
+                        id,
+                        event_sender.clone(),
+                        frame_receiver,
+                        StreamState::Init,
+                        INITIAL_STREAM_WINDOW,
+                    )
+                })
+                .collect::<Vec<_>>();
+
+            let results = join_all(streams.iter_mut().map(|stream| stream.shutdown())).await;
+            assert!(results.iter().all(Result::is_ok));
+            drop(streams);
+
+            let mut fins = 0;
+            let mut closed = 0;
+            while let Ok(event) = events.try_recv() {
+                match event {
+                    StreamEvent::Frame(frame) => {
+                        assert!(frame.flags().contains(Flag::Fin));
+                        fins += 1;
+                    }
+                    StreamEvent::Closed(_) => closed += 1,
+                    StreamEvent::GoAway => panic!("unexpected session close event"),
+                }
+            }
+            assert_eq!(fins, 64);
+            assert_eq!(closed, 64);
         });
     }
 
