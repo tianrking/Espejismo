@@ -1,12 +1,59 @@
 //! Bounded DNS resolution helpers used during connection setup.
 
-use std::{future::Future, net::SocketAddr, time::Duration};
+use std::{
+    collections::HashMap,
+    future::Future,
+    net::SocketAddr,
+    sync::{Mutex, OnceLock},
+    time::{Duration, Instant},
+};
 
 use anyhow::{Context, Result};
 use tokio::{net::lookup_host, time::timeout};
 
 /// Bound how long connection setup waits for the platform DNS resolver.
 pub const DNS_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(10);
+// Tokio's system resolver does not expose record TTLs, so cache successful
+// hostname results briefly and bound process-wide memory use.
+const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
+const DNS_CACHE_CAPACITY: usize = 256;
+
+#[derive(Default)]
+struct DnsCache {
+    entries: HashMap<String, (Vec<SocketAddr>, Instant)>,
+}
+
+impl DnsCache {
+    fn get(&mut self, authority: &str, now: Instant) -> Option<Vec<SocketAddr>> {
+        match self.entries.get(authority) {
+            Some((addrs, expires)) if now < *expires => Some(addrs.clone()),
+            Some(_) => {
+                self.entries.remove(authority);
+                None
+            }
+            None => None,
+        }
+    }
+
+    fn insert(&mut self, authority: String, addrs: Vec<SocketAddr>, now: Instant) {
+        if self.entries.len() >= DNS_CACHE_CAPACITY && !self.entries.contains_key(&authority) {
+            if let Some(oldest) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, (_, expires))| *expires)
+                .map(|(key, _)| key.clone())
+            {
+                self.entries.remove(&oldest);
+            }
+        }
+        self.entries.insert(authority, (addrs, now + DNS_CACHE_TTL));
+    }
+}
+
+fn cache() -> &'static Mutex<DnsCache> {
+    static CACHE: OnceLock<Mutex<DnsCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(DnsCache::default()))
+}
 
 pub async fn resolve_socket_addrs(authority: &str) -> Result<Vec<SocketAddr>> {
     // Numeric endpoints need no system resolver and should remain available even
@@ -15,8 +62,22 @@ pub async fn resolve_socket_addrs(authority: &str) -> Result<Vec<SocketAddr>> {
         return Ok(vec![addr]);
     }
 
+    if let Some(addrs) = cache()
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(authority, Instant::now())
+    {
+        return Ok(addrs);
+    }
+
     let addrs = with_timeout(lookup_host(authority), DNS_RESOLUTION_TIMEOUT, authority).await?;
-    collect_addresses(addrs, authority)
+    let addrs = collect_addresses(addrs, authority)?;
+    cache().lock().unwrap_or_else(|e| e.into_inner()).insert(
+        authority.to_owned(),
+        addrs.clone(),
+        Instant::now(),
+    );
+    Ok(addrs)
 }
 
 fn collect_addresses(
@@ -43,6 +104,31 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dns_cache_hits_until_ttl_boundary_then_expires() {
+        let start = Instant::now();
+        let mut cache = DnsCache::default();
+        let addr = "192.0.2.10:443".parse().unwrap();
+        cache.insert("cache.example:443".into(), vec![addr], start);
+
+        assert_eq!(
+            cache.get(
+                "cache.example:443",
+                start + DNS_CACHE_TTL - Duration::from_nanos(1)
+            ),
+            Some(vec![addr])
+        );
+        assert_eq!(cache.get("cache.example:443", start + DNS_CACHE_TTL), None);
+        assert!(cache.entries.is_empty());
+    }
+
+    #[test]
+    fn dns_cache_miss_does_not_create_an_entry() {
+        let mut cache = DnsCache::default();
+        assert_eq!(cache.get("missing.example:443", Instant::now()), None);
+        assert!(cache.entries.is_empty());
+    }
 
     #[tokio::test]
     async fn dns_timeout_returns_without_waiting_for_resolver() {
