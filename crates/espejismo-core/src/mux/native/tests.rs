@@ -615,6 +615,65 @@ async fn native_mux_transport_disconnect_wakes_blocked_stream_writer() {
 }
 
 #[tokio::test]
+async fn native_mux_replacement_session_does_not_inherit_failed_stream_state() {
+    // A new authenticated physical session is a fresh mux namespace. Existing
+    // streams fail with their original carrier; only newly opened streams use
+    // the replacement session (transparent stream migration is not supported).
+    let (old_client_io, old_server_io) = duplex(64 * 1024);
+    let (mut old_client_control, mut old_client_session) =
+        client_session(old_client_io, NativeMuxConfig::default());
+    let (_old_server_control, mut old_server_session) =
+        server_session(old_server_io, NativeMuxConfig::default());
+    let old_client_task =
+        tokio::spawn(async move { while old_client_session.next().await.is_some() {} });
+
+    let mut old_client_stream = old_client_control
+        .open_stream(StreamPriority::Interactive)
+        .await
+        .unwrap();
+    let _old_server_stream = old_server_session.next().await.unwrap().unwrap();
+    old_client_stream
+        .write_all(b"before-disconnect")
+        .await
+        .unwrap();
+    drop(old_server_session);
+
+    let mut stale_data = [0; 1];
+    let stale_read = tokio::time::timeout(
+        Duration::from_secs(1),
+        old_client_stream.read(&mut stale_data),
+    )
+    .await
+    .expect("old stream should observe carrier loss")
+    .expect("carrier loss should be reported as stream termination");
+    assert_eq!(stale_read, 0, "stale stream must terminate at EOF");
+    tokio::time::timeout(Duration::from_secs(1), old_client_task)
+        .await
+        .expect("old mux session should terminate")
+        .unwrap();
+
+    let (new_client_io, new_server_io) = duplex(64 * 1024);
+    let (mut new_client_control, mut new_client_session) =
+        client_session(new_client_io, NativeMuxConfig::default());
+    let (_new_server_control, mut new_server_session) =
+        server_session(new_server_io, NativeMuxConfig::default());
+    tokio::spawn(async move { while new_client_session.next().await.is_some() {} });
+
+    let mut new_client_stream = new_client_control
+        .open_stream(StreamPriority::Interactive)
+        .await
+        .unwrap();
+    let mut new_server_stream = new_server_session.next().await.unwrap().unwrap();
+    new_client_stream
+        .write_all(b"after-reconnect")
+        .await
+        .unwrap();
+    let mut received = [0; 15];
+    new_server_stream.read_exact(&mut received).await.unwrap();
+    assert_eq!(&received, b"after-reconnect");
+}
+
+#[tokio::test]
 async fn native_mux_goaway_timeout_wakes_blocked_stream_writer() {
     let (client_io, server_io) = duplex(64 * 1024);
     let config = NativeMuxConfig {
