@@ -550,7 +550,8 @@ impl AsyncRead for StreamHandle {
         }
         if let Some(offset) = offset {
             self.read_buf.drain(..=offset);
-            // drain does not shrink the capacity, if the capacity is too large, shrink it
+            // Drop an unusually large stream queue after draining it; otherwise a burst
+            // would keep its high-water allocation for the lifetime of this stream.
             if self.read_buf.capacity() > 24
                 && self.read_buf.capacity() / (self.read_buf.len() + 1) > 4
             {
@@ -1493,6 +1494,30 @@ mod test {
             assert_eq!(&b[..2], b"23");
             assert_eq!(stream.read_buf.len(), 1);
             assert_eq!(stream.read_buf.capacity(), 4);
+        });
+    }
+
+    #[test]
+    fn read_buffer_releases_excess_capacity_after_drain() {
+        let rt = rt();
+        rt.block_on(async {
+            let (_frame_sender, frame_receiver) = channel(1);
+            let (unbound_sender, _unbound_receiver) = unbounded();
+            let mut stream = StreamHandle::new(
+                0,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                INITIAL_STREAM_WINDOW,
+            );
+            stream.read_buf = Vec::with_capacity(128);
+            stream.read_buf.push(BytesMut::from(&b"payload"[..]));
+
+            let mut received = [0; 7];
+            assert_eq!(stream.read(&mut received).await.unwrap(), 7);
+            assert_eq!(&received, b"payload");
+            assert!(stream.read_buf.is_empty());
+            assert!(stream.read_buf.capacity() <= 24);
         });
     }
 
