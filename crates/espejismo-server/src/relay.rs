@@ -180,3 +180,79 @@ async fn relay_udp_datagram_inner(
     response.truncate(n);
     Ok(response)
 }
+
+#[cfg(test)]
+mod tests {
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt, copy_bidirectional},
+        net::{TcpListener, TcpStream},
+    };
+
+    use super::connect_egress_tcp_inner;
+    use espejismo_core::EgressPolicy;
+
+    async fn socks5_hop(listener: TcpListener) {
+        loop {
+            let (mut client, _) = listener.accept().await.unwrap();
+            tokio::spawn(async move {
+                let mut greeting = [0; 3];
+                client.read_exact(&mut greeting).await.unwrap();
+                assert_eq!(greeting, [5, 1, 0]);
+                client.write_all(&[5, 0]).await.unwrap();
+
+                let mut header = [0; 4];
+                client.read_exact(&mut header).await.unwrap();
+                assert_eq!(header, [5, 1, 0, 3]);
+                let host_len = client.read_u8().await.unwrap() as usize;
+                let mut host = vec![0; host_len];
+                client.read_exact(&mut host).await.unwrap();
+                let port = client.read_u16().await.unwrap();
+                let authority = format!("{}:{port}", String::from_utf8(host).unwrap());
+                let upstream = TcpStream::connect(authority).await.unwrap();
+                let mut upstream = upstream;
+                client.write_all(&[5, 0, 0, 1, 127, 0, 0, 1, 0, 0]).await.unwrap();
+                let _ = copy_bidirectional(&mut client, &mut upstream).await;
+            });
+        }
+    }
+
+    #[tokio::test]
+    async fn relays_tcp_through_two_socks5_hops() {
+        let target = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target_addr = target.local_addr().unwrap();
+        let echo = tokio::spawn(async move {
+            let (mut stream, _) = target.accept().await.unwrap();
+            let mut bytes = [0; 32];
+            let n = stream.read(&mut bytes).await.unwrap();
+            stream.write_all(&bytes[..n]).await.unwrap();
+        });
+
+        let second = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let second_addr = second.local_addr().unwrap();
+        let target_for_second = target_addr;
+        tokio::spawn(async move {
+            let (mut incoming, _) = second.accept().await.unwrap();
+            let mut outgoing = TcpStream::connect(target_for_second).await.unwrap();
+            let _ = copy_bidirectional(&mut incoming, &mut outgoing).await;
+        });
+        let first = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let first_addr = first.local_addr().unwrap();
+        tokio::spawn(socks5_hop(first));
+
+        // The SOCKS5 CONNECT tunnel crosses the first proxy into a second
+        // local forwarding hop, then reaches the echo service.
+        let policy = EgressPolicy {
+            proxy: Some(format!("socks5://{first_addr}")),
+            ..EgressPolicy::default()
+        };
+        let mut stream = connect_egress_tcp_inner(&format!("{second_addr}"), &policy)
+            .await
+            .unwrap();
+        stream.write_all(b"two-hop-echo").await.unwrap();
+        let mut echoed = [0; 12];
+        stream.read_exact(&mut echoed).await.unwrap();
+        assert_eq!(&echoed, b"two-hop-echo");
+        drop(stream);
+        echo.await.unwrap();
+    }
+}
