@@ -89,7 +89,9 @@ impl Frame {
         self.header.flags
     }
 
-    /// The length field of current body or some other things such as ping_id/go away code/delta
+    /// The length field of current body, or a control value such as ping ID,
+    /// go-away code, or window delta. Ping IDs are opaque 32-bit values and
+    /// must be echoed unchanged in the ACK frame.
     pub fn length(&self) -> u32 {
         self.header.length
     }
@@ -352,7 +354,7 @@ impl Encoder<Frame> for FrameCodec {
 
 #[cfg(test)]
 mod test {
-    use super::{Flags, Frame, FrameCodec, HEADER_SIZE, INITIAL_STREAM_WINDOW, Type};
+    use super::{Flag, Flags, Frame, FrameCodec, HEADER_SIZE, INITIAL_STREAM_WINDOW, Type};
     use bytes::{BufMut, BytesMut};
     use std::io;
     use tokio_util::codec::{Decoder, Encoder};
@@ -385,6 +387,34 @@ mod test {
         let (_, data) = decode_frame.into_parts();
 
         assert_eq!(data.unwrap(), rand_data)
+    }
+
+    #[test]
+    fn ping_id_boundaries_round_trip_and_echo_unchanged() {
+        for ping_id in [0, 1, u32::MAX - 1, u32::MAX] {
+            let mut codec = FrameCodec::default();
+            let mut wire = BytesMut::new();
+            codec
+                .encode(Frame::new_ping(Flags::from(Flag::Syn), ping_id), &mut wire)
+                .unwrap();
+
+            let request = codec.decode(&mut wire).unwrap().unwrap();
+            assert_eq!(request.ty(), Type::Ping);
+            assert!(request.flags().contains(Flag::Syn));
+            assert_eq!(request.length(), ping_id);
+            assert_eq!(request.size(), HEADER_SIZE);
+            assert!(request.into_parts().1.is_none());
+
+            // The session's SYN handler echoes this control value in its ACK.
+            codec
+                .encode(Frame::new_ping(Flags::from(Flag::Ack), ping_id), &mut wire)
+                .unwrap();
+            let response = codec.decode(&mut wire).unwrap().unwrap();
+            assert_eq!(response.ty(), Type::Ping);
+            assert!(response.flags().contains(Flag::Ack));
+            assert_eq!(response.length(), ping_id);
+            assert_eq!(response.size(), HEADER_SIZE);
+        }
     }
 
     #[test]
