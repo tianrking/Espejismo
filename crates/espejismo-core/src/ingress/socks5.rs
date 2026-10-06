@@ -70,11 +70,15 @@ where
 
     let ver = stream.read_u8().await?;
     let cmd = stream.read_u8().await?;
-    let _rsv = stream.read_u8().await?;
+    let rsv = stream.read_u8().await?;
     let atyp = stream.read_u8().await?;
     if ver != 5 {
         reply(stream, 0x07).await?;
         bail!("unsupported SOCKS request version {ver}");
+    }
+    if rsv != 0 {
+        reply(stream, 0x01).await?;
+        bail!("SOCKS request reserved byte must be zero");
     }
 
     let host = match atyp {
@@ -276,17 +280,27 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{accept_request_with_auth, build_udp_packet, parse_udp_packet, SocksRequest, SocksTarget};
+    use super::{
+        accept_request_with_auth, build_udp_packet, parse_udp_packet, reply_udp_associate,
+        SocksRequest, SocksTarget,
+    };
     use crate::ingress::ProxyAuth;
 
     fn auth() -> ProxyAuth {
-        ProxyAuth { username: "user".into(), password: "pass".into() }
+        ProxyAuth {
+            username: "user".into(),
+            password: "pass".into(),
+        }
     }
 
-    async fn exchange(input: Vec<u8>, auth: Option<ProxyAuth>) -> (anyhow::Result<SocksRequest>, Vec<u8>) {
+    async fn exchange(
+        input: Vec<u8>,
+        auth: Option<ProxyAuth>,
+    ) -> (anyhow::Result<SocksRequest>, Vec<u8>) {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         let (mut client, mut server) = tokio::io::duplex(256);
-        let server_task = tokio::spawn(async move { accept_request_with_auth(&mut server, auth.as_ref()).await });
+        let server_task =
+            tokio::spawn(async move { accept_request_with_auth(&mut server, auth.as_ref()).await });
         client.write_all(&input).await.unwrap();
         client.shutdown().await.unwrap();
         let mut response = Vec::new();
@@ -296,10 +310,54 @@ mod tests {
 
     #[tokio::test]
     async fn no_auth_accepts_method_zero_and_connects() {
-        let (result, response) = exchange(vec![5, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1, 0, 80], None).await;
-        assert!(matches!(result.unwrap(), SocksRequest::Connect(target) if target.authority() == "127.0.0.1:80"));
+        let (result, response) =
+            exchange(vec![5, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1, 0, 80], None).await;
+        assert!(
+            matches!(result.unwrap(), SocksRequest::Connect(target) if target.authority() == "127.0.0.1:80")
+        );
         assert_eq!(&response[..2], &[5, 0]);
         assert_eq!(&response[2..4], &[5, 0]);
+    }
+
+    #[tokio::test]
+    async fn udp_associate_accepts_unspecified_ipv4_client_endpoint() {
+        let request = vec![5, 1, 0, 5, 3, 0, 1, 0, 0, 0, 0, 0, 0];
+        let (result, response) = exchange(request, None).await;
+        assert!(matches!(result.unwrap(), SocksRequest::UdpAssociate));
+        assert_eq!(response, [5, 0]);
+    }
+
+    #[tokio::test]
+    async fn udp_associate_reply_encodes_ipv4_and_ipv6_bound_endpoints() {
+        use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+        use tokio::io::AsyncReadExt;
+
+        for (addr, expected) in [
+            (
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 1234)),
+                vec![5, 0, 0, 1, 127, 0, 0, 1, 4, 210],
+            ),
+            (
+                SocketAddr::from((Ipv6Addr::LOCALHOST, 53)),
+                vec![
+                    5, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 53,
+                ],
+            ),
+        ] {
+            let (mut client, mut server) = tokio::io::duplex(64);
+            reply_udp_associate(&mut server, addr).await.unwrap();
+            let mut actual = vec![0; expected.len()];
+            client.read_exact(&mut actual).await.unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn request_rejects_nonzero_reserved_byte() {
+        let request = vec![5, 1, 0, 5, 3, 1, 1, 0, 0, 0, 0, 0, 0];
+        let (result, response) = exchange(request, None).await;
+        assert!(result.is_err());
+        assert_eq!(&response[2..], &[5, 1, 0, 1, 0, 0, 0, 0, 0, 0]);
     }
 
     #[tokio::test]
@@ -318,12 +376,17 @@ mod tests {
 
     #[tokio::test]
     async fn password_auth_checks_credentials_and_nonempty_fields() {
-        let valid = vec![5, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4, b'p', b'a', b's', b's', 5, 1, 0, 1, 127, 0, 0, 1, 0, 80];
+        let valid = vec![
+            5, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4, b'p', b'a', b's', b's', 5, 1, 0, 1, 127, 0,
+            0, 1, 0, 80,
+        ];
         let (result, response) = exchange(valid, Some(auth())).await;
         assert!(matches!(result.unwrap(), SocksRequest::Connect(_)));
         assert_eq!(&response[..4], &[5, 2, 1, 0]);
 
-        let bad = vec![5, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4, b'n', b'o', b'p', b'e'];
+        let bad = vec![
+            5, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4, b'n', b'o', b'p', b'e',
+        ];
         let (result, response) = exchange(bad, Some(auth())).await;
         assert!(result.is_err());
         assert_eq!(response, [5, 2, 1, 1]);
