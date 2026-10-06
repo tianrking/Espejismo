@@ -15,7 +15,7 @@ use subtle::ConstantTimeEq;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio::sync::Semaphore;
-use tokio::time::{Duration, timeout};
+use tokio::time::{timeout, Duration};
 use tracing::{debug, info};
 
 use crate::metrics::Metrics;
@@ -512,16 +512,16 @@ fn escape_label_value(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        AdminState, authorized, content_length, handle_admin_peer, handle_admin_peer_limited,
-        is_health_probe, render_runtime_prometheus,
+        authorized, content_length, handle_admin_peer, handle_admin_peer_limited, is_health_probe,
+        render_runtime_prometheus, AdminState,
     };
     use crate::runtime_state::{RuntimeStateSnapshot, TunnelLaneSnapshot};
     use crate::{metrics::Metrics, runtime_state::RuntimeState};
     use std::sync::{
-        Arc,
         atomic::{AtomicUsize, Ordering},
+        Arc,
     };
-    use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
+    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
     use tokio::sync::Semaphore;
     use tokio::time::Duration;
 
@@ -563,11 +563,9 @@ mod tests {
         client.read_to_end(&mut response).await.unwrap();
         server.await.unwrap();
         drop(held);
-        assert!(
-            String::from_utf8(response)
-                .unwrap()
-                .starts_with("HTTP/1.1 503")
-        );
+        assert!(String::from_utf8(response)
+            .unwrap()
+            .starts_with("HTTP/1.1 503"));
     }
 
     fn admin_state(reload: Option<super::AdminAction>) -> AdminState {
@@ -646,6 +644,74 @@ mod tests {
         ).await;
         assert!(accepted.starts_with("HTTP/1.1 200"));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn every_admin_action_obeys_the_authorization_matrix() {
+        // Keep this route list aligned with the dispatch table above: every
+        // data or control endpoint must reject absent/invalid credentials.
+        let routes = [
+            ("GET", "/status", ""),
+            ("GET", "/connections", ""),
+            ("GET", "/metrics", ""),
+            ("POST", "/reload", ""),
+            ("POST", "/apply", "x=1"),
+        ];
+        let calls = Arc::new(AtomicUsize::new(0));
+        let action_calls = calls.clone();
+        let action: super::AdminAction = Arc::new(move |_| {
+            let calls = action_calls.clone();
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({"ok": true}))
+            })
+        });
+
+        for (method, path, body) in routes {
+            let content_length = if body.is_empty() {
+                ""
+            } else {
+                "Content-Length: 3\r\n"
+            };
+            for credential in [None, Some("Authorization: Bearer wrong\r\n")] {
+                let auth = credential.unwrap_or("");
+                let response = request(
+                    admin_state(Some(action.clone())),
+                    &format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\n{auth}{content_length}\r\n{body}"),
+                ).await;
+                assert!(
+                    response.starts_with("HTTP/1.1 401"),
+                    "{method} {path} without valid auth: {response}"
+                );
+            }
+
+            for credential in [
+                "Authorization: Bearer admin-secret\r\n",
+                "X-Espejismo-Admin-Token: admin-secret\r\n",
+            ] {
+                let response = request(
+                    admin_state(Some(action.clone())),
+                    &format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\n{credential}{content_length}\r\n{body}"),
+                ).await;
+                assert!(
+                    response.starts_with("HTTP/1.1 200"),
+                    "{method} {path} with valid auth: {response}"
+                );
+            }
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            4,
+            "only authenticated control actions run"
+        );
+
+        let health = request(
+            admin_state(None),
+            "GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )
+        .await;
+        assert!(health.starts_with("HTTP/1.1 200"));
+        assert!(health.ends_with("ok\n"));
     }
 
     #[test]
