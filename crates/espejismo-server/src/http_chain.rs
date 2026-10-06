@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
 use base64::Engine;
@@ -11,6 +11,10 @@ use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
 const MAX_HTTP_CONNECT_RESPONSE: usize = 16 * 1024;
 const HTTPS_PROXY_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+// Rustls keeps TLS session tickets in ClientConfig's resumption store. Reuse
+// one config so separate CONNECT tunnels to the same proxy can resume TLS.
+static HTTPS_PROXY_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
 
 pub(crate) async fn connect_via_http_proxy(
     proxy: &EgressProxy,
@@ -68,20 +72,30 @@ async fn connect_tls_to_proxy_with_timeout<S>(
 where
     S: AsyncRead + AsyncWrite + Unpin,
 {
-    let mut roots = RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let config = ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    let config = https_proxy_tls_config();
     let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from(host.to_string())
         .with_context(|| format!("invalid HTTPS proxy TLS server name {host}"))?;
     timeout(
         handshake_timeout,
-        TlsConnector::from(Arc::new(config)).connect(server_name, stream),
+        TlsConnector::from(config).connect(server_name, stream),
     )
     .await
     .context("TLS handshake with HTTPS proxy timed out")?
     .context("TLS handshake with HTTPS proxy")
+}
+
+fn https_proxy_tls_config() -> Arc<ClientConfig> {
+    HTTPS_PROXY_TLS_CONFIG
+        .get_or_init(|| {
+            let mut roots = RootCertStore::empty();
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            Arc::new(
+                ClientConfig::builder()
+                    .with_root_certificates(roots)
+                    .with_no_client_auth(),
+            )
+        })
+        .clone()
 }
 
 async fn read_connect_response<S>(stream: &mut S) -> Result<()>
@@ -127,7 +141,16 @@ mod tests {
         time::timeout,
     };
 
-    use super::{build_connect_request, connect_tls_to_proxy_with_timeout};
+    use super::{
+        build_connect_request, connect_tls_to_proxy_with_timeout, https_proxy_tls_config,
+    };
+
+    #[test]
+    fn https_proxy_handshakes_share_rustls_session_cache() {
+        let first = https_proxy_tls_config();
+        let second = https_proxy_tls_config();
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+    }
 
     #[tokio::test]
     async fn https_proxy_tls_handshake_times_out_and_closes_connection() {

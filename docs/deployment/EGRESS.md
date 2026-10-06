@@ -118,3 +118,5 @@ TLS-protected `https://` CONNECT proxies.
 Espejismo validates HTTPS proxy certificates against its bundled Mozilla
 WebPKI roots. Hostname matching and certificate troubleshooting are described
 in [TLS Certificates](TLS-CERTIFICATES.md).
+The remote shares Rustls session state across HTTPS proxy connections, allowing
+later connections to resume when the proxy issues and accepts TLS tickets.
