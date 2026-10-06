@@ -985,6 +985,27 @@ mod tests {
         assert!(should_prune_idle_lane(3, 2, 0, 0, Some(700), 1_000));
     }
 
+    #[test]
+    fn idle_pool_shrink_releases_only_excess_idle_lanes() {
+        // Model the manager's lane-order scan: each released control lowers
+        // the connected count before the next candidate is considered.
+        let minimum = 2;
+        let mut connected = 5;
+        let candidates = [Some(100), Some(200), Some(300), Some(400), Some(500)];
+        let mut pruned = 0;
+
+        for last_activity in candidates {
+            if should_prune_idle_lane(connected, minimum, 0, 0, last_activity, 1_000) {
+                connected -= 1;
+                pruned += 1;
+            }
+        }
+
+        assert_eq!(pruned, 3);
+        assert_eq!(connected, minimum);
+        assert!(!should_prune_idle_lane(connected, minimum, 0, 0, Some(100), 1_000));
+    }
+
     #[tokio::test]
     async fn concurrent_acquisitions_reserve_distinct_idle_lanes() {
         let lanes = Arc::new(vec![
