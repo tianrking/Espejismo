@@ -74,7 +74,8 @@ using that identity. For multi-user deployments, rotate only the selected
    matching client's `shared.psk`.
 4. Validate each config with the corresponding binary's `--check-config`, then
    apply the update using the deployment's restart or authenticated reload
-procedure.
+   procedure. A successful remote reload replaces the complete authentication
+   settings snapshot for new physical tunnels; no old-PSK overlap is retained.
 5. Confirm that a client using the new key reconnects successfully. Remove
    old copies from active configs and handle backups under the same secret
    policy; backups containing a retired PSK remain sensitive.

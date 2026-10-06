@@ -1061,6 +1061,29 @@ mod reload_safety_tests {
     use std::sync::Arc;
     use tokio::sync::RwLock;
 
+    async fn handshake_with_current_settings(
+        settings: &RwLock<super::RemoteSettings>,
+        client_config: espejismo_core::HandshakeConfig,
+    ) -> (
+        anyhow::Result<espejismo_core::AuthenticatedSession>,
+        anyhow::Result<espejismo_core::SessionKeys>,
+    ) {
+        use espejismo_core::{accept_handshake_with_users, connect_handshake, ReplayCache};
+        use std::sync::Arc;
+        use tokio::io::duplex;
+        use tokio::sync::Mutex;
+
+        let users = settings.read().await.users.clone();
+        let (mut client, mut server) = duplex(4096);
+        let replay = Arc::new(Mutex::new(ReplayCache::new(60)));
+        let server_task = tokio::spawn(async move {
+            accept_handshake_with_users(&mut server, &users, replay).await
+        });
+        let client_result = connect_handshake(&mut client, &client_config).await;
+        let server_result = server_task.await.expect("server handshake task joins");
+        (server_result, client_result)
+    }
+
     fn test_args() -> Args {
         Args::try_parse_from(["espejismo-remote"]).expect("default arguments parse")
     }
@@ -1101,6 +1124,36 @@ mod reload_safety_tests {
                 .expect("committed HTTPS proxy is configured"),
             expected_proxy
         );
+    }
+
+    #[tokio::test]
+    async fn runtime_psk_rotation_rejects_old_key_and_accepts_new_key() {
+        let mut old_config = parse_config(&example_config()).expect("example config parses");
+        old_config.remote.users.clear();
+        old_config.shared.psk = Some("old-runtime-rotation-key-123456".to_string());
+        let old = build_remote_settings(&old_config, &test_args()).expect("initial settings build");
+        let old_client = old.users[0].config.clone();
+        let settings = RwLock::new(old);
+
+        let mut rotated_config = old_config;
+        rotated_config.shared.psk = Some("new-runtime-rotation-key-abcdef".to_string());
+        let rotated =
+            build_remote_settings(&rotated_config, &test_args()).expect("rotated settings build");
+        let new_client = rotated.users[0].config.clone();
+        replace_remote_settings(&settings, rotated).await;
+
+        let (old_server, old_client_result) =
+            handshake_with_current_settings(&settings, old_client).await;
+        assert!(old_server.is_err(), "retired PSK must not authenticate");
+        assert!(
+            old_client_result.is_err(),
+            "retired PSK must not complete handshake"
+        );
+
+        let (new_server, new_client_result) =
+            handshake_with_current_settings(&settings, new_client).await;
+        assert_eq!(new_server.expect("new PSK authenticates").user, "default");
+        assert!(new_client_result.is_ok(), "new PSK completes handshake");
     }
 
     #[tokio::test]
