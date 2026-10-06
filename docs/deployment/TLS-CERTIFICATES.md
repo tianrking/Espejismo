@@ -17,7 +17,9 @@ terminates TLS:
 
 - For an `https://` egress proxy, the upstream proxy operator provisions and
   renews the proxy certificate. Espejismo only validates it; it does not manage
-  that certificate.
+  that certificate. Runtime configuration reload can replace the proxy URL for
+  new streams, but certificate/key rotation remains on the proxy; established
+  TLS connections are not reconfigured by an Espejismo reload.
 - For public HTTPS in front of the HTTP/2 underlay, configure certificate
   issuance, renewal, and reload on the external reverse proxy. Espejismo neither
   stores nor renews that certificate.

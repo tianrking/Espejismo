@@ -1028,11 +1028,17 @@ mod reload_safety_tests {
         next_config.remote.users.pop();
         next_config.shared.idle_timeout_secs += 17;
         next_config.shared.max_streams += 3;
+        next_config.remote.egress.proxy = Some("https://rotated-proxy.example:8443".to_string());
         let next =
             build_remote_settings(&next_config, &test_args()).expect("replacement settings build");
         let expected_users = next.users.len();
         let expected_idle_timeout = next.idle_timeout;
         let expected_max_streams = next.max_streams;
+        let expected_proxy = next
+            .egress
+            .upstream_proxy()
+            .expect("replacement proxy config is valid")
+            .expect("replacement HTTPS proxy is configured");
 
         let committed_users = replace_remote_settings(&settings, next).await;
         let committed = settings.read().await;
@@ -1040,6 +1046,14 @@ mod reload_safety_tests {
         assert_eq!(committed.users.len(), expected_users);
         assert_eq!(committed.idle_timeout, expected_idle_timeout);
         assert_eq!(committed.max_streams, expected_max_streams);
+        assert_eq!(
+            committed
+                .egress
+                .upstream_proxy()
+                .expect("committed proxy config is valid")
+                .expect("committed HTTPS proxy is configured"),
+            expected_proxy
+        );
     }
 
     #[tokio::test]
@@ -1049,6 +1063,7 @@ mod reload_safety_tests {
         let original_user_count = initial.users.len();
         let original_idle_timeout = initial.idle_timeout;
         let original_max_streams = initial.max_streams;
+        let original_proxy = initial.egress.upstream_proxy().unwrap();
         let settings = RwLock::new(initial);
 
         let candidate = build_remote_settings(
@@ -1062,6 +1077,7 @@ mod reload_safety_tests {
         assert_eq!(current.users.len(), original_user_count);
         assert_eq!(current.idle_timeout, original_idle_timeout);
         assert_eq!(current.max_streams, original_max_streams);
+        assert_eq!(current.egress.upstream_proxy().unwrap(), original_proxy);
     }
 
     #[cfg(unix)]
