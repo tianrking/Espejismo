@@ -434,17 +434,43 @@ async fn native_mux_goaway_drains_existing_streams() {
 
     tokio::spawn(async move { while client_session.next().await.is_some() {} });
 
-    let mut client_stream = client_control
+    let client_stream = client_control
         .open_stream(StreamPriority::Interactive)
         .await
         .unwrap();
-    let mut server_stream = server_session.next().await.unwrap().unwrap();
+    let server_stream = server_session.next().await.unwrap().unwrap();
     server_control.goaway().unwrap();
 
-    client_stream.write_all(b"after-goaway").await.unwrap();
-    let mut received = vec![0_u8; 12];
-    server_stream.read_exact(&mut received).await.unwrap();
-    assert_eq!(&received, b"after-goaway");
+    // Keep the stream alive across GOAWAY and exercise both directions with
+    // enough data to span many mux frames. FIN must follow all queued data.
+    let client_payload: Vec<u8> = (0..256 * 1024).map(|n| (n % 251) as u8).collect();
+    let server_payload: Vec<u8> = (0..192 * 1024).map(|n| (n % 239) as u8).collect();
+    let (mut client_read, mut client_write) = tokio::io::split(client_stream);
+    let (mut server_read, mut server_write) = tokio::io::split(server_stream);
+    tokio::join!(
+        async {
+            client_write.write_all(&client_payload).await.unwrap();
+            client_write.shutdown().await.unwrap();
+        },
+        async {
+            let mut received = vec![0; client_payload.len()];
+            server_read.read_exact(&mut received).await.unwrap();
+            assert_eq!(received, client_payload);
+            let mut eof = [0];
+            assert_eq!(server_read.read(&mut eof).await.unwrap(), 0);
+        },
+        async {
+            server_write.write_all(&server_payload).await.unwrap();
+            server_write.shutdown().await.unwrap();
+        },
+        async {
+            let mut received = vec![0; server_payload.len()];
+            client_read.read_exact(&mut received).await.unwrap();
+            assert_eq!(received, server_payload);
+            let mut eof = [0];
+            assert_eq!(client_read.read(&mut eof).await.unwrap(), 0);
+        },
+    );
     assert!(client_control
         .open_stream(StreamPriority::Interactive)
         .await
