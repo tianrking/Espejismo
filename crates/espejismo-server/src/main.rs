@@ -249,8 +249,8 @@ async fn main() -> Result<()> {
     // port-hopping bind failure an immediate startup error with its address.
     let listeners = bind_remote_listeners(&runtime)?;
     let metrics = Metrics::default();
+    let reload = runtime.reload_action();
     if let Some(addr) = runtime.admin_listen {
-        let reload = runtime.reload_action();
         spawn_admin_server(
             addr,
             AdminState {
@@ -258,7 +258,7 @@ async fn main() -> Result<()> {
                 metrics: metrics.clone(),
                 runtime: runtime.runtime_state.clone(),
                 token: runtime.admin_token.clone(),
-                reload,
+                reload: reload.clone(),
             },
         );
     }
@@ -306,9 +306,19 @@ async fn main() -> Result<()> {
     }
     drop(accepted_tx);
 
+    let mut sighup = register_sighup()?;
+
     loop {
         let accepted = tokio::select! {
             accepted = accepted_rx.recv() => accepted,
+            _ = wait_for_sighup(&mut sighup) => {
+                match run_signal_reload(reload.as_ref()).await {
+                    Some(Ok(_)) => info!("configuration reloaded after SIGHUP"),
+                    Some(Err(err)) => debug!(error = %err, "configuration reload after SIGHUP failed"),
+                    None => debug!("SIGHUP ignored because configuration reload is unavailable"),
+                }
+                continue;
+            }
             _ = shutdown_signal() => {
                 info!("shutdown signal received");
                 break;
@@ -336,6 +346,46 @@ async fn main() -> Result<()> {
         });
     }
     Ok(())
+}
+
+#[cfg(unix)]
+type SighupListener = tokio::signal::unix::Signal;
+#[cfg(not(unix))]
+struct SighupListener;
+
+fn register_sighup() -> Result<SighupListener> {
+    #[cfg(unix)]
+    {
+        Ok(
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup())
+                .context("register SIGHUP handler")?,
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        Ok(SighupListener)
+    }
+}
+
+async fn wait_for_sighup(listener: &mut SighupListener) {
+    #[cfg(unix)]
+    {
+        listener.recv().await;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = listener;
+        std::future::pending::<()>().await;
+    }
+}
+
+async fn run_signal_reload(
+    reload: Option<&AdminAction>,
+) -> Option<anyhow::Result<serde_json::Value>> {
+    match reload {
+        Some(action) => Some(action(None).await),
+        None => None,
+    }
 }
 
 fn accept_resource_retry_delay(consecutive_failures: u32) -> Duration {
@@ -957,9 +1007,11 @@ mod startup_validation_tests {
 
 #[cfg(test)]
 mod reload_safety_tests {
-    use super::{build_remote_settings, replace_remote_settings, Args};
+    use super::{build_remote_settings, replace_remote_settings, run_signal_reload, Args};
     use clap::Parser;
-    use espejismo_core::{config::example_config, parse_config};
+    use espejismo_core::{config::example_config, parse_config, AdminAction};
+    use serde_json::json;
+    use std::sync::Arc;
     use tokio::sync::RwLock;
 
     fn test_args() -> Args {
@@ -1010,5 +1062,43 @@ mod reload_safety_tests {
         assert_eq!(current.users.len(), original_user_count);
         assert_eq!(current.idle_timeout, original_idle_timeout);
         assert_eq!(current.max_streams, original_max_streams);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn signal_reload_uses_atomic_candidate_commit() {
+        let config = parse_config(&example_config()).expect("example config parses");
+        let initial = build_remote_settings(&config, &test_args()).expect("initial settings build");
+        let original_idle_timeout = initial.idle_timeout;
+        let settings = Arc::new(RwLock::new(initial));
+        let mut next_config = config.clone();
+        next_config.shared.idle_timeout_secs += 17;
+        let success_settings = settings.clone();
+        let success: AdminAction = Arc::new(move |_| {
+            let settings = success_settings.clone();
+            let config = next_config.clone();
+            Box::pin(async move {
+                let next = build_remote_settings(&config, &test_args())?;
+                replace_remote_settings(&settings, next).await;
+                Ok(json!({"applied": true}))
+            })
+        });
+        assert!(run_signal_reload(Some(&success)).await.unwrap().is_ok());
+        let applied_timeout = settings.read().await.idle_timeout;
+        assert_ne!(applied_timeout, original_idle_timeout);
+
+        let failure_settings = settings.clone();
+        let failure: AdminAction = Arc::new(move |_| {
+            let settings = failure_settings.clone();
+            let config = config.clone();
+            Box::pin(async move {
+                let invalid_args = Args::try_parse_from(["espejismo-remote", "--psk", "x"])?;
+                let next = build_remote_settings(&config, &invalid_args)?;
+                replace_remote_settings(&settings, next).await;
+                Ok(json!({"applied": true}))
+            })
+        });
+        assert!(run_signal_reload(Some(&failure)).await.unwrap().is_err());
+        assert_eq!(settings.read().await.idle_timeout, applied_timeout);
     }
 }

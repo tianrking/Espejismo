@@ -35,8 +35,10 @@ For probe behavior and container/orchestrator examples, see
 
 ## Configuration reload
 
-Configuration is not watched automatically, and neither binary handles
-`SIGHUP`. Use the authenticated admin endpoint to request an update:
+Configuration is not watched automatically. The remote binary reloads its
+original config source on Unix when it receives `SIGHUP`; the local binary does
+not handle `SIGHUP`. Either binary can also use the authenticated admin endpoint
+to request an update:
 
 - `POST /reload` rereads the original `--config` file or `--config-base64`
   value. It is unavailable if the process was started without either source.

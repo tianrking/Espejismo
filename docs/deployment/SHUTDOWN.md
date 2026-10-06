@@ -17,11 +17,12 @@ its accept loop; active peer handlers are not joined before exit.
   period.
 - On Windows, the service code listens for Ctrl-C; it does not register a
   separate SIGTERM handler.
-- SIGHUP, SIGUSR1, and SIGUSR2 have no application-defined action. In
-  particular, SIGHUP does not reload configuration or reopen the log file.
-  Their default behavior is left to the operating system. Configuration
-  changes that support runtime application use the authenticated admin API;
-  see [Admin API](ADMIN.md).
+- The remote binary treats SIGHUP as a request to reload its original config
+  source on Unix. A failed reload leaves current settings active and the
+  service running. The local binary does not handle SIGHUP. Neither binary
+  reopens its log file on SIGHUP. SIGUSR1 and SIGUSR2 retain their operating
+  system default behavior. Configuration changes that support runtime
+  application can also use the authenticated admin API; see [Admin API](ADMIN.md).
 - SIGKILL and SIGSTOP cannot be handled by an application. Other signals are
   not converted into shutdown requests by these handlers.
 - The local process aborts and joins its listener tasks after a handled
