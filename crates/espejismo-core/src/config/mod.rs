@@ -379,6 +379,46 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     Ok(config)
 }
 
+/// Return the sorted configuration paths whose serialized values differ.
+/// Values are deliberately omitted so callers can report changes without
+/// exposing PSKs, admin tokens, or other configured secrets.
+pub fn changed_config_paths(
+    before: &EspejismoConfig,
+    after: &EspejismoConfig,
+) -> Result<Vec<String>> {
+    let before = serde_json::to_value(before)?;
+    let after = serde_json::to_value(after)?;
+    let mut paths = Vec::new();
+    collect_changed_paths(&before, &after, "", &mut paths);
+    Ok(paths)
+}
+
+fn collect_changed_paths(
+    before: &serde_json::Value,
+    after: &serde_json::Value,
+    prefix: &str,
+    paths: &mut Vec<String>,
+) {
+    if let (Some(before), Some(after)) = (before.as_object(), after.as_object()) {
+        let keys: std::collections::BTreeSet<_> = before.keys().chain(after.keys()).collect();
+        for key in keys {
+            let path = if prefix.is_empty() {
+                key.to_string()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            match (before.get(key), after.get(key)) {
+                (Some(before), Some(after)) => {
+                    collect_changed_paths(before, after, &path, paths);
+                }
+                _ => paths.push(path),
+            }
+        }
+    } else if before != after {
+        paths.push(prefix.to_string());
+    }
+}
+
 fn unknown_field_diagnostic(message: &str) -> Option<String> {
     let marker = "unknown field `";
     let start = message.find(marker)? + marker.len();
@@ -700,9 +740,43 @@ mod tests {
 
     use super::defaults;
     use super::{
-        adaptive_throughput_floor, apply_adaptive_throughput, apply_named_profile, config_to_toml,
-        encode_config_base64, example_config, load_config_base64, parse_config, EspejismoConfig,
+        adaptive_throughput_floor, apply_adaptive_throughput, apply_named_profile,
+        changed_config_paths, config_to_toml, encode_config_base64, example_config,
+        load_config_base64, parse_config, EspejismoConfig, RemoteUserBandwidthConfig,
+        RemoteUserConfig, RemoteUserQuotaConfig,
     };
+
+    #[test]
+    fn config_diff_reports_sorted_paths_without_secret_values() {
+        let before = EspejismoConfig::default();
+        let mut after = before.clone();
+        after.shared.max_streams += 2;
+        after.remote.users.push(RemoteUserConfig {
+            name: "alice".to_string(),
+            psk: "private-user-key".to_string(),
+            quota: RemoteUserQuotaConfig {
+                bytes: None,
+                window_secs: 3600,
+            },
+            bandwidth: RemoteUserBandwidthConfig::default(),
+        });
+        after.admin.token = Some("private-admin-token".to_string());
+        after.shared.psk = Some("private-shared-key".to_string());
+
+        let paths = changed_config_paths(&before, &after).unwrap();
+        assert_eq!(
+            paths,
+            [
+                "admin.token",
+                "remote.users",
+                "shared.max_streams",
+                "shared.psk"
+            ]
+        );
+        let rendered = format!("{paths:?}");
+        assert!(!rendered.contains("private"));
+        assert!(changed_config_paths(&after, &after).unwrap().is_empty());
+    }
 
     #[cfg(unix)]
     #[test]
@@ -758,7 +832,10 @@ mod tests {
         let config = parse_config("[local]\nserver = '127.0.0.1:6690'\n").unwrap();
         let defaults = EspejismoConfig::default();
         assert_eq!(config.shared.max_streams, defaults.shared.max_streams);
-        assert_eq!(config.shared.clock_skew_secs, defaults.shared.clock_skew_secs);
+        assert_eq!(
+            config.shared.clock_skew_secs,
+            defaults.shared.clock_skew_secs
+        );
         assert_eq!(config.remote.listen, defaults.remote.listen);
         assert_eq!(config.local.socks5_listen, defaults.local.socks5_listen);
     }
