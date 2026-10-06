@@ -155,7 +155,9 @@ impl StreamHandle {
 
         // Check if we can omit the update
         let flags = self.get_flags();
-        if delta < (self.max_recv_window / 2) && flags.value() == 0 {
+        // Compare against half without rounding an odd window down. For an
+        // odd ceiling, the first update is sent when credit reaches ceil(max / 2).
+        if u64::from(delta) * 2 < u64::from(self.max_recv_window) && flags.value() == 0 {
             return Ok(());
         }
         let frame = Frame::new_window_update(flags, self.id, delta);
@@ -1009,6 +1011,46 @@ mod test {
                 }
                 _ => panic!("half-window credit must emit a window update"),
             }
+            assert_eq!(stream.recv_window(), max_window);
+        });
+    }
+
+    #[test]
+    fn odd_window_update_threshold_rounds_up_and_respects_ceiling() {
+        let rt = rt();
+        rt.block_on(async {
+            let (_frame_sender, frame_receiver) = channel(2);
+            let (unbound_sender, mut unbound_receiver) = unbounded();
+            let max_window = 101;
+            let mut stream = StreamHandle::new(
+                1,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                max_window,
+            );
+            stream.state = StreamState::Established;
+            stream.recv_window = 50;
+
+            // One byte of buffering leaves 50 bytes of credit, below
+            // ceil(101 / 2) = 51.
+            stream.read_buf.push(BytesMut::from(&b"x"[..]));
+            stream.send_window_update().unwrap();
+            assert!(unbound_receiver.next().now_or_never().is_none());
+            assert_eq!(stream.recv_window(), 50);
+
+            // Consuming the byte makes the available credit 51; the update
+            // reaches, but never exceeds, the configured maximum.
+            stream.read_buf.clear();
+            stream.send_window_update().unwrap();
+            match unbound_receiver.next().await.unwrap() {
+                StreamEvent::Frame(frame) => assert_eq!(frame.length(), 51),
+                _ => panic!("half-window credit must emit a window update"),
+            }
+            assert_eq!(stream.recv_window(), max_window);
+
+            stream.send_window_update().unwrap();
+            assert!(unbound_receiver.next().now_or_never().is_none());
             assert_eq!(stream.recv_window(), max_window);
         });
     }
