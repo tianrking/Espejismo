@@ -133,7 +133,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::Arc, time::Duration};
 
     use espejismo_core::{EgressProxy, EgressProxyKind};
     use tokio::{
@@ -142,8 +142,9 @@ mod tests {
     };
     use tokio_rustls::TlsAcceptor;
     use tokio_rustls::rustls::{
-        ServerConfig,
-        pki_types::{CertificateDer, PrivateKeyDer},
+        DigitallySignedStruct, ServerConfig, SignatureScheme,
+        client::danger::{HandshakeSignatureValid, ServerCertVerifier},
+        pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime},
     };
 
     use super::{build_connect_request, connect_tls_to_proxy_with_timeout, https_proxy_tls_config};
@@ -153,6 +154,100 @@ mod tests {
         let first = https_proxy_tls_config();
         let second = https_proxy_tls_config();
         assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert!(
+            first.alpn_protocols.is_empty(),
+            "HTTPS proxy TLS must not negotiate an application protocol"
+        );
+    }
+
+    #[tokio::test]
+    async fn https_proxy_tls_succeeds_when_server_advertises_alpn() {
+        use tokio_rustls::TlsConnector;
+        use tokio_rustls::rustls::ClientConfig;
+
+        let cert = CertificateDer::from(
+            include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+        );
+        let key = PrivateKeyDer::try_from(
+            include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+        )
+        .unwrap();
+        let mut server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.clone()], key)
+            .unwrap();
+        server_config.alpn_protocols = vec![b"h2".to_vec()];
+
+        let client_config = Arc::new(
+            ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(AlpnTestVerifier))
+                .with_no_client_auth(),
+        );
+        assert!(client_config.alpn_protocols.is_empty());
+
+        let (client, server) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            TlsAcceptor::from(Arc::new(server_config))
+                .accept(server)
+                .await
+                .unwrap()
+                .get_ref()
+                .1
+                .alpn_protocol()
+                .map(ToOwned::to_owned)
+        });
+        let server_name = ServerName::try_from("localhost").unwrap();
+        let client = TlsConnector::from(client_config)
+            .connect(server_name, client)
+            .await
+            .expect("TLS should succeed when the client offers no ALPN");
+
+        assert_eq!(client.get_ref().1.alpn_protocol(), None);
+        assert_eq!(server.await.unwrap(), None);
+    }
+
+    #[derive(Debug)]
+    struct AlpnTestVerifier;
+
+    impl ServerCertVerifier for AlpnTestVerifier {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: UnixTime,
+        ) -> Result<
+            tokio_rustls::rustls::client::danger::ServerCertVerified,
+            tokio_rustls::rustls::Error,
+        > {
+            Ok(tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            tokio_rustls::rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
     }
 
     #[tokio::test]
