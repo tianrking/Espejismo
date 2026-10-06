@@ -469,6 +469,8 @@ impl TunnelManager {
         }
 
         let _connect_guard = lane.connect_lock.lock().await;
+        // Waiters recheck the control after acquiring this lock, so a burst of
+        // stream demand shares one dial (or one recorded dial failure).
         if lane.control.lock().await.is_some() {
             return Ok(());
         }
@@ -599,8 +601,7 @@ impl TunnelManager {
 
     async fn record_lane_error(&self, lane: &Arc<TunnelLane>, error: String) {
         let mut health = lane.health.lock().await;
-        health.consecutive_failures = health.consecutive_failures.saturating_add(1);
-        health.stream_open_failures = health.stream_open_failures.saturating_add(1);
+        record_lane_failure(&mut health);
         health.last_activity_unix_secs = Some(unix_now_secs());
         health.last_error = Some(error.clone());
         health.last_error_unix_secs = Some(unix_now_secs());
@@ -647,6 +648,11 @@ impl TunnelManager {
             last_error_unix_secs: health.last_error_unix_secs,
         });
     }
+}
+
+fn record_lane_failure(health: &mut LaneHealth) {
+    health.consecutive_failures = health.consecutive_failures.saturating_add(1);
+    health.stream_open_failures = health.stream_open_failures.saturating_add(1);
 }
 
 fn lane_kinds(pool: &TunnelPoolConfig) -> Vec<LaneKind> {
@@ -914,9 +920,10 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        connection_expired, idle_long_enough_at, lane_kinds, lane_score, reconnect_backoff,
-        sample_reconnect_backoff, select_and_reserve_lane, should_prune_idle_lane,
-        stream_open_failure, update_recent_throughput, LaneHealth, LaneKind, TunnelLane,
+        connection_expired, idle_long_enough_at, lane_kinds, lane_score, record_lane_failure,
+        reconnect_backoff, sample_reconnect_backoff, select_and_reserve_lane,
+        should_prune_idle_lane, stream_open_failure, update_recent_throughput, LaneHealth,
+        LaneKind, TunnelLane,
     };
     use espejismo_core::{StreamPriority, TunnelPoolConfig};
     use std::sync::Arc;
@@ -1077,6 +1084,32 @@ mod tests {
         assert_eq!(reconnect_backoff(5, 100), Duration::from_millis(8_000));
         assert_eq!(reconnect_backoff(6, 100), Duration::from_millis(13_333));
         assert_eq!(reconnect_backoff(99, 120), Duration::from_millis(15_999));
+    }
+
+    #[test]
+    fn repeated_dial_failures_increase_throttle_and_counters_saturate() {
+        let mut health = LaneHealth::default();
+        let expected = [0, 1, 2, 3, 4, 5, 6, 7];
+        for failures in expected {
+            assert_eq!(health.consecutive_failures, failures);
+            let delay = reconnect_backoff(health.consecutive_failures, 100);
+            if failures == 0 {
+                assert_eq!(delay, Duration::ZERO);
+            } else if failures > 1 {
+                assert!(delay >= reconnect_backoff(failures - 1, 100));
+            }
+            record_lane_failure(&mut health);
+        }
+        assert_eq!(
+            reconnect_backoff(health.consecutive_failures, 100),
+            Duration::from_millis(13_333)
+        );
+
+        health.consecutive_failures = u32::MAX;
+        health.stream_open_failures = u64::MAX;
+        record_lane_failure(&mut health);
+        assert_eq!(health.consecutive_failures, u32::MAX);
+        assert_eq!(health.stream_open_failures, u64::MAX);
     }
 
     #[test]
