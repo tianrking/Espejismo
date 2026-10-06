@@ -24,6 +24,9 @@ use crate::mux::{client_session, MuxControl, MuxRuntimeConfig, MuxStream};
 
 // DNS, TCP, and handshake share a fixed ceiling so pool setup cannot stall indefinitely.
 const LANE_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+// Match the native mux idle lifetime; keeping a warm minimum avoids reconnecting
+// every lane after a quiet period while excess lanes release their sockets.
+const IDLE_LANE_PRUNE_AFTER: Duration = Duration::from_secs(300);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LaneKind {
@@ -78,6 +81,7 @@ pub(crate) struct TunnelManager {
     adaptive: Arc<Mutex<AdaptiveThroughput>>,
     max_reconnect_attempts: u32,
     max_connection_age: Duration,
+    min_connections: usize,
     metrics: Metrics,
     runtime_state: RuntimeState,
     connector: Arc<dyn TransportConnector>,
@@ -303,6 +307,11 @@ impl TunnelManager {
             adaptive: adaptive.clone(),
             max_reconnect_attempts: config.pool.max_reconnect_attempts.max(1),
             max_connection_age: Duration::from_secs(config.pool.max_connection_age_secs.max(1)),
+            min_connections: config
+                .pool
+                .min_connections
+                .min(kinds_len(&config.pool))
+                .max(1),
             metrics,
             runtime_state,
             connector: Arc::new(TcpTransportConnector {
@@ -316,6 +325,7 @@ impl TunnelManager {
     }
 
     pub(crate) async fn open_stream(&self, priority: StreamPriority) -> Result<TunnelStream> {
+        self.prune_idle_lanes().await;
         let lane = select_and_reserve_lane(&self.lanes, &self.select_lock, priority)
             .await
             .context("no tunnel lanes configured")?;
@@ -335,6 +345,43 @@ impl TunnelManager {
             Err(err) => {
                 self.release_lane_reservation(&lane).await;
                 Err(err)
+            }
+        }
+    }
+
+    async fn prune_idle_lanes(&self) {
+        // Serialize pruning with lane reservation so concurrent openers cannot
+        // shrink below the configured warm floor.
+        let _selection = self.select_lock.lock().await;
+        let mut connected = 0usize;
+        for lane in &self.lanes {
+            if lane.control.lock().await.is_some() {
+                connected += 1;
+            }
+        }
+        if connected <= self.min_connections {
+            return;
+        }
+        for lane in &self.lanes {
+            if connected <= self.min_connections {
+                break;
+            }
+            let health = lane.health.lock().await;
+            if !should_prune_idle_lane(
+                connected,
+                self.min_connections,
+                health.active_streams,
+                health.pending_stream_opens,
+                health.last_activity_unix_secs,
+                unix_now_secs(),
+            ) {
+                continue;
+            }
+            drop(health);
+            let mut control = lane.control.lock().await;
+            if control.is_some() {
+                *control = None;
+                connected -= 1;
             }
         }
     }
@@ -616,6 +663,28 @@ fn connection_expired(connected_at: Option<Instant>, max_age: Duration, now: Ins
     connected_at.is_some_and(|at| now.duration_since(at) >= max_age)
 }
 
+fn idle_long_enough_at(last_activity: Option<u64>, now: u64, idle: Duration) -> bool {
+    last_activity.is_some_and(|last| now.saturating_sub(last) >= idle.as_secs())
+}
+
+fn should_prune_idle_lane(
+    connected: usize,
+    minimum: usize,
+    active_streams: u64,
+    pending_stream_opens: u64,
+    last_activity: Option<u64>,
+    now: u64,
+) -> bool {
+    connected > minimum
+        && active_streams == 0
+        && pending_stream_opens == 0
+        && idle_long_enough_at(last_activity, now, IDLE_LANE_PRUNE_AFTER)
+}
+
+fn kinds_len(pool: &TunnelPoolConfig) -> usize {
+    lane_kinds(pool).len()
+}
+
 async fn select_and_reserve_lane(
     lanes: &[Arc<TunnelLane>],
     select_lock: &Mutex<()>,
@@ -845,9 +914,9 @@ mod tests {
     use std::time::Duration;
 
     use super::{
-        connection_expired, lane_kinds, lane_score, reconnect_backoff, sample_reconnect_backoff,
-        select_and_reserve_lane, stream_open_failure, update_recent_throughput, LaneHealth,
-        LaneKind, TunnelLane,
+        connection_expired, idle_long_enough_at, lane_kinds, lane_score, reconnect_backoff,
+        sample_reconnect_backoff, select_and_reserve_lane, should_prune_idle_lane,
+        stream_open_failure, update_recent_throughput, LaneHealth, LaneKind, TunnelLane,
     };
     use espejismo_core::{StreamPriority, TunnelPoolConfig};
     use std::sync::Arc;
@@ -902,6 +971,20 @@ mod tests {
         assert!(connection_expired(Some(now - age), age, now));
     }
 
+    #[test]
+    fn idle_lane_pruning_waits_for_timeout_and_preserves_future_activity() {
+        let idle = Duration::from_secs(300);
+        assert!(!idle_long_enough_at(None, 1_000, idle));
+        assert!(!idle_long_enough_at(Some(701), 1_000, idle));
+        assert!(idle_long_enough_at(Some(700), 1_000, idle));
+        assert!(!idle_long_enough_at(Some(1_001), 1_000, idle));
+        assert!(!should_prune_idle_lane(2, 2, 0, 0, Some(100), 1_000));
+        assert!(!should_prune_idle_lane(3, 2, 1, 0, Some(100), 1_000));
+        assert!(!should_prune_idle_lane(3, 2, 0, 1, Some(100), 1_000));
+        assert!(!should_prune_idle_lane(3, 2, 0, 0, Some(701), 1_000));
+        assert!(should_prune_idle_lane(3, 2, 0, 0, Some(700), 1_000));
+    }
+
     #[tokio::test]
     async fn concurrent_acquisitions_reserve_distinct_idle_lanes() {
         let lanes = Arc::new(vec![
@@ -936,6 +1019,17 @@ mod tests {
         for lane in lanes.iter() {
             assert_eq!(lane.health.lock().await.pending_stream_opens, 16);
         }
+    }
+
+    #[tokio::test]
+    async fn pruned_lane_slot_remains_selectable_for_on_demand_reconnect() {
+        let lane = Arc::new(lane_with_health(LaneHealth::default()));
+        let selected =
+            select_and_reserve_lane(&[lane.clone()], &Mutex::new(()), StreamPriority::Bulk)
+                .await
+                .expect("a pruned connection must leave its lane slot available");
+        assert_eq!(selected.id, lane.id);
+        assert_eq!(selected.health.lock().await.pending_stream_opens, 1);
     }
 
     #[test]
@@ -1008,9 +1102,16 @@ mod tests {
         assert!(delays.iter().all(|delay| (low..=high).contains(delay)));
 
         let distinct: std::collections::HashSet<_> = delays.iter().copied().collect();
-        assert!(distinct.len() >= 20, "only {} delay slots sampled", distinct.len());
+        assert!(
+            distinct.len() >= 20,
+            "only {} delay slots sampled",
+            distinct.len()
+        );
         let mean = delays.iter().sum::<u64>() / LANES as u64;
-        assert!((1_900..=2_100).contains(&mean), "unexpected mean delay {mean}ms");
+        assert!(
+            (1_900..=2_100).contains(&mean),
+            "unexpected mean delay {mean}ms"
+        );
     }
 
     #[test]

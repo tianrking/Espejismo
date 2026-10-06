@@ -257,6 +257,7 @@ the tunnel does not replay or automatically resume it.
 | Client lane | stream open succeeds | connected | Add one active logical stream; the lane remains reusable. |
 | Client lane | mux open fails | connecting on retry, or unavailable | Discard the control and retry within the configured attempt limit. |
 | Client lane | session ends or age expires | disconnected / discarded | Existing streams fail with that session; age is checked before a later open. |
+| Client lane | idle for 300 seconds and above configured minimum | disconnected / pruned | Before a later stream open, discard excess idle controls; the lane slot reconnects on demand. Active or reserved lanes are kept. |
 | Remote physical session | accepted | authenticating | Apply handshake timeout and configured auth/fallback policy. |
 | Remote physical session | authentication succeeds | mux-serving | Yield streams to independent handlers until the mux session ends. |
 | Remote physical session | authentication rejects/times out | closed or fallback | Does not enter mux service. |
