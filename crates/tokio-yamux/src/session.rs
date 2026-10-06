@@ -312,6 +312,13 @@ where
             return Err(io::ErrorKind::TimedOut.into());
         }
 
+        // A delayed ACK must not turn every keepalive tick into another ping.
+        // One outstanding probe is enough to detect a dead peer and bounds
+        // per-session state and aggregate traffic during idle-connection storms.
+        if !self.pings.is_empty() {
+            return Ok(());
+        }
+
         let ping_id = self.send_ping(cx, None)?;
         trace!("[{:?}] sent keep_alive ping (id={:?})", self.ty, ping_id);
         self.pings.insert(ping_id, ping_at);
@@ -1004,6 +1011,31 @@ mod test {
                 },
             );
             drop(remote);
+        });
+    }
+
+    #[test]
+    fn delayed_keepalive_ack_does_not_multiply_idle_pings() {
+        rt().block_on(async {
+            let (mut remote, local) = MockSocket::new();
+            let mut session = Session::new_client(local, Config::default());
+            let waker = futures::task::noop_waker();
+            let mut cx = Context::from_waker(&waker);
+            let sent_at = session.now();
+
+            // Simulate many keepalive ticks while the first ACK is delayed.
+            for _ in 0..1_000 {
+                session.keep_alive(&mut cx, sent_at).unwrap();
+            }
+            assert_eq!(session.pings.len(), 1);
+            assert_eq!(remote.receiver.try_recv().unwrap().len(), 12);
+            assert!(remote.receiver.try_recv().is_err());
+
+            // Once the outstanding ping is acknowledged, the next tick probes again.
+            session.pings.clear();
+            session.keep_alive(&mut cx, session.now()).unwrap();
+            assert_eq!(session.pings.len(), 1);
+            assert_eq!(remote.receiver.try_recv().unwrap().len(), 12);
         });
     }
 
