@@ -140,10 +140,13 @@ mod tests {
         io::{AsyncReadExt, duplex},
         time::timeout,
     };
-
-    use super::{
-        build_connect_request, connect_tls_to_proxy_with_timeout, https_proxy_tls_config,
+    use tokio_rustls::TlsAcceptor;
+    use tokio_rustls::rustls::{
+        ServerConfig,
+        pki_types::{CertificateDer, PrivateKeyDer},
     };
+
+    use super::{build_connect_request, connect_tls_to_proxy_with_timeout, https_proxy_tls_config};
 
     #[test]
     fn https_proxy_handshakes_share_rustls_session_cache() {
@@ -171,6 +174,37 @@ mod tests {
         let error = result.expect_err("stalled TLS peer should hit handshake deadline");
         assert!(format!("{error:#}").contains("TLS handshake with HTTPS proxy timed out"));
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn https_proxy_rejects_untrusted_server_certificate() {
+        // This self-signed localhost certificate is intentionally absent from
+        // the bundled WebPKI roots used by the production client config.
+        let cert = CertificateDer::from(
+            include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+        );
+        let key = PrivateKeyDer::try_from(
+            include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+        )
+        .unwrap();
+        let config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .unwrap();
+        let (client, server) = duplex(4096);
+        let server = tokio::spawn(async move {
+            let acceptor = TlsAcceptor::from(std::sync::Arc::new(config));
+            acceptor.accept(server).await
+        });
+
+        let result =
+            connect_tls_to_proxy_with_timeout(client, "localhost", Duration::from_secs(2)).await;
+        let error = result.expect_err("self-signed proxy certificate must be rejected");
+        assert!(format!("{error:#}").contains("TLS handshake with HTTPS proxy"));
+        assert!(
+            server.await.unwrap().is_err(),
+            "server handshake should be aborted after client rejection"
+        );
     }
 
     #[test]
