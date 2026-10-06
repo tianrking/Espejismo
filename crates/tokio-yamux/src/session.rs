@@ -296,6 +296,28 @@ where
         Control::new(self.control_sender.clone())
     }
 
+    /// Change the keepalive cadence for this session. The new period starts
+    /// from the update; outstanding pings remain subject to the normal timeout.
+    pub fn set_keepalive_interval(&mut self, interval: Duration) {
+        let interval = sanitize_keepalive_interval(interval);
+        self.config.keepalive_interval = interval;
+        #[cfg(not(all(target_family = "wasm", not(target_os = "unknown"))))]
+        {
+            self.keepalive = self
+                .config
+                .enable_keepalive
+                .then(|| timer::interval(interval));
+        }
+        #[cfg(all(target_family = "wasm", not(target_os = "unknown")))]
+        {
+            self.keepalive = self.config.enable_keepalive.then(|| {
+                let mut timer = timer::interval(interval);
+                timer.mock_instant(self.time_mock.clone());
+                timer
+            });
+        }
+    }
+
     fn keep_alive(&mut self, cx: &mut Context, ping_at: Instant) -> Result<(), io::Error> {
         // If the remote peer does not follow the protocol, doesn't ack ping message,
         // there may be a memory leak, yamux does not clearly define how this should be handled.
@@ -1010,6 +1032,35 @@ mod test {
                     ..Default::default()
                 },
             );
+            drop(remote);
+        });
+    }
+
+    #[test]
+    fn keepalive_interval_can_be_updated_during_a_session() {
+        rt().block_on(async {
+            let (remote, local) = MockSocket::new();
+            let mut session = Session::new_client(
+                local,
+                Config {
+                    keepalive_interval: Duration::from_secs(30),
+                    ..Default::default()
+                },
+            );
+            assert_eq!(session.config.keepalive_interval, Duration::from_secs(30));
+            assert!(session.keepalive.is_some());
+
+            session.set_keepalive_interval(Duration::from_millis(250));
+            assert_eq!(
+                session.config.keepalive_interval,
+                Duration::from_millis(250)
+            );
+            assert!(session.keepalive.is_some());
+
+            // Invalid zero updates follow the same safe minimum as construction.
+            session.set_keepalive_interval(Duration::ZERO);
+            assert_eq!(session.config.keepalive_interval, Duration::from_millis(1));
+            assert!(session.keepalive.is_some());
             drop(remote);
         });
     }

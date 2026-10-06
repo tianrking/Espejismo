@@ -24,7 +24,8 @@ pub struct Config {
     /// messages using a ping.
     pub enable_keepalive: bool,
 
-    /// KeepAliveInterval is how often to perform the keep alive
+    /// KeepAliveInterval is how often to perform the keep alive. A session can
+    /// change this at runtime with `Session::set_keepalive_interval`.
     pub keepalive_interval: Duration,
 
     /// ConnectionWriteTimeout is meant to be a "safety valve" timeout after
