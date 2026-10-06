@@ -225,6 +225,35 @@ async fn native_mux_bulk_transfer_preserves_integrity() {
 }
 
 #[tokio::test]
+async fn native_mux_reassembles_write_crossing_multiple_max_frame_boundaries() {
+    let (client_io, server_io) = duplex(64 * 1024);
+    let (mut client_control, mut client_session) =
+        client_session(client_io, NativeMuxConfig::default());
+    let (_server_control, mut server_session) =
+        server_session(server_io, NativeMuxConfig::default());
+
+    tokio::spawn(async move { while client_session.next().await.is_some() {} });
+    let mut client_stream = client_control
+        .open_stream(StreamPriority::Interactive)
+        .await
+        .unwrap();
+    let mut server_stream = server_session.next().await.unwrap().unwrap();
+
+    let total = 2 * super::MAX_PAYLOAD + 137;
+    let expected: Vec<u8> = (0..total).map(|offset| (offset % 251) as u8).collect();
+    let expected_for_writer = expected.clone();
+    let writer = tokio::spawn(async move {
+        server_stream.write_all(&expected_for_writer).await.unwrap();
+        server_stream.shutdown().await.unwrap();
+    });
+
+    let mut received = vec![0; total];
+    client_stream.read_exact(&mut received).await.unwrap();
+    writer.await.unwrap();
+    assert_eq!(received, expected);
+}
+
+#[tokio::test]
 async fn native_mux_ping_reports_rtt() {
     let (client_io, server_io) = duplex(64 * 1024);
     let (client_control, mut client_session) =

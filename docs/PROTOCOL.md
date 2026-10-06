@@ -246,6 +246,11 @@ OPEN, DATA, WINDOW_UPDATE, FIN, RST, PING, and GOAWAY frames. Native mux streams
 MUST observe configured stream limits, bounded queues, byte-window flow control,
 and graceful drain semantics.
 
+Native mux DATA payloads are limited to 256 KiB per frame. A stream write larger
+than that limit is split into ordered DATA frames, and the receiver exposes the
+payload bytes as one continuous stream. A frame declaring a larger payload MUST
+be rejected before allocating its payload buffer.
+
 Mux mode is part of the authenticated handshake capabilities. Peers MUST NOT
 silently fall back to another mux mode after handshake.
 

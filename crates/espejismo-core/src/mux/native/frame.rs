@@ -132,6 +132,24 @@ mod tests {
         assert!(validate_frame_bytes_for_fuzz(&oversized).is_err());
     }
 
+    #[tokio::test]
+    async fn maximum_sized_frame_roundtrips_and_larger_frame_is_rejected() {
+        let payload = vec![0x5a; MAX_PAYLOAD];
+        let (mut tx, mut rx) = duplex(MAX_PAYLOAD + 9);
+        write_frame(&mut tx, FRAME_DATA, 0xfeed_beef, &payload)
+            .await
+            .unwrap();
+        drop(tx);
+        assert_eq!(
+            read_frame(&mut rx).await.unwrap(),
+            Some((FRAME_DATA, 0xfeed_beef, payload))
+        );
+
+        let oversized = vec![0; MAX_PAYLOAD + 1];
+        let (mut tx, _rx) = duplex(16);
+        assert!(write_frame(&mut tx, FRAME_DATA, 1, &oversized).await.is_err());
+    }
+
     #[test]
     fn complete_frame_validation_is_stable_under_truncation_and_trailing_bytes() {
         let kind = FRAME_DATA;
