@@ -78,6 +78,50 @@ fn native_pending_frames_enforce_limit() {
 }
 
 #[test]
+fn native_pending_frames_report_watermarks_and_congestion_recovery() {
+    use super::pending::{PendingFrame, PendingFrames};
+
+    let mut pending = PendingFrames::new(4);
+    let frame = |stream_id| PendingFrame {
+        kind: super::FRAME_DATA,
+        stream_id,
+        payload: vec![],
+        queued_stream: Some(stream_id),
+    };
+
+    assert_eq!(pending.occupancy_percent(), 0);
+    assert!(!pending.is_congested());
+    for stream_id in 0..2 {
+        pending
+            .push_data(StreamPriority::Bulk, frame(stream_id))
+            .unwrap();
+    }
+    assert_eq!(pending.occupancy_percent(), 50);
+    assert!(!pending.is_congested());
+
+    pending
+        .push_data(StreamPriority::Bulk, frame(2))
+        .unwrap();
+    assert_eq!(pending.occupancy_percent(), 75);
+    assert!(pending.is_congested());
+    pending.push_data(StreamPriority::Bulk, frame(3)).unwrap();
+    assert_eq!(pending.occupancy_percent(), 100);
+    assert!(pending.is_congested());
+    let congestion = pending
+        .push_data(StreamPriority::Bulk, frame(4))
+        .unwrap_err()
+        .to_string();
+    assert!(congestion.contains("congested"));
+
+    pending.pop_next().unwrap();
+    assert_eq!(pending.occupancy_percent(), 75);
+    assert!(pending.is_congested());
+    pending.pop_next().unwrap();
+    assert_eq!(pending.occupancy_percent(), 50);
+    assert!(!pending.is_congested());
+}
+
+#[test]
 fn native_pending_frames_bound_bulk_starvation_under_interactive_load() {
     use super::pending::{PendingFrame, PendingFrames};
 

@@ -78,8 +78,24 @@ impl PendingFrames {
         frame
     }
 
+    /// Queue occupancy ratio as a percentage, rounded up so any non-empty
+    /// queue with a tiny limit reports a visible watermark.
+    #[cfg(test)]
+    pub(super) fn occupancy_percent(&self) -> usize {
+        self.len.saturating_mul(100).div_ceil(self.limit)
+    }
+
+    /// Signal sustained queue pressure at 75% occupancy. This is advisory;
+    /// admission remains bounded by the hard frame limit below.
+    pub(super) fn is_congested(&self) -> bool {
+        self.len.saturating_mul(4) >= self.limit.saturating_mul(3)
+    }
+
     fn reserve_slot(&mut self) -> Result<()> {
         if self.len >= self.limit {
+            if self.is_congested() {
+                bail!("native mux pending frame queue congested: limit reached");
+            }
             bail!("native mux pending frame queue limit reached");
         }
         self.len += 1;
