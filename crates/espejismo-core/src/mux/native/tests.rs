@@ -702,3 +702,50 @@ async fn native_mux_goaway_timeout_wakes_blocked_stream_writer() {
         .unwrap_err();
     assert_eq!(result.kind(), io::ErrorKind::BrokenPipe);
 }
+
+#[tokio::test]
+async fn native_mux_goaway_timeout_wakes_concurrent_stream_read_and_write() {
+    let (client_io, server_io) = duplex(64 * 1024);
+    let config = NativeMuxConfig {
+        initial_window_bytes: 4,
+        drain_timeout: Duration::from_millis(30),
+        ..NativeMuxConfig::default()
+    };
+    let (mut client_control, mut client_session) = client_session(client_io, config);
+    let (_server_control, mut server_session) = server_session(server_io, config);
+    tokio::spawn(async move { while client_session.next().await.is_some() {} });
+
+    let client_stream = client_control
+        .open_stream(StreamPriority::Interactive)
+        .await
+        .unwrap();
+    let _server_stream = server_session.next().await.unwrap().unwrap();
+    let (mut reader, mut writer) = tokio::io::split(client_stream);
+    writer.write_all(b"full").await.unwrap();
+
+    // Exercise both stream directions while session teardown reclaims the flow state.
+    let pending_read = tokio::spawn(async move {
+        let mut byte = [0; 1];
+        reader.read(&mut byte).await
+    });
+    let blocked_writer = tokio::spawn(async move { writer.write(b"x").await });
+    tokio::task::yield_now().await;
+
+    client_control.goaway().unwrap();
+    let read_result = tokio::time::timeout(Duration::from_secs(1), pending_read)
+        .await
+        .expect("drain timeout should wake a read pending on an open stream")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        read_result, 0,
+        "closed stream should report EOF to its reader"
+    );
+
+    let write_result = tokio::time::timeout(Duration::from_secs(1), blocked_writer)
+        .await
+        .expect("drain timeout should wake a writer blocked on flow control")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(write_result.kind(), io::ErrorKind::BrokenPipe);
+}
