@@ -65,18 +65,21 @@ pub(crate) async fn route_http_fallback(
 }
 
 async fn reject_or_quarantine(
-    stream: TcpStream,
+    mut stream: TcpStream,
     reject_delay: Duration,
     tarpit: &tarpit::TarpitManager,
 ) {
     if reject_delay.is_zero() {
         tarpit.quarantine(stream).await;
     } else {
-        quiet_reject(stream, reject_delay).await;
+        quiet_reject(&mut stream, reject_delay).await;
     }
 }
 
-async fn quiet_reject(mut stream: TcpStream, delay: Duration) {
+async fn quiet_reject<S>(stream: &mut S, delay: Duration)
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
     if !delay.is_zero() {
         sleep(delay).await;
     }
@@ -200,8 +203,11 @@ fn unix_secs(time: SystemTime) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_builtin_fallback_response, looks_like_http_probe, FallbackHttpRuntime};
-    use tokio::time::Duration;
+    use super::{
+        build_builtin_fallback_response, looks_like_http_probe, quiet_reject, FallbackHttpRuntime,
+    };
+    use std::time::Duration;
+    use tokio::time::Instant;
 
     #[test]
     fn detects_common_http_methods() {
@@ -235,5 +241,18 @@ mod tests {
         assert!(response.contains("\r\nLast-Modified: "));
         assert!(response.contains("\r\nETag: "));
         assert!(response.contains("\r\nContent-Length: 15\r\n"));
+    }
+
+    #[tokio::test]
+    async fn failed_authentication_rejection_waits_for_configured_delay() {
+        let (mut server, _client) = tokio::io::duplex(64);
+        let delay = Duration::from_millis(80);
+        let started = Instant::now();
+        quiet_reject(&mut server, delay).await;
+
+        assert!(started.elapsed() >= delay);
+        tokio::io::AsyncWriteExt::shutdown(&mut server)
+            .await
+            .unwrap();
     }
 }
