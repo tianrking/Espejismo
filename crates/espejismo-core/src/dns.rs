@@ -130,6 +130,71 @@ mod tests {
         assert!(cache.entries.is_empty());
     }
 
+    #[test]
+    fn dns_cache_stays_bounded_and_evicts_earliest_expiry() {
+        let start = Instant::now();
+        let mut cache = DnsCache::default();
+
+        for index in 0..DNS_CACHE_CAPACITY {
+            let authority = format!("{index}.example:443");
+            let addr = format!("192.0.2.{}:443", index % 255 + 1).parse().unwrap();
+            cache.insert(
+                authority,
+                vec![addr],
+                start + Duration::from_secs(index as u64),
+            );
+        }
+        assert_eq!(cache.entries.len(), DNS_CACHE_CAPACITY);
+
+        cache.insert(
+            "overflow.example:443".into(),
+            vec!["192.0.2.200:443".parse().unwrap()],
+            start + Duration::from_secs(DNS_CACHE_CAPACITY as u64),
+        );
+
+        assert_eq!(cache.entries.len(), DNS_CACHE_CAPACITY);
+        assert!(!cache.entries.contains_key("0.example:443"));
+        assert!(cache.entries.contains_key("1.example:443"));
+        assert!(cache.entries.contains_key("overflow.example:443"));
+    }
+
+    #[test]
+    fn dns_cache_evicts_entry_nearest_to_expiry_at_capacity() {
+        let start = Instant::now();
+        let mut cache = DnsCache::default();
+        let addr = "192.0.2.10:443".parse().unwrap();
+
+        for index in 0..DNS_CACHE_CAPACITY {
+            cache.insert(
+                format!("host-{index}.example:443"),
+                vec![addr],
+                start + Duration::from_millis(index as u64),
+            );
+        }
+        cache.insert("new.example:443".into(), vec![addr], start);
+
+        assert_eq!(cache.entries.len(), DNS_CACHE_CAPACITY);
+        assert!(!cache.entries.contains_key("host-0.example:443"));
+        assert!(cache.entries.contains_key("host-1.example:443"));
+        assert!(cache.entries.contains_key("new.example:443"));
+    }
+
+    #[test]
+    fn dns_cache_refresh_at_capacity_does_not_evict_another_entry() {
+        let start = Instant::now();
+        let mut cache = DnsCache::default();
+        let addr = "192.0.2.10:443".parse().unwrap();
+
+        for index in 0..DNS_CACHE_CAPACITY {
+            cache.insert(format!("host-{index}.example:443"), vec![addr], start);
+        }
+        cache.insert("host-0.example:443".into(), vec![addr], start);
+
+        assert_eq!(cache.entries.len(), DNS_CACHE_CAPACITY);
+        assert!(cache.entries.contains_key("host-0.example:443"));
+        assert!(cache.entries.contains_key("host-255.example:443"));
+    }
+
     #[tokio::test]
     async fn dns_timeout_returns_without_waiting_for_resolver() {
         let result = timeout(
