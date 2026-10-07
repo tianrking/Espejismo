@@ -396,6 +396,70 @@ mod tests {
         assert!(handshake(client_config, server_config).await);
     }
 
+    #[tokio::test]
+    async fn https_proxy_session_cache_is_partitioned_by_server_name() {
+        use tokio::io::AsyncWriteExt;
+        use tokio_rustls::TlsConnector;
+        use tokio_rustls::rustls::{ClientConfig, HandshakeKind, ServerConfig, version};
+
+        let cert = CertificateDer::from(
+            include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+        );
+        let key = PrivateKeyDer::try_from(
+            include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+        )
+        .unwrap();
+        let mut server = ServerConfig::builder_with_protocol_versions(&[&version::TLS13])
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .unwrap();
+        server.send_tls13_tickets = 2;
+        let server = Arc::new(server);
+        let client = Arc::new(
+            ClientConfig::builder_with_protocol_versions(&[&version::TLS13])
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(AlpnTestVerifier))
+                .with_no_client_auth(),
+        );
+
+        async fn handshake(
+            client: Arc<ClientConfig>,
+            server: Arc<ServerConfig>,
+            name: &'static str,
+        ) -> HandshakeKind {
+            let (client_io, server_io) = duplex(16 * 1024);
+            let server_task = tokio::spawn(async move {
+                let mut tls = TlsAcceptor::from(server).accept(server_io).await.unwrap();
+                tls.write_all(b"ready").await.unwrap();
+            });
+            let mut tls = TlsConnector::from(client)
+                .connect(ServerName::try_from(name).unwrap(), client_io)
+                .await
+                .unwrap();
+            let mut ready = [0; 5];
+            tls.read_exact(&mut ready).await.unwrap();
+            assert_eq!(&ready, b"ready");
+            let kind = tls.get_ref().1.handshake_kind().unwrap();
+            server_task.await.unwrap();
+            kind
+        }
+
+        assert_eq!(
+            handshake(client.clone(), server.clone(), "localhost").await,
+            HandshakeKind::Full
+        );
+        // A different SNI must not consume the localhost ticket; returning to
+        // localhost should still resume from the shared config's cache.
+        assert_eq!(
+            handshake(client.clone(), server.clone(), "otherhost").await,
+            HandshakeKind::Full
+        );
+        assert_eq!(
+            handshake(client, server, "localhost").await,
+            HandshakeKind::Resumed
+        );
+    }
+
     #[derive(Debug)]
     struct AlpnTestVerifier;
 
