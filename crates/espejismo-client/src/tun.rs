@@ -71,6 +71,10 @@ pub async fn run_tun_ingress(
         None
     };
 
+    // smoltcp emits complete IP packets with checksums already filled. Do not
+    // enable tun-rs Linux offload here: it changes the device ABI to include a
+    // virtio-net header and may deliver GRO/GSO super-packets, which this
+    // packet-at-a-time stack bridge does not handle.
     let (stack, runner, udp_socket, tcp_listener) = StackBuilder::default()
         .enable_tcp(true)
         .enable_udp(true)
@@ -416,9 +420,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::channel(1);
         tx.send((vec![1], "local", "remote")).await.unwrap();
 
-        let blocked_send = tokio::spawn(async move {
-            tx.send((vec![2], "local", "remote")).await
-        });
+        let blocked_send = tokio::spawn(async move { tx.send((vec![2], "local", "remote")).await });
         tokio::task::yield_now().await;
         assert!(!blocked_send.is_finished());
 
@@ -469,5 +471,31 @@ mod tests {
 
             assert!(result.is_ok(), "netstack failed to build at MTU {mtu}");
         }
+    }
+
+    #[test]
+    fn ipv4_checksum_is_filled_and_detects_corruption() {
+        use netstack_smoltcp::smoltcp::wire::{IpProtocol, Ipv4Address, Ipv4Packet, Ipv4Repr};
+
+        let repr = Ipv4Repr {
+            src_addr: Ipv4Address::new(10, 0, 0, 1),
+            dst_addr: Ipv4Address::new(10, 0, 0, 2),
+            next_header: IpProtocol::Udp,
+            payload_len: 8,
+            hop_limit: 64,
+        };
+        let mut bytes = vec![0; repr.buffer_len()];
+        let mut packet = Ipv4Packet::new_unchecked(&mut bytes);
+        repr.emit(&mut packet, &Default::default());
+
+        assert!(
+            packet.verify_checksum(),
+            "emitted IPv4 header checksum must be valid"
+        );
+        packet.set_hop_limit(63);
+        assert!(
+            !packet.verify_checksum(),
+            "mutating a checksummed header must be detected"
+        );
     }
 }
