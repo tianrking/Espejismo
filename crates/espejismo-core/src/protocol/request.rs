@@ -216,4 +216,38 @@ mod tests {
         .is_err());
         assert!(wire.is_empty());
     }
+
+    #[tokio::test]
+    async fn maximum_udp_datagram_survives_fragmented_stream_io() {
+        // A small duplex buffer forces the length-prefixed datagram across many
+        // underlying reads and writes, as happens when a large request is split
+        // into transport frames or TCP segments.
+        let payload: Vec<u8> = (0..=u8::MAX).cycle().take(u16::MAX as usize).collect();
+        let (mut tx, mut rx) = tokio::io::duplex(31);
+        let expected = payload.clone();
+        let writer = tokio::spawn(async move {
+            write_udp_datagram_with_priority(
+                &mut tx,
+                "example.com:53",
+                StreamPriority::Bulk,
+                &payload,
+            )
+            .await
+            .unwrap();
+        });
+
+        match read_tunnel_request(&mut rx).await.unwrap() {
+            TunnelRequest::UdpDatagram {
+                authority,
+                priority,
+                payload,
+            } => {
+                assert_eq!(authority, "example.com:53");
+                assert_eq!(priority, StreamPriority::Bulk);
+                assert_eq!(payload, expected);
+            }
+            _ => panic!("expected UDP datagram request"),
+        }
+        writer.await.unwrap();
+    }
 }
