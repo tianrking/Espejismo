@@ -42,6 +42,14 @@ async fn connect_tcp_addr(addr: SocketAddr, options: &TcpConfig) -> Result<TcpSt
 }
 
 pub fn bind_tcp_listener(addr: SocketAddr, options: &TcpConfig) -> Result<TcpListener> {
+    bind_tcp_listener_with_backlog(addr, options, 1024)
+}
+
+fn bind_tcp_listener_with_backlog(
+    addr: SocketAddr,
+    options: &TcpConfig,
+    backlog: i32,
+) -> Result<TcpListener> {
     let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))
         .with_context(|| format!("create listener socket {addr}"))?;
     socket
@@ -52,13 +60,68 @@ pub fn bind_tcp_listener(addr: SocketAddr, options: &TcpConfig) -> Result<TcpLis
         .bind(&SockAddr::from(addr))
         .with_context(|| format!("bind {addr}"))?;
     socket
-        .listen(1024)
+        // The OS may cap or reinterpret this hint; it is not an exact queue size.
+        .listen(backlog)
         .with_context(|| format!("listen {addr}"))?;
     socket
         .set_nonblocking(true)
         .with_context(|| format!("set nonblocking {addr}"))?;
     let std_listener: std::net::TcpListener = socket.into();
     TcpListener::from_std(std_listener).with_context(|| format!("install tokio listener {addr}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{Duration, timeout};
+
+    #[tokio::test]
+    async fn listener_recovers_after_accept_queue_is_drained() {
+        let listener = bind_tcp_listener_with_backlog(
+            "127.0.0.1:0".parse().unwrap(),
+            &TcpConfig::default(),
+            1,
+        )
+        .unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Hold clients open while the listener is deliberately not accepting. A
+        // small backlog lets the kernel queue fill; exact overflow behavior varies
+        // by OS, so bound each attempt and assert recovery after draining instead.
+        let mut clients = Vec::new();
+        for _ in 0..8 {
+            if let Ok(Ok(client)) =
+                timeout(Duration::from_millis(100), TcpStream::connect(addr)).await
+            {
+                clients.push(client);
+            }
+        }
+        assert!(
+            !clients.is_empty(),
+            "at least one connection should enter the queue"
+        );
+
+        let mut accepted = 0;
+        while let Ok(Ok((_stream, _peer))) =
+            timeout(Duration::from_millis(100), listener.accept()).await
+        {
+            accepted += 1;
+            if accepted == clients.len() {
+                break;
+            }
+        }
+        assert!(accepted > 0, "queued connections should remain acceptable");
+
+        let follow_up = timeout(Duration::from_secs(1), TcpStream::connect(addr))
+            .await
+            .expect("listener should accept new connection after queue drain")
+            .expect("follow-up connect should succeed");
+        let _accepted = timeout(Duration::from_secs(1), listener.accept())
+            .await
+            .expect("follow-up connection should be accepted")
+            .unwrap();
+        drop((clients, follow_up));
+    }
 }
 
 pub fn apply_tcp_options(stream: &TcpStream, options: &TcpConfig) -> Result<()> {
