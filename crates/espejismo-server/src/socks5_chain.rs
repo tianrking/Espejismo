@@ -286,8 +286,37 @@ mod tests {
     #[test]
     fn socks5_udp_datagram_rejects_fragmented_packets() {
         let mut encoded = encode_socks5_udp_datagram("example.com", 443, b"payload").unwrap();
-        encoded[2] = 1;
-        assert!(decode_socks5_udp_datagram(&encoded).is_err());
+        for frag in 1..=u8::MAX {
+            encoded[2] = frag;
+            assert!(
+                decode_socks5_udp_datagram(&encoded).is_err(),
+                "FRAG={frag:#04x}"
+            );
+        }
+        assert!(decode_socks5_udp_datagram(&[0, 0, 0x80, 0x01]).is_err());
+    }
+
+    #[test]
+    fn socks5_udp_datagram_rejects_truncated_address_headers() {
+        let cases: &[(&str, &[u8])] = &[
+            ("ipv4", &[0, 0, 0, 1, 127, 0, 0, 1, 0, 53]),
+            (
+                "ipv6",
+                &[
+                    0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 53,
+                ],
+            ),
+            ("domain", &[0, 0, 0, 3, 1, b'a', 0, 53]),
+        ];
+        for (name, packet) in cases {
+            for end in 0..packet.len() {
+                assert!(
+                    decode_socks5_udp_datagram(&packet[..end]).is_err(),
+                    "{name} len={end}"
+                );
+            }
+            assert!(decode_socks5_udp_datagram(packet).unwrap().is_empty());
+        }
     }
 
     #[tokio::test]

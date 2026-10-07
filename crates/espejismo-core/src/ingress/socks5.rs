@@ -485,8 +485,38 @@ mod tests {
 
     #[test]
     fn udp_packet_rejects_fragmentation() {
-        let packet = [0x00, 0x00, 0x01, 0x01, 127, 0, 0, 1, 0, 53];
-        assert!(parse_udp_packet(&packet).is_err());
+        // SOCKS5 defines FRAG=0 as unfragmented; every non-zero value is
+        // unsupported, including the high-bit (final fragment) marker.
+        for frag in 1..=u8::MAX {
+            let packet = [0x00, 0x00, frag, 0x01, 127, 0, 0, 1, 0, 53];
+            assert!(parse_udp_packet(&packet).is_err(), "FRAG={frag:#04x}");
+        }
+        // Reject FRAG before parsing the address, even when the rest is absent.
+        assert!(parse_udp_packet(&[0, 0, 0x80, 0x01]).is_err());
+    }
+
+    #[test]
+    fn udp_packet_checks_address_header_boundaries() {
+        let valid_ipv4_header = [0, 0, 0, 1, 127, 0, 0, 1, 0, 53];
+        let valid_ipv6_header = [
+            0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 53,
+        ];
+        let valid_domain_header = [0, 0, 0, 3, 1, b'a', 0, 53];
+
+        for (name, packet) in [
+            ("ipv4", valid_ipv4_header.as_slice()),
+            ("ipv6", valid_ipv6_header.as_slice()),
+            ("domain", valid_domain_header.as_slice()),
+        ] {
+            for end in 0..packet.len() {
+                assert!(
+                    parse_udp_packet(&packet[..end]).is_err(),
+                    "{name} len={end}"
+                );
+            }
+            let parsed = parse_udp_packet(packet).unwrap();
+            assert!(parsed.payload.is_empty(), "{name} empty payload");
+        }
     }
 
     #[test]
