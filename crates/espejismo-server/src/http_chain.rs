@@ -163,6 +163,10 @@ mod tests {
         let second = https_proxy_tls_config();
         assert!(std::sync::Arc::ptr_eq(&first, &second));
         assert!(
+            !first.enable_early_data,
+            "HTTPS proxy requests must wait for the authenticated TLS handshake"
+        );
+        assert!(
             first.alpn_protocols.is_empty(),
             "HTTPS proxy TLS must not negotiate an application protocol"
         );
@@ -245,6 +249,10 @@ mod tests {
         // TLS 1.3 tickets are single-use; multiple tickets let a resumed
         // connection consume one while refreshing the client's cache.
         server_config.send_tls13_tickets = 2;
+        assert_eq!(
+            server_config.max_early_data_size, 0,
+            "the HTTPS proxy must not authorize TLS 1.3 early data"
+        );
 
         let client_config = Arc::new(
             ClientConfig::builder_with_protocol_versions(&[&version::TLS13])
