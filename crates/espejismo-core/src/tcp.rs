@@ -75,6 +75,17 @@ mod tests {
     use super::*;
     use tokio::time::{Duration, timeout};
 
+    #[test]
+    fn socket_buffer_size_checks_platform_integer_boundary() {
+        assert_eq!(socket_buffer_size(0).unwrap(), 0);
+        assert_eq!(socket_buffer_size(u32::MAX as usize).unwrap(), u32::MAX);
+
+        if usize::BITS > u32::BITS {
+            let error = socket_buffer_size(u32::MAX as usize + 1).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
+    }
+
     // Requires loopback TCP bind, unavailable in the Codex sandbox; the gate
     // skips it there. Run outside the sandbox with
     // `cargo test -p espejismo-core -- --ignored` to execute it.
@@ -157,12 +168,21 @@ fn apply_tcp_socket_options(socket: &TcpSocket, options: &TcpConfig) -> io::Resu
         socket.set_keepalive(true)?;
     }
     if options.send_buffer_bytes > 0 {
-        socket.set_send_buffer_size(options.send_buffer_bytes as u32)?;
+        socket.set_send_buffer_size(socket_buffer_size(options.send_buffer_bytes)?)?;
     }
     if options.recv_buffer_bytes > 0 {
-        socket.set_recv_buffer_size(options.recv_buffer_bytes as u32)?;
+        socket.set_recv_buffer_size(socket_buffer_size(options.recv_buffer_bytes)?)?;
     }
     Ok(())
+}
+
+fn socket_buffer_size(bytes: usize) -> io::Result<u32> {
+    u32::try_from(bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "TCP socket buffer size exceeds the platform API limit",
+        )
+    })
 }
 
 fn apply_sockref_buffer_options(socket: &SockRef<'_>, options: &TcpConfig) -> io::Result<()> {
