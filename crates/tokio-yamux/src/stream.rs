@@ -1110,6 +1110,23 @@ mod test {
     }
 
     #[test]
+    fn receive_credit_accounting_handles_u32_window_ceiling() {
+        assert_eq!(receive_credit_delta(u32::MAX, u32::MAX, [].into_iter()), Ok(0));
+        assert_eq!(
+            receive_credit_delta(u32::MAX, u32::MAX - 1, [].into_iter()),
+            Ok(1)
+        );
+        assert_eq!(
+            receive_credit_delta(u32::MAX, u32::MAX - 2, [1usize].into_iter()),
+            Ok(1)
+        );
+        assert_eq!(
+            receive_credit_delta(u32::MAX, u32::MAX, [1usize].into_iter()),
+            Err(crate::Error::InvalidMsgType)
+        );
+    }
+
+    #[test]
     fn randomized_receive_credit_updates_preserve_window_invariant() {
         let rt = rt();
         rt.block_on(async {
