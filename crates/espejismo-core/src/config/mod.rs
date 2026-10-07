@@ -218,13 +218,18 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
         config.local.tunnel_pool.min_connections <= config.local.tunnel_pool.max_connections,
         "local.tunnel_pool.min_connections must be <= max_connections"
     );
+    let configured_lanes = config
+        .local
+        .tunnel_pool
+        .interactive_lanes
+        .checked_add(config.local.tunnel_pool.bulk_lanes)
+        .ok_or_else(|| anyhow::anyhow!("local.tunnel_pool lane count overflows usize"))?;
     anyhow::ensure!(
-        config.local.tunnel_pool.interactive_lanes + config.local.tunnel_pool.bulk_lanes > 0,
+        configured_lanes > 0,
         "local.tunnel_pool must configure at least one lane"
     );
     anyhow::ensure!(
-        config.local.tunnel_pool.interactive_lanes + config.local.tunnel_pool.bulk_lanes
-            <= config.local.tunnel_pool.max_connections,
+        configured_lanes <= config.local.tunnel_pool.max_connections,
         "local.tunnel_pool interactive_lanes + bulk_lanes must be <= max_connections"
     );
     anyhow::ensure!(
@@ -815,6 +820,36 @@ mod tests {
             .to_string();
         assert!(err.contains("unknown config field `max_stream`"), "{err}");
         assert!(err.contains("did you mean `max_streams`?"), "{err}");
+    }
+
+    #[test]
+    fn validates_tunnel_pool_limits_at_boundaries() {
+        parse_config(
+            "[local.tunnel_pool]\nmin_connections = 1\nmax_connections = 1\ninteractive_lanes = 1\nbulk_lanes = 0\n",
+        )
+        .expect("one lane at the exact pool limit is valid");
+
+        for (config, expected) in [
+            (
+                "[local.tunnel_pool]\nmin_connections = 0\nmax_connections = 0\ninteractive_lanes = 1\nbulk_lanes = 0\n",
+                "max_connections must be greater than 0",
+            ),
+            (
+                "[local.tunnel_pool]\nmin_connections = 2\nmax_connections = 1\ninteractive_lanes = 1\nbulk_lanes = 0\n",
+                "min_connections must be <= max_connections",
+            ),
+            (
+                "[local.tunnel_pool]\nmin_connections = 1\nmax_connections = 2\ninteractive_lanes = 1\nbulk_lanes = 2\n",
+                "interactive_lanes + bulk_lanes must be <= max_connections",
+            ),
+            (
+                "[local.tunnel_pool]\nmin_connections = 1\nmax_connections = 2\ninteractive_lanes = 0\nbulk_lanes = 0\n",
+                "must configure at least one lane",
+            ),
+        ] {
+            let err = parse_config(config).unwrap_err().to_string();
+            assert!(err.contains(expected), "expected {expected:?}, got {err}");
+        }
     }
 
     #[test]
