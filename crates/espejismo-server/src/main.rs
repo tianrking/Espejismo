@@ -27,6 +27,7 @@ mod handler;
 mod http_chain;
 mod limits;
 mod mux;
+mod proxy_protocol;
 mod relay;
 mod socks5_chain;
 mod tarpit;
