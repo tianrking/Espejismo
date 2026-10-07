@@ -162,6 +162,11 @@ transport uses encrypted super-frames:
 The 4-byte ciphertext length is XOR-masked with a per-direction HKDF-derived
 header-mask stream keyed by the frame sequence number.
 
+The ciphertext MUST be between 1 and 262144 bytes inclusive. Since the
+ciphertext contains a 1-byte frame type and a 16-byte AEAD tag, a plaintext
+payload MUST NOT exceed 262127 bytes. Receivers MUST reject larger lengths
+before allocating the ciphertext buffer.
+
 Frame types are encrypted. Current frame semantics are:
 
 - DATA: carries tunnel or mux bytes.

@@ -870,6 +870,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn normal_frame_payload_limit_roundtrips_and_rejects_one_byte_over() {
+        let cfg = HandshakeConfig::new(b"test-secret-that-is-long-enough".to_vec(), 30, 128, 4);
+        let (mut client, mut server) = duplex(NORMAL_PAYLOAD_CAPACITY + 64);
+        let client_cfg = cfg.clone();
+        let server_cfg = cfg;
+        let client_task = tokio::spawn(async move {
+            let keys = connect_handshake(&mut client, &client_cfg).await?;
+            anyhow::Ok((client, keys))
+        });
+        let server_task = tokio::spawn(async move {
+            let keys = accept_handshake(&mut server, &server_cfg).await?;
+            anyhow::Ok((server, keys))
+        });
+        let (client, client_keys) = client_task.await.unwrap().unwrap();
+        let (server, server_keys) = server_task.await.unwrap().unwrap();
+        let options = FrameOptions {
+            max_padding: 0,
+            padding_chance_percent: 0,
+            ..FrameOptions::default()
+        };
+        let mut writer = FrameWriter::new(client, client_keys, options.clone());
+        let mut reader = FrameReader::new(server, server_keys, options);
+
+        let payload = vec![0x5a; NORMAL_PAYLOAD_CAPACITY];
+        writer
+            .send(Frame {
+                ty: FrameType::Data,
+                payload: payload.clone(),
+            })
+            .await
+            .unwrap();
+        let received = reader.recv().await.unwrap();
+        assert_eq!(received.ty, FrameType::Data);
+        assert_eq!(received.payload, payload);
+
+        let oversized = Frame {
+            ty: FrameType::Data,
+            payload: vec![0xa5; NORMAL_PAYLOAD_CAPACITY + 1],
+        };
+        assert!(writer.send(oversized).await.is_err());
+    }
+
+    #[tokio::test]
     async fn key_update_frames_rotate_traffic_keys() {
         let cfg = HandshakeConfig::new(b"test-secret-that-is-long-enough".to_vec(), 30, 128, 4);
         let (mut client, mut server) = duplex(8192);
