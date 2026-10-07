@@ -59,6 +59,8 @@ struct LaneHealth {
     last_mux_rtt_ms: Option<u64>,
     mux_rtt_trend_ms: VecDeque<u64>,
     connected_at: Option<Instant>,
+    // Monotonic clock for timeout decisions; Unix time below is only for metrics.
+    last_activity_at: Option<Instant>,
     last_activity_unix_secs: Option<u64>,
     last_error: Option<String>,
     last_error_unix_secs: Option<u64>,
@@ -331,7 +333,7 @@ impl TunnelManager {
             .context("no tunnel lanes configured")?;
         {
             let mut health = lane.health.lock().await;
-            health.last_activity_unix_secs = Some(unix_now_secs());
+            record_lane_activity(&mut health);
             self.publish_lane(&lane, &health, "connected");
         }
         let lane_id = lane.id;
@@ -372,8 +374,8 @@ impl TunnelManager {
                 self.min_connections,
                 health.active_streams,
                 health.pending_stream_opens,
-                health.last_activity_unix_secs,
-                unix_now_secs(),
+                health.last_activity_at,
+                Instant::now(),
             ) {
                 continue;
             }
@@ -405,7 +407,7 @@ impl TunnelManager {
                 .saturating_add(remote_to_client);
             update_recent_throughput(&mut health, client_to_remote, remote_to_client, elapsed);
             health.active_streams = health.active_streams.saturating_sub(1);
-            health.last_activity_unix_secs = Some(unix_now_secs());
+            record_lane_activity(&mut health);
             self.publish_lane(lane, &health, "connected");
         }
     }
@@ -537,7 +539,7 @@ impl TunnelManager {
             health.reconnect_count = health.reconnect_count.saturating_add(1);
             health.consecutive_failures = 0;
             health.connected_at = Some(Instant::now());
-            health.last_activity_unix_secs = Some(unix_now_secs());
+            record_lane_activity(&mut health);
             health.last_error = None;
             health.last_error_unix_secs = None;
             self.publish_lane(&lane, &health, "connected");
@@ -581,7 +583,7 @@ impl TunnelManager {
             while health.mux_rtt_trend_ms.len() > 16 {
                 health.mux_rtt_trend_ms.pop_front();
             }
-            health.last_activity_unix_secs = Some(unix_now_secs());
+            record_lane_activity(&mut health);
             self.publish_lane(&lane, &health, "connected");
         }
         Ok(control)
@@ -593,7 +595,7 @@ impl TunnelManager {
         health.active_streams = health.active_streams.saturating_add(1);
         health.streams_opened = health.streams_opened.saturating_add(1);
         health.last_open_latency_ms = elapsed.as_millis().min(u64::MAX as u128) as u64;
-        health.last_activity_unix_secs = Some(unix_now_secs());
+        record_lane_activity(&mut health);
         health.last_error = None;
         health.last_error_unix_secs = None;
         self.publish_lane(lane, &health, "connected");
@@ -602,7 +604,7 @@ impl TunnelManager {
     async fn record_lane_error(&self, lane: &Arc<TunnelLane>, error: String) {
         let mut health = lane.health.lock().await;
         record_lane_failure(&mut health);
-        health.last_activity_unix_secs = Some(unix_now_secs());
+        record_lane_activity(&mut health);
         health.last_error = Some(error.clone());
         health.last_error_unix_secs = Some(unix_now_secs());
         self.publish_lane(lane, &health, "degraded");
@@ -612,7 +614,7 @@ impl TunnelManager {
     async fn release_lane_reservation(&self, lane: &Arc<TunnelLane>) {
         let mut health = lane.health.lock().await;
         health.pending_stream_opens = health.pending_stream_opens.saturating_sub(1);
-        health.last_activity_unix_secs = Some(unix_now_secs());
+        record_lane_activity(&mut health);
         self.publish_lane(lane, &health, "degraded");
     }
 
@@ -669,8 +671,13 @@ fn connection_expired(connected_at: Option<Instant>, max_age: Duration, now: Ins
     connected_at.is_some_and(|at| now.duration_since(at) >= max_age)
 }
 
-fn idle_long_enough_at(last_activity: Option<u64>, now: u64, idle: Duration) -> bool {
-    last_activity.is_some_and(|last| now.saturating_sub(last) >= idle.as_secs())
+fn record_lane_activity(health: &mut LaneHealth) {
+    health.last_activity_at = Some(Instant::now());
+    health.last_activity_unix_secs = Some(unix_now_secs());
+}
+
+fn idle_long_enough_at(last_activity: Option<Instant>, now: Instant, idle: Duration) -> bool {
+    last_activity.is_some_and(|last| now.saturating_duration_since(last) >= idle)
 }
 
 fn should_prune_idle_lane(
@@ -678,8 +685,8 @@ fn should_prune_idle_lane(
     minimum: usize,
     active_streams: u64,
     pending_stream_opens: u64,
-    last_activity: Option<u64>,
-    now: u64,
+    last_activity: Option<Instant>,
+    now: Instant,
 ) -> bool {
     connected > minimum
         && active_streams == 0
@@ -917,7 +924,7 @@ fn stream_open_failure(
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use super::{
         connection_expired, idle_long_enough_at, lane_kinds, lane_score, reconnect_backoff,
@@ -981,15 +988,31 @@ mod tests {
     #[test]
     fn idle_lane_pruning_waits_for_timeout_and_preserves_future_activity() {
         let idle = Duration::from_secs(300);
-        assert!(!idle_long_enough_at(None, 1_000, idle));
-        assert!(!idle_long_enough_at(Some(701), 1_000, idle));
-        assert!(idle_long_enough_at(Some(700), 1_000, idle));
-        assert!(!idle_long_enough_at(Some(1_001), 1_000, idle));
-        assert!(!should_prune_idle_lane(2, 2, 0, 0, Some(100), 1_000));
-        assert!(!should_prune_idle_lane(3, 2, 1, 0, Some(100), 1_000));
-        assert!(!should_prune_idle_lane(3, 2, 0, 1, Some(100), 1_000));
-        assert!(!should_prune_idle_lane(3, 2, 0, 0, Some(701), 1_000));
-        assert!(should_prune_idle_lane(3, 2, 0, 0, Some(700), 1_000));
+        let now = Instant::now();
+        assert!(!idle_long_enough_at(None, now, idle));
+        assert!(!idle_long_enough_at(
+            Some(now - idle + Duration::from_millis(1)),
+            now,
+            idle
+        ));
+        assert!(idle_long_enough_at(Some(now - idle), now, idle));
+        assert!(!idle_long_enough_at(
+            Some(now + Duration::from_millis(1)),
+            now,
+            idle
+        ));
+        assert!(!should_prune_idle_lane(2, 2, 0, 0, Some(now - idle), now));
+        assert!(!should_prune_idle_lane(3, 2, 1, 0, Some(now - idle), now));
+        assert!(!should_prune_idle_lane(3, 2, 0, 1, Some(now - idle), now));
+        assert!(!should_prune_idle_lane(
+            3,
+            2,
+            0,
+            0,
+            Some(now - idle + Duration::from_millis(1)),
+            now
+        ));
+        assert!(should_prune_idle_lane(3, 2, 0, 0, Some(now - idle), now));
     }
 
     #[test]
@@ -998,11 +1021,12 @@ mod tests {
         // the connected count before the next candidate is considered.
         let minimum = 2;
         let mut connected = 5;
-        let candidates = [Some(100), Some(200), Some(300), Some(400), Some(500)];
+        let now = Instant::now();
+        let candidates = [Some(now - Duration::from_secs(400)); 5];
         let mut pruned = 0;
 
         for last_activity in candidates {
-            if should_prune_idle_lane(connected, minimum, 0, 0, last_activity, 1_000) {
+            if should_prune_idle_lane(connected, minimum, 0, 0, last_activity, now) {
                 connected -= 1;
                 pruned += 1;
             }
@@ -1015,8 +1039,8 @@ mod tests {
             minimum,
             0,
             0,
-            Some(100),
-            1_000
+            Some(now - Duration::from_secs(400)),
+            now
         ));
     }
 
