@@ -815,6 +815,9 @@ resolution paths and platform details.
 digests and client ephemeral keys. Keep this at least as large as the accepted
 handshake-window tolerance so same-window exact replays are rejected before any
 server response is sent.
+Entries remain rejected through the exact TTL boundary and expire only when
+their age is greater than the configured window. A backward wall-clock step
+does not expire cached entries.
 
 `cold_start_delay_ms`: Delay after successful auth before tunnel startup.
 

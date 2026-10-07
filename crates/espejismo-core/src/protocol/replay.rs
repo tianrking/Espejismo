@@ -82,7 +82,13 @@ impl ReplayCache {
 
     fn prune(&mut self, now: i64) {
         while let Some((inserted_at, key)) = self.order.front().copied() {
-            if now - inserted_at <= self.ttl_secs {
+            // Keep entries on clock rollback. If ordered timestamps span more
+            // than i64::MAX seconds, the positive age overflowed and is stale.
+            let expired = now >= inserted_at
+                && now
+                    .checked_sub(inserted_at)
+                    .map_or(true, |age| age > self.ttl_secs);
+            if !expired {
                 break;
             }
             self.order.pop_front();
@@ -109,6 +115,30 @@ mod tests {
         let key = [7_u8; 32];
         cache.check_and_insert(100, key).unwrap();
         cache.check_and_insert(161, key).unwrap();
+    }
+
+    #[test]
+    fn retains_key_at_exact_window_boundary() {
+        let mut cache = ReplayCache::new(60);
+        let key = [8_u8; 32];
+        cache.check_and_insert(100, key).unwrap();
+        assert!(cache.check_and_insert(160, key).is_err());
+    }
+
+    #[test]
+    fn clock_rollback_does_not_expire_entries() {
+        let mut cache = ReplayCache::new(60);
+        let key = [10_u8; 32];
+        cache.check_and_insert(100, key).unwrap();
+        assert!(cache.check_and_insert(99, key).is_err());
+    }
+
+    #[test]
+    fn timestamp_extremes_expire_without_overflow() {
+        let mut cache = ReplayCache::new(i64::MAX);
+        let key = [15_u8; 32];
+        cache.check_and_insert(i64::MIN, key).unwrap();
+        cache.check_and_insert(i64::MAX, key).unwrap();
     }
 
     #[test]
