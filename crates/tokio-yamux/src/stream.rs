@@ -510,6 +510,10 @@ fn receive_credit_delta(
         .ok_or(Error::InvalidMsgType)
 }
 
+fn should_shrink_read_buffer(capacity: usize, len: usize) -> bool {
+    capacity > 24 && capacity / (len + 1) > 4
+}
+
 impl AsyncRead for StreamHandle {
     fn poll_read(
         mut self: Pin<&mut Self>,
@@ -554,9 +558,7 @@ impl AsyncRead for StreamHandle {
             self.read_buf.drain(..=offset);
             // Drop an unusually large stream queue after draining it; otherwise a burst
             // would keep its high-water allocation for the lifetime of this stream.
-            if self.read_buf.capacity() > 24
-                && self.read_buf.capacity() / (self.read_buf.len() + 1) > 4
-            {
+            if should_shrink_read_buffer(self.read_buf.capacity(), self.read_buf.len()) {
                 self.read_buf.shrink_to_fit();
             }
         }
@@ -768,7 +770,10 @@ pub enum StreamState {
 
 #[cfg(test)]
 mod test {
-    use super::{StreamEvent, StreamHandle, StreamState, receive_credit_delta};
+    use super::{
+        StreamEvent, StreamHandle, StreamState, receive_credit_delta,
+        should_shrink_read_buffer,
+    };
     use crate::{
         config::INITIAL_STREAM_WINDOW,
         frame::{Flag, Flags, Frame, Type},
@@ -1561,6 +1566,15 @@ mod test {
             assert!(stream.read_buf.is_empty());
             assert!(stream.read_buf.capacity() <= 24);
         });
+    }
+
+    #[test]
+    fn read_buffer_shrink_policy_preserves_small_and_dense_queues() {
+        assert!(!should_shrink_read_buffer(24, 0));
+        assert!(!should_shrink_read_buffer(25, 5));
+        assert!(should_shrink_read_buffer(25, 4));
+        assert!(!should_shrink_read_buffer(128, 30));
+        assert!(should_shrink_read_buffer(128, 24));
     }
 
     // Regression test for:
