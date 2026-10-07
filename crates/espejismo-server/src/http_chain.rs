@@ -5,9 +5,9 @@ use base64::Engine;
 use espejismo_core::{EgressProxy, EgressProxyKind, TransportStream};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::{timeout, Duration};
-use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio::time::{Duration, timeout};
 use tokio_rustls::TlsConnector;
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
 const MAX_HTTP_CONNECT_RESPONSE: usize = 16 * 1024;
 const HTTPS_PROXY_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -145,15 +145,15 @@ mod tests {
 
     use espejismo_core::{EgressProxy, EgressProxyKind};
     use tokio::{
-        io::{duplex, AsyncReadExt},
+        io::{AsyncReadExt, duplex},
         time::timeout,
     };
+    use tokio_rustls::TlsAcceptor;
     use tokio_rustls::rustls::{
+        DigitallySignedStruct, ServerConfig, SignatureScheme,
         client::danger::{HandshakeSignatureValid, ServerCertVerifier},
         pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime},
-        DigitallySignedStruct, ServerConfig, SignatureScheme,
     };
-    use tokio_rustls::TlsAcceptor;
 
     use super::{build_connect_request, connect_tls_to_proxy_with_timeout, https_proxy_tls_config};
 
@@ -170,8 +170,8 @@ mod tests {
 
     #[tokio::test]
     async fn https_proxy_tls_succeeds_when_server_advertises_alpn() {
-        use tokio_rustls::rustls::ClientConfig;
         use tokio_rustls::TlsConnector;
+        use tokio_rustls::rustls::ClientConfig;
 
         let cert = CertificateDer::from(
             include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
@@ -225,6 +225,69 @@ mod tests {
             "negotiated suite must be in the configured HTTPS proxy suite set"
         );
         assert_eq!(server.await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn https_proxy_session_tickets_are_reused_and_replenished() {
+        use tokio_rustls::rustls::{ClientConfig, HandshakeKind, ServerConfig, version};
+
+        let cert = CertificateDer::from(
+            include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+        );
+        let key = PrivateKeyDer::try_from(
+            include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+        )
+        .unwrap();
+        let mut server_config = ServerConfig::builder_with_protocol_versions(&[&version::TLS13])
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .unwrap();
+        // TLS 1.3 tickets are single-use; multiple tickets let a resumed
+        // connection consume one while refreshing the client's cache.
+        server_config.send_tls13_tickets = 2;
+
+        let client_config = Arc::new(
+            ClientConfig::builder_with_protocol_versions(&[&version::TLS13])
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(AlpnTestVerifier))
+                .with_no_client_auth(),
+        );
+
+        async fn handshake(
+            client_config: Arc<ClientConfig>,
+            server_config: Arc<ServerConfig>,
+        ) -> bool {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            use tokio_rustls::{TlsAcceptor, TlsConnector};
+
+            let (client_io, server_io) = duplex(16 * 1024);
+            let server_task = tokio::spawn(async move {
+                let mut tls = TlsAcceptor::from(server_config)
+                    .accept(server_io)
+                    .await
+                    .unwrap();
+                tls.write_all(b"ready").await.unwrap();
+                tls.flush().await.unwrap();
+            });
+            let name = ServerName::try_from("localhost").unwrap();
+            let mut tls = TlsConnector::from(client_config)
+                .connect(name, client_io)
+                .await
+                .unwrap();
+            let mut ready = [0; 5];
+            tls.read_exact(&mut ready).await.unwrap();
+            assert_eq!(&ready, b"ready");
+            let resumed = tls.get_ref().1.handshake_kind() == Some(HandshakeKind::Resumed);
+            server_task.await.unwrap();
+            resumed
+        }
+
+        let server_config = Arc::new(server_config);
+        assert!(!handshake(client_config.clone(), server_config.clone()).await);
+        assert!(handshake(client_config.clone(), server_config.clone()).await);
+        // The resumed handshake must receive fresh tickets so the cache can
+        // continue across further proxy connections.
+        assert!(handshake(client_config, server_config).await);
     }
 
     #[derive(Debug)]
