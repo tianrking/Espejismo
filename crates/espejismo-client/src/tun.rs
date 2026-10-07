@@ -318,10 +318,13 @@ async fn read_udp_response<R>(reader: &mut R, response_timeout: Duration) -> Res
 where
     R: AsyncRead + Unpin,
 {
-    let len = timeout(response_timeout, reader.read_u16()).await?? as usize;
-    let mut response = vec![0_u8; len];
-    timeout(response_timeout, reader.read_exact(&mut response)).await??;
-    Ok(response)
+    timeout(response_timeout, async {
+        let len = reader.read_u16().await? as usize;
+        let mut response = vec![0_u8; len];
+        reader.read_exact(&mut response).await?;
+        Ok(response)
+    })
+    .await?
 }
 
 async fn open_tun_stream(
@@ -454,6 +457,51 @@ mod tests {
         };
         let (result, ()) = tokio::join!(read_udp_response(&mut reader, timeout), response);
         assert_eq!(result.unwrap(), b"ok!");
+    }
+
+    #[tokio::test]
+    async fn udp_response_timeout_bounds_partial_header_and_payload() {
+        let timeout = Duration::from_millis(25);
+
+        // A partial length prefix must not wait indefinitely.
+        let (mut writer, mut reader) = tokio::io::duplex(16);
+        tokio::io::AsyncWriteExt::write_all(&mut writer, &[0])
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                read_udp_response(&mut reader, timeout),
+            )
+            .await
+            .unwrap()
+            .is_err()
+        );
+
+        // Once the length is known, a partial payload shares the same response budget.
+        let (mut writer, mut reader) = tokio::io::duplex(16);
+        tokio::io::AsyncWriteExt::write_all(&mut writer, &[0, 3, b'x'])
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(
+                Duration::from_millis(100),
+                read_udp_response(&mut reader, timeout),
+            )
+            .await
+            .unwrap()
+            .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn udp_response_zero_timeout_expires_at_entry() {
+        let (_writer, mut reader) = tokio::io::duplex(16);
+        assert!(
+            read_udp_response(&mut reader, Duration::ZERO)
+                .await
+                .is_err()
+        );
     }
 
     #[test]
