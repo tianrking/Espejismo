@@ -136,3 +136,45 @@ async fn rejects_origin_form_target_without_sending_success_response() {
     drop(proxy);
     assert!(writer.await.unwrap().is_empty());
 }
+
+fn connect_request_with_header_size(size: usize) -> Vec<u8> {
+    let prefix = b"CONNECT example.test:443 HTTP/1.1\r\nX-Pad: ";
+    let suffix = b"\r\n\r\n";
+    assert!(size >= prefix.len() + suffix.len());
+    let mut request = prefix.to_vec();
+    request.resize(size - suffix.len(), b'a');
+    request.extend_from_slice(suffix);
+    request
+}
+
+#[tokio::test]
+async fn accepts_http_proxy_header_at_size_limit() {
+    const LIMIT: usize = 32 * 1024;
+    let (mut client, mut proxy) = duplex(LIMIT + 256);
+    let request = connect_request_with_header_size(LIMIT);
+    let writer = tokio::spawn(async move {
+        client.write_all(&request).await.unwrap();
+        let mut response = [0; 64];
+        let n = client.read(&mut response).await.unwrap();
+        response[..n].to_vec()
+    });
+
+    let target = accept_http_proxy_with_auth(&mut proxy, None).await.unwrap();
+    assert_eq!(target.authority, "example.test:443");
+    assert_eq!(
+        writer.await.unwrap(),
+        b"HTTP/1.1 200 Connection Established\r\n\r\n"
+    );
+}
+
+#[tokio::test]
+async fn rejects_http_proxy_header_over_size_limit() {
+    const LIMIT: usize = 32 * 1024;
+    let (mut client, mut proxy) = duplex(LIMIT + 256);
+    let request = connect_request_with_header_size(LIMIT + 1);
+    let writer = tokio::spawn(async move { client.write_all(&request).await.unwrap() });
+
+    let error = accept_http_proxy_with_auth(&mut proxy, None).await.unwrap_err();
+    assert!(format!("{error:#}").contains("HTTP proxy header too large"));
+    writer.await.unwrap();
+}

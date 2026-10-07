@@ -7,6 +7,8 @@ use super::ProxyAuth;
 
 // Bound slow local proxy clients while allowing ordinary headers to arrive incrementally.
 const HTTP_PROXY_HEADER_TIMEOUT: Duration = Duration::from_secs(15);
+// Match the hard cap to the bytes accepted, including the terminating CRLF pair.
+const HTTP_PROXY_MAX_HEADER_SIZE: usize = 32 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct HttpTarget {
@@ -35,10 +37,12 @@ where
     let mut header = Vec::with_capacity(2048);
     let mut read_buf = [0_u8; 2048];
     loop {
-        if header.len() >= 32 * 1024 {
+        let remaining = HTTP_PROXY_MAX_HEADER_SIZE.saturating_sub(header.len());
+        if remaining == 0 {
             bail!("HTTP proxy header too large");
         }
-        let n = timeout(HTTP_PROXY_HEADER_TIMEOUT, stream.read(&mut read_buf))
+        let read_len = remaining.min(read_buf.len());
+        let n = timeout(HTTP_PROXY_HEADER_TIMEOUT, stream.read(&mut read_buf[..read_len]))
             .await
             .context("HTTP proxy header read timeout")??;
         if n == 0 {
