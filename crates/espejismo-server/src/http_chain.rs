@@ -5,9 +5,9 @@ use base64::Engine;
 use espejismo_core::{EgressProxy, EgressProxyKind, TransportStream};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::{Duration, timeout};
-use tokio_rustls::TlsConnector;
+use tokio::time::{timeout, Duration};
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio_rustls::TlsConnector;
 
 const MAX_HTTP_CONNECT_RESPONSE: usize = 16 * 1024;
 const HTTPS_PROXY_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -89,13 +89,21 @@ fn https_proxy_tls_config() -> Arc<ClientConfig> {
         .get_or_init(|| {
             let mut roots = RootCertStore::empty();
             roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            // Pin HTTPS proxy TLS to the ring provider already selected by the
+            // workspace, while retaining rustls' safe TLS 1.2/1.3 defaults.
             Arc::new(
-                ClientConfig::builder()
+                ClientConfig::builder_with_provider(https_proxy_tls_provider())
+                    .with_safe_default_protocol_versions()
+                    .expect("ring supports the safe default TLS protocol versions")
                     .with_root_certificates(roots)
                     .with_no_client_auth(),
             )
         })
         .clone()
+}
+
+fn https_proxy_tls_provider() -> Arc<tokio_rustls::rustls::crypto::CryptoProvider> {
+    Arc::new(tokio_rustls::rustls::crypto::ring::default_provider())
 }
 
 async fn read_connect_response<S>(stream: &mut S) -> Result<()>
@@ -137,15 +145,15 @@ mod tests {
 
     use espejismo_core::{EgressProxy, EgressProxyKind};
     use tokio::{
-        io::{AsyncReadExt, duplex},
+        io::{duplex, AsyncReadExt},
         time::timeout,
     };
-    use tokio_rustls::TlsAcceptor;
     use tokio_rustls::rustls::{
-        DigitallySignedStruct, ServerConfig, SignatureScheme,
         client::danger::{HandshakeSignatureValid, ServerCertVerifier},
         pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime},
+        DigitallySignedStruct, ServerConfig, SignatureScheme,
     };
+    use tokio_rustls::TlsAcceptor;
 
     use super::{build_connect_request, connect_tls_to_proxy_with_timeout, https_proxy_tls_config};
 
@@ -162,8 +170,8 @@ mod tests {
 
     #[tokio::test]
     async fn https_proxy_tls_succeeds_when_server_advertises_alpn() {
-        use tokio_rustls::TlsConnector;
         use tokio_rustls::rustls::ClientConfig;
+        use tokio_rustls::TlsConnector;
 
         let cert = CertificateDer::from(
             include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
@@ -204,6 +212,18 @@ mod tests {
             .expect("TLS should succeed when the client offers no ALPN");
 
         assert_eq!(client.get_ref().1.alpn_protocol(), None);
+        assert!(
+            super::https_proxy_tls_provider()
+                .cipher_suites
+                .iter()
+                .any(|suite| Some(suite.suite())
+                    == client
+                        .get_ref()
+                        .1
+                        .negotiated_cipher_suite()
+                        .map(|s| s.suite())),
+            "negotiated suite must be in the configured HTTPS proxy suite set"
+        );
         assert_eq!(server.await.unwrap(), None);
     }
 
