@@ -72,9 +72,8 @@ where
 
     let response = read_http_headers(&mut stream).await?;
     ensure!(
-        response.request_or_status.starts_with("HTTP/1.1 101")
-            || response.request_or_status.starts_with("HTTP/1.0 101"),
-        "websocket upgrade rejected: {}",
+        websocket_response_matches(&response),
+        "invalid websocket upgrade response: {}",
         response.request_or_status
     );
     let accept = response
@@ -444,10 +443,24 @@ fn parse_http_headers(text: &str) -> Result<HttpHeaders> {
         if line.is_empty() {
             break;
         }
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        fields.insert(name.trim().to_ascii_lowercase(), value.trim().to_string());
+        let (name, value) = line
+            .split_once(':')
+            .context("malformed websocket HTTP header field")?;
+        ensure!(
+            !name.is_empty() && name.bytes().all(is_http_token),
+            "invalid websocket HTTP header name"
+        );
+        let key = name.to_ascii_lowercase();
+        ensure!(
+            !fields.contains_key(&key),
+            "duplicate websocket HTTP header field"
+        );
+        let value = value.trim();
+        ensure!(
+            !value.bytes().any(|b| b == b'\r' || b == b'\n'),
+            "invalid websocket HTTP header value"
+        );
+        fields.insert(key, value.to_string());
     }
     Ok(HttpHeaders {
         request_or_status,
@@ -459,7 +472,8 @@ fn websocket_request_matches(headers: &HttpHeaders, expected_path: &str) -> bool
     let mut parts = headers.request_or_status.split_whitespace();
     let method = parts.next().unwrap_or_default();
     let path = parts.next().unwrap_or_default();
-    if method != "GET" || path != expected_path {
+    let version = parts.next().unwrap_or_default();
+    if method != "GET" || path != expected_path || version != "HTTP/1.1" || parts.next().is_some() {
         return false;
     }
     header_contains(&headers.fields, "upgrade", "websocket")
@@ -468,7 +482,27 @@ fn websocket_request_matches(headers: &HttpHeaders, expected_path: &str) -> bool
             .fields
             .get("sec-websocket-version")
             .is_some_and(|version| version == "13")
-        && headers.fields.contains_key("sec-websocket-key")
+        && headers
+            .fields
+            .get("sec-websocket-key")
+            .is_some_and(|key| valid_websocket_key(key))
+}
+
+fn websocket_response_matches(headers: &HttpHeaders) -> bool {
+    let mut parts = headers.request_or_status.split_whitespace();
+    let valid_status =
+        parts.next() == Some("HTTP/1.1") && parts.next() == Some("101") && parts.next().is_some();
+    valid_status
+        && header_contains(&headers.fields, "upgrade", "websocket")
+        && header_contains(&headers.fields, "connection", "upgrade")
+}
+
+fn valid_websocket_key(key: &str) -> bool {
+    BASE64.decode(key).is_ok_and(|decoded| decoded.len() == 16)
+}
+
+fn is_http_token(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || b"!#$%&'*+-.^_`|~".contains(&byte)
 }
 
 fn header_contains(fields: &HashMap<String, String>, key: &str, needle: &str) -> bool {
@@ -517,9 +551,49 @@ mod tests {
 
     #[test]
     fn websocket_upgrade_header_requires_expected_path() {
-        let header = b"GET /espejismo HTTP/1.1\r\nHost: example.com\r\nUpgrade: websocket\r\nConnection: keep-alive, Upgrade\r\nSec-WebSocket-Key: x\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        let header = b"GET /espejismo HTTP/1.1\r\nHost: example.com\r\nUpgrade: websocket\r\nConnection: keep-alive, Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
         assert!(websocket_upgrade_header_matches(header, "/espejismo"));
         assert!(!websocket_upgrade_header_matches(header, "/other"));
+    }
+
+    #[test]
+    fn websocket_upgrade_rejects_malformed_and_ambiguous_headers() {
+        let valid = b"GET /espejismo HTTP/1.1\r\nHost: example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n";
+        for invalid in [
+            &b"GET /espejismoX HTTP/1.1\r\nHost: example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"[..],
+            &b"GET /espejismo HTTP/1.1 EXTRA\r\nHost: example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"[..],
+            &b"GET /espejismo HTTP/1.1\r\nHost: example.com\r\nBad Header: x\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"[..],
+            &b"GET /espejismo HTTP/1.1\r\nHost: example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: duplicate\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"[..],
+            &b"GET /espejismo HTTP/1.1\r\nHost: example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: x\r\nSec-WebSocket-Version: 13\r\n\r\n"[..],
+        ] {
+            assert!(!websocket_upgrade_header_matches(invalid, "/espejismo"));
+        }
+        assert!(websocket_upgrade_header_matches(valid, "/espejismo"));
+    }
+
+    #[test]
+    fn websocket_response_requires_exact_switching_protocols_and_headers() {
+        let valid = super::parse_http_headers(
+            "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: keep-alive, Upgrade\r\n\r\n",
+        )
+        .unwrap();
+        assert!(super::websocket_response_matches(&valid));
+        for status in [
+            "HTTP/1.1 1010 Switching Protocols",
+            "HTTP/1.1 200 Switching Protocols",
+            "HTTP/1.0 101 Switching Protocols",
+        ] {
+            let headers = super::parse_http_headers(&format!(
+                "{status}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n"
+            ))
+            .unwrap();
+            assert!(!super::websocket_response_matches(&headers), "{status}");
+        }
+        let missing_upgrade = super::parse_http_headers(
+            "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\n\r\n",
+        )
+        .unwrap();
+        assert!(!super::websocket_response_matches(&missing_upgrade));
     }
 
     #[tokio::test]
