@@ -201,6 +201,9 @@ impl StreamHandle {
         }
         if flags.contains(Flag::Rst) {
             self.state = StreamState::Reset;
+            // Reset is terminal: bytes received earlier in the queue must not
+            // leak to the application after the peer aborts the stream.
+            self.read_buf.clear();
         }
         Ok(())
     }
@@ -265,7 +268,9 @@ impl StreamHandle {
         if let Some(data) = body {
             // yamux allows empty data frame
             // but here we just drop it
-            if length > 0 {
+            // A DATA frame carrying RST is terminal too; process_flags has
+            // already moved the stream to Reset, so discard its payload.
+            if length > 0 && self.state != StreamState::Reset {
                 self.read_buf.push(data);
             }
         }
@@ -912,6 +917,48 @@ mod test {
                 StreamEvent::Closed(_) => (),
                 _ => panic!("must be state closed"),
             }
+        });
+    }
+
+    #[test]
+    fn reset_discards_buffered_data_and_data_on_reset_frame() {
+        rt().block_on(async {
+            let (mut frame_sender, frame_receiver) = channel(4);
+            let (unbound_sender, _unbound_receiver) = unbounded();
+            let mut stream = StreamHandle::new(
+                7,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                INITIAL_STREAM_WINDOW,
+            );
+
+            frame_sender
+                .send(Frame::new_data(
+                    Flags::default(),
+                    7,
+                    BytesMut::from(&b"queued before reset"[..]),
+                ))
+                .await
+                .unwrap();
+            let mut rst = Flags::from(Flag::Rst);
+            rst.add(Flag::Ack);
+            frame_sender
+                .send(Frame::new_data(
+                    rst,
+                    7,
+                    BytesMut::from(&b"reset payload"[..]),
+                ))
+                .await
+                .unwrap();
+
+            let mut byte = [0; 32];
+            assert_eq!(
+                stream.read(&mut byte).await.unwrap_err().kind(),
+                ErrorKind::ConnectionReset
+            );
+            assert!(stream.read_buf.is_empty());
+            assert_eq!(stream.state(), StreamState::Reset);
         });
     }
 
