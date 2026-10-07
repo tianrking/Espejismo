@@ -533,15 +533,9 @@ impl TunnelManager {
         self.runtime_state.record_connect_success();
         {
             let mut health = lane.health.lock().await;
-            if health.reconnect_count > 0 {
+            if record_lane_connected(&mut health, Instant::now()) {
                 self.metrics.inc_session_rotation();
             }
-            health.reconnect_count = health.reconnect_count.saturating_add(1);
-            health.consecutive_failures = 0;
-            health.connected_at = Some(Instant::now());
-            record_lane_activity(&mut health);
-            health.last_error = None;
-            health.last_error_unix_secs = None;
             self.publish_lane(&lane, &health, "connected");
         }
         let mut frames = self.frames.clone();
@@ -655,6 +649,20 @@ impl TunnelManager {
 fn record_lane_failure(health: &mut LaneHealth) {
     health.consecutive_failures = health.consecutive_failures.saturating_add(1);
     health.stream_open_failures = health.stream_open_failures.saturating_add(1);
+}
+
+// A physical TCP session cannot move across network interfaces. Once the old
+// transport fails, the next successful dial starts a fresh mux session; count
+// that recovery as a rotation and clear the prior failure state together.
+fn record_lane_connected(health: &mut LaneHealth, connected_at: Instant) -> bool {
+    let rotated = health.reconnect_count > 0;
+    health.reconnect_count = health.reconnect_count.saturating_add(1);
+    health.consecutive_failures = 0;
+    health.connected_at = Some(connected_at);
+    record_lane_activity(health);
+    health.last_error = None;
+    health.last_error_unix_secs = None;
+    rotated
 }
 
 fn lane_kinds(pool: &TunnelPoolConfig) -> Vec<LaneKind> {
@@ -933,9 +941,9 @@ mod tests {
 
     use super::{
         connection_expired, idle_long_enough_at, lane_kinds, lane_score, reconnect_backoff,
-        record_lane_failure, sample_reconnect_backoff, select_and_reserve_lane,
-        should_prune_idle_lane, stream_open_failure, update_recent_throughput, LaneHealth,
-        LaneKind, TunnelLane,
+        record_lane_connected, record_lane_failure, sample_reconnect_backoff,
+        select_and_reserve_lane, should_prune_idle_lane, stream_open_failure,
+        update_recent_throughput, LaneHealth, LaneKind, TunnelLane,
     };
     use espejismo_core::{StreamPriority, TunnelPoolConfig};
     use std::sync::Arc;
@@ -988,6 +996,25 @@ mod tests {
             now
         ));
         assert!(connection_expired(Some(now - age), age, now));
+    }
+
+    #[test]
+    fn network_reconnect_records_rotation_and_resets_failure_state() {
+        let first = Instant::now();
+        let mut health = LaneHealth::default();
+        assert!(!record_lane_connected(&mut health, first));
+        assert_eq!(health.reconnect_count, 1);
+
+        record_lane_failure(&mut health);
+        health.last_error = Some("old network path failed".into());
+        health.last_error_unix_secs = Some(123);
+        let migrated = first + Duration::from_secs(1);
+        assert!(record_lane_connected(&mut health, migrated));
+        assert_eq!(health.reconnect_count, 2);
+        assert_eq!(health.connected_at, Some(migrated));
+        assert_eq!(health.consecutive_failures, 0);
+        assert_eq!(health.last_error, None);
+        assert_eq!(health.last_error_unix_secs, None);
     }
 
     #[test]
