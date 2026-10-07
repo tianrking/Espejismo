@@ -38,6 +38,9 @@ use timer::{Interval, interval};
 
 const BUF_SHRINK_THRESHOLD: usize = u8::MAX as usize;
 const TIMEOUT: Duration = Duration::from_secs(30);
+// Keep interval construction safe even if a caller supplies a zero or
+// sub-millisecond period.
+const MIN_KEEPALIVE_INTERVAL: Duration = Duration::from_millis(1);
 
 /// The session
 pub struct Session<T> {
@@ -688,7 +691,7 @@ where
 
 fn sanitize_keepalive_interval(interval: Duration) -> Duration {
     // Tokio intervals reject zero; keep malformed caller config from panicking.
-    interval.max(Duration::from_millis(1))
+    interval.max(MIN_KEEPALIVE_INTERVAL)
 }
 
 fn ping_timed_out(age: Duration) -> bool {
@@ -1010,6 +1013,10 @@ mod test {
 
         assert_eq!(
             sanitize_keepalive_interval(Duration::ZERO),
+            Duration::from_millis(1)
+        );
+        assert_eq!(
+            sanitize_keepalive_interval(Duration::from_nanos(1)),
             Duration::from_millis(1)
         );
         assert_eq!(
