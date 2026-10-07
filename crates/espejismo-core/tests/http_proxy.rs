@@ -68,6 +68,31 @@ async fn rejects_bad_credentials_with_407() {
 }
 
 #[tokio::test]
+async fn rejects_missing_credentials_with_407_before_connecting() {
+    let (mut client, mut proxy) = duplex(4096);
+    let request = tokio::spawn(async move {
+        client
+            .write_all(b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        response
+    });
+    let auth = ProxyAuth { username: "u".into(), password: "p".into() };
+
+    let error = accept_http_proxy_with_auth(&mut proxy, Some(&auth))
+        .await
+        .unwrap_err();
+    assert!(format!("{error:#}").contains("authentication failed"));
+    drop(proxy);
+
+    let response = request.await.unwrap();
+    assert!(response.starts_with(b"HTTP/1.1 407 Proxy Authentication Required\r\n"));
+    assert!(!response.windows(3).any(|part| part == b"200"));
+}
+
+#[tokio::test]
 async fn rejects_connect_with_bad_credentials_without_establishing_tunnel() {
     let (mut client, mut proxy) = duplex(4096);
     let request = tokio::spawn(async move {

@@ -554,6 +554,15 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn configured_auth_does_not_select_no_auth_from_mixed_offer() {
+        // Even when the client offers both methods, configured credentials must
+        // be negotiated before any SOCKS request can be accepted.
+        let (result, response) = exchange(vec![5, 2, 0, 2], Some(auth())).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 2]);
+    }
+
+    #[tokio::test]
     async fn no_auth_rejects_password_only_offer() {
         let (result, response) = exchange(vec![5, 1, 2], None).await;
         assert!(result.is_err());

@@ -104,4 +104,6 @@ network policy before binding them to a reachable address. SOCKS5
 username/password negotiation and HTTP `Proxy-Authorization: Basic` do not
 encrypt credentials on the local proxy connection, so use a trusted local
 path. This is separate from the authenticated, encrypted client-to-remote
-tunnel.
+tunnel. When `local.auth` is configured, a missing HTTP credential is rejected
+with `407 Proxy Authentication Required`, and SOCKS5 will not select the
+unauthenticated method even if the client offers it.
