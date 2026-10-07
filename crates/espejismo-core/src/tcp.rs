@@ -86,6 +86,15 @@ mod tests {
         }
     }
 
+    #[test]
+    fn tcp_keepalive_seconds_boundaries_preserve_disable_and_duration() {
+        assert!(tcp_keepalive(0).is_none());
+
+        assert_eq!(tcp_keepalive(1), Some(Duration::from_secs(1)));
+
+        assert_eq!(tcp_keepalive(u64::MAX), Some(Duration::from_secs(u64::MAX)));
+    }
+
     // Requires loopback TCP bind, unavailable in the Codex sandbox; the gate
     // skips it there. Run outside the sandbox with
     // `cargo test -p espejismo-core -- --ignored` to execute it.
@@ -143,13 +152,19 @@ pub fn apply_tcp_options(stream: &TcpStream, options: &TcpConfig) -> Result<()> 
     stream.set_nodelay(options.nodelay)?;
     let sock = SockRef::from(stream);
     apply_sockref_buffer_options(&sock, options)?;
-    if options.keepalive_secs > 0 {
+    if let Some(keepalive_secs) = tcp_keepalive(options.keepalive_secs) {
         sock.set_keepalive(true)?;
-        let keepalive = TcpKeepalive::new().with_time(Duration::from_secs(options.keepalive_secs));
+        let keepalive = TcpKeepalive::new().with_time(keepalive_secs);
         sock.set_tcp_keepalive(&keepalive)?;
     }
     apply_platform_tcp_options(&sock, options)?;
     Ok(())
+}
+
+/// Map the configured TCP keepalive idle time to a socket2 option. Zero keeps
+/// the OS socket keepalive disabled; nonzero values are passed through in seconds.
+fn tcp_keepalive(keepalive_secs: u64) -> Option<Duration> {
+    (keepalive_secs > 0).then(|| Duration::from_secs(keepalive_secs))
 }
 
 fn apply_socket_buffer_options(socket: &Socket, options: &TcpConfig) -> io::Result<()> {
