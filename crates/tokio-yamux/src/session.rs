@@ -1504,6 +1504,33 @@ mod test {
     }
 
     #[test]
+    fn test_protocol_error_go_away_is_acknowledged_and_ends_session() {
+        rt().block_on(async {
+            let (remote, local) = MockSocket::new();
+            let config = Config {
+                enable_keepalive: false,
+                ..Default::default()
+            };
+            let mut session = Session::new_server(local, config);
+            let mut peer = Framed::new(
+                remote,
+                FrameCodec::default().max_frame_size(config.max_stream_window_size),
+            );
+
+            // Error shutdown still completes the graceful handshake. The peer
+            // response is normal because it acknowledges termination, not the
+            // reason that triggered it.
+            peer.send(Frame::new_go_away(GoAwayCode::ProtocolError))
+                .await
+                .unwrap();
+            assert!(session.next().await.is_none());
+            let response = peer.next().await.unwrap().unwrap();
+            assert_eq!(response.ty(), Type::GoAway);
+            assert_eq!(GoAwayCode::from(response.length()), GoAwayCode::Normal);
+        });
+    }
+
+    #[test]
     fn test_dynamically_config_the_window_size() {
         let rt = rt();
         rt.block_on(async {

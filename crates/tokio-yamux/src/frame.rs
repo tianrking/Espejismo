@@ -354,7 +354,9 @@ impl Encoder<Frame> for FrameCodec {
 
 #[cfg(test)]
 mod test {
-    use super::{Flag, Flags, Frame, FrameCodec, HEADER_SIZE, INITIAL_STREAM_WINDOW, Type};
+    use super::{
+        Flag, Flags, Frame, FrameCodec, GoAwayCode, HEADER_SIZE, INITIAL_STREAM_WINDOW, Type,
+    };
     use bytes::{BufMut, BytesMut};
     use std::io;
     use tokio_util::codec::{Decoder, Encoder};
@@ -387,6 +389,15 @@ mod test {
         let (_, data) = decode_frame.into_parts();
 
         assert_eq!(data.unwrap(), rand_data)
+    }
+
+    #[test]
+    fn go_away_codes_keep_defined_values_and_map_unknown_values_to_protocol_error() {
+        assert_eq!(GoAwayCode::from(0), GoAwayCode::Normal);
+        assert_eq!(GoAwayCode::from(1), GoAwayCode::ProtocolError);
+        assert_eq!(GoAwayCode::from(2), GoAwayCode::InternalError);
+        assert_eq!(GoAwayCode::from(3), GoAwayCode::ProtocolError);
+        assert_eq!(GoAwayCode::from(u32::MAX), GoAwayCode::ProtocolError);
     }
 
     #[test]
