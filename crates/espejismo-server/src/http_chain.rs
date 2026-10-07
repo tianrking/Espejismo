@@ -254,12 +254,14 @@ mod tests {
             "the HTTPS proxy must not authorize TLS 1.3 early data"
         );
 
-        let client_config = Arc::new(
-            ClientConfig::builder_with_protocol_versions(&[&version::TLS13])
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(AlpnTestVerifier))
-                .with_no_client_auth(),
-        );
+        let mut client_config = ClientConfig::builder_with_protocol_versions(&[&version::TLS13])
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AlpnTestVerifier))
+            .with_no_client_auth();
+        // Simulate a client willing to send 0-RTT. The server's ticket must
+        // still refuse early application data because CONNECT is stateful.
+        client_config.enable_early_data = true;
+        let client_config = Arc::new(client_config);
 
         async fn handshake(
             client_config: Arc<ClientConfig>,
@@ -286,6 +288,10 @@ mod tests {
             tls.read_exact(&mut ready).await.unwrap();
             assert_eq!(&ready, b"ready");
             let resumed = tls.get_ref().1.handshake_kind() == Some(HandshakeKind::Resumed);
+            assert!(
+                !tls.get_ref().1.is_early_data_accepted(),
+                "HTTPS proxy must reject TLS early data, including on resumed sessions"
+            );
             server_task.await.unwrap();
             resumed
         }
