@@ -630,6 +630,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn idle_copy_bidirectional_zero_timeout_expires_pending_reads() {
+        let (mut left, _left_peer) = duplex(64);
+        let (mut right, _right_peer) = duplex(64);
+
+        let copied = idle_copy_bidirectional(&mut left, &mut right, Duration::ZERO).await;
+
+        assert_eq!(copied.unwrap(), (0, 0));
+    }
+
+    #[tokio::test]
     async fn idle_copy_bidirectional_refreshes_timeout_on_traffic() {
         let (mut left, mut left_peer) = duplex(64);
         let (mut right, mut right_peer) = duplex(64);
