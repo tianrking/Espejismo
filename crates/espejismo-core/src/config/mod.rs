@@ -1191,6 +1191,45 @@ mod tests {
         // 125_000 bytes, below the 1 MiB clamp (caller gates on threshold).
         let floor = adaptive_throughput_floor(std::time::Duration::from_millis(1));
         assert_eq!(floor.mux_window_bytes, 1024 * 1024);
+
+        // The calculation accepts the full Duration range without overflow.
+        let floor = adaptive_throughput_floor(std::time::Duration::MAX);
+        assert_eq!(floor.mux_window_bytes, 64 * 1024 * 1024);
+        assert_eq!(floor.tunnel_buffer, 32 * 1024 * 1024);
+    }
+
+    #[test]
+    fn adaptive_throughput_rtt_gate_has_an_inclusive_boundary() {
+        let baseline = EspejismoConfig::default();
+        for rtt in [
+            std::time::Duration::from_millis(99),
+            std::time::Duration::from_micros(99_999),
+        ] {
+            let mut config = baseline.clone();
+            apply_adaptive_throughput(&mut config, rtt).unwrap();
+            assert_eq!(config.shared.tunnel_buffer, baseline.shared.tunnel_buffer);
+            assert_eq!(
+                config.shared.mux.native_initial_window_bytes,
+                baseline.shared.mux.native_initial_window_bytes,
+                "RTT {rtt:?} must remain below the gate"
+            );
+            assert_eq!(
+                config.shared.tcp.send_buffer_bytes,
+                baseline.shared.tcp.send_buffer_bytes
+            );
+            assert_eq!(
+                config.shared.tcp.recv_buffer_bytes,
+                baseline.shared.tcp.recv_buffer_bytes
+            );
+        }
+
+        let mut at_boundary = baseline.clone();
+        apply_adaptive_throughput(&mut at_boundary, std::time::Duration::from_millis(100)).unwrap();
+        assert_eq!(
+            at_boundary.shared.mux.native_initial_window_bytes,
+            12_500_000
+        );
+        assert_eq!(at_boundary.shared.tunnel_buffer, 25_000_000);
     }
 
     #[test]
