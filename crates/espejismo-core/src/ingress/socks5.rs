@@ -1,5 +1,8 @@
 use anyhow::{bail, Result};
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::{
+    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    time::{Duration, Instant},
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::ProxyAuth;
@@ -20,6 +23,109 @@ pub enum SocksRequest {
 pub struct UdpPacket {
     pub target: SocksTarget,
     pub payload: Vec<u8>,
+}
+
+#[derive(Clone, Debug)]
+pub struct SocksUdpReassembler {
+    target: Option<SocksTarget>,
+    payload: Vec<u8>,
+    next_fragment: u8,
+    expires_at: Option<Instant>,
+    peer: Option<IpAddr>,
+}
+
+impl Default for SocksUdpReassembler {
+    fn default() -> Self {
+        Self {
+            target: None,
+            payload: Vec::new(),
+            next_fragment: 1,
+            expires_at: None,
+            peer: None,
+        }
+    }
+}
+
+impl SocksUdpReassembler {
+    /// Accept one SOCKS5 UDP datagram and return a packet only when complete.
+    /// The queue is capped at the tunnel's 16-bit UDP payload limit and expires
+    /// after the RFC 1928 minimum reassembly interval.
+    pub fn push(&mut self, input: &[u8]) -> Result<Option<UdpPacket>> {
+        self.push_for_peer(None, input)
+    }
+
+    pub fn push_from(&mut self, peer: SocketAddr, input: &[u8]) -> Result<Option<UdpPacket>> {
+        self.push_for_peer(Some(peer.ip()), input)
+    }
+
+    fn push_for_peer(&mut self, peer: Option<IpAddr>, input: &[u8]) -> Result<Option<UdpPacket>> {
+        let parsed = parse_udp_packet_inner(input)?;
+        if parsed.frag == 0 {
+            self.reset();
+            return Ok(Some(parsed.packet));
+        }
+
+        let now = Instant::now();
+        if self.expires_at.is_some_and(|deadline| now >= deadline) {
+            self.reset();
+        }
+        let sequence = parsed.frag & 0x7f;
+        let final_fragment = parsed.frag & 0x80 != 0;
+        if sequence == 0 {
+            self.reset();
+            return Ok(None);
+        }
+        if sequence == 1 {
+            self.reset();
+            self.target = Some(parsed.packet.target.clone());
+            self.expires_at = Some(now + Duration::from_secs(5));
+            self.peer = peer;
+        } else if self.target.is_none() {
+            return Ok(None);
+        }
+
+        if sequence != self.next_fragment
+            || self.peer != peer
+            || self.target.as_ref().is_none_or(|target| {
+                target.host != parsed.packet.target.host || target.port != parsed.packet.target.port
+            })
+            || self
+                .payload
+                .len()
+                .saturating_add(parsed.packet.payload.len())
+                > u16::MAX as usize
+        {
+            self.reset();
+            return Ok(None);
+        }
+        self.payload.extend_from_slice(&parsed.packet.payload);
+        if final_fragment {
+            let packet = UdpPacket {
+                target: self.target.take().expect("active fragment sequence"),
+                payload: std::mem::take(&mut self.payload),
+            };
+            self.reset();
+            return Ok(Some(packet));
+        }
+        self.next_fragment = self.next_fragment.saturating_add(1);
+        if self.next_fragment > 0x7f {
+            self.reset();
+        }
+        Ok(None)
+    }
+
+    fn reset(&mut self) {
+        self.target = None;
+        self.payload.clear();
+        self.next_fragment = 1;
+        self.expires_at = None;
+        self.peer = None;
+    }
+}
+
+struct ParsedSocksUdpPacket {
+    frag: u8,
+    packet: UdpPacket,
 }
 
 impl SocksTarget {
@@ -146,15 +252,21 @@ where
 }
 
 pub fn parse_udp_packet(input: &[u8]) -> Result<UdpPacket> {
+    let parsed = parse_udp_packet_inner(input)?;
+    if parsed.frag != 0 {
+        bail!("SOCKS UDP fragmentation is not supported by packet parser");
+    }
+    Ok(parsed.packet)
+}
+
+fn parse_udp_packet_inner(input: &[u8]) -> Result<ParsedSocksUdpPacket> {
     if input.len() < 4 {
         bail!("SOCKS UDP packet too short");
     }
     if input[0] != 0 || input[1] != 0 {
         bail!("SOCKS UDP reserved bytes are invalid");
     }
-    if input[2] != 0 {
-        bail!("SOCKS UDP fragmentation is not supported");
-    }
+    let frag = input[2];
     let atyp = input[3];
     let mut idx = 4;
     let host = match atyp {
@@ -192,9 +304,12 @@ pub fn parse_udp_packet(input: &[u8]) -> Result<UdpPacket> {
     };
     let port = u16::from_be_bytes([input[idx], input[idx + 1]]);
     idx += 2;
-    Ok(UdpPacket {
-        target: SocksTarget { host, port },
-        payload: input[idx..].to_vec(),
+    Ok(ParsedSocksUdpPacket {
+        frag,
+        packet: UdpPacket {
+            target: SocksTarget { host, port },
+            payload: input[idx..].to_vec(),
+        },
     })
 }
 
@@ -289,7 +404,7 @@ where
 mod tests {
     use super::{
         accept_request_with_auth, build_udp_packet, parse_udp_packet, reply_udp_associate,
-        SocksRequest, SocksTarget,
+        SocksRequest, SocksTarget, SocksUdpReassembler,
     };
     use crate::ingress::ProxyAuth;
 
@@ -515,15 +630,60 @@ mod tests {
     }
 
     #[test]
-    fn udp_packet_rejects_fragmentation() {
-        // SOCKS5 defines FRAG=0 as unfragmented; every non-zero value is
-        // unsupported, including the high-bit (final fragment) marker.
+    fn udp_packet_parser_rejects_fragments_without_reassembler() {
         for frag in 1..=u8::MAX {
             let packet = [0x00, 0x00, frag, 0x01, 127, 0, 0, 1, 0, 53];
             assert!(parse_udp_packet(&packet).is_err(), "FRAG={frag:#04x}");
         }
         // Reject FRAG before parsing the address, even when the rest is absent.
         assert!(parse_udp_packet(&[0, 0, 0x80, 0x01]).is_err());
+    }
+
+    #[test]
+    fn socks_udp_reassembler_joins_ordered_fragments_and_final_marker() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'h', b'e'];
+        let last = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'l', b'l', b'o'];
+        assert!(reassembler.push(&first).unwrap().is_none());
+        let packet = reassembler.push(&last).unwrap().unwrap();
+        assert_eq!(packet.target.authority(), "127.0.0.1:53");
+        assert_eq!(packet.payload, b"hello");
+    }
+
+    #[test]
+    fn socks_udp_reassembler_discards_gaps_and_changed_targets() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        let gap = [0, 0, 0x83, 1, 127, 0, 0, 1, 0, 53, b'c'];
+        let changed = [0, 0, 0x82, 1, 127, 0, 0, 2, 0, 53, b'b'];
+        assert!(reassembler.push(&first).unwrap().is_none());
+        assert!(reassembler.push(&gap).unwrap().is_none());
+        assert!(reassembler.push(&changed).unwrap().is_none());
+        assert!(reassembler.target.is_none());
+        assert!(reassembler.payload.is_empty());
+    }
+
+    #[test]
+    fn socks_udp_reassembler_does_not_mix_fragment_sources() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        let last = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'b'];
+        let peer_a = "127.0.0.1:1000".parse().unwrap();
+        let peer_b = "127.0.0.2:1001".parse().unwrap();
+        assert!(reassembler.push_from(peer_a, &first).unwrap().is_none());
+        assert!(reassembler.push_from(peer_b, &last).unwrap().is_none());
+        assert!(reassembler.target.is_none());
+    }
+
+    #[test]
+    fn socks_udp_reassembler_drops_sequences_over_wire_payload_limit() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let mut first = vec![0, 0, 1, 1, 127, 0, 0, 1, 0, 53];
+        first.extend(std::iter::repeat_n(b'a', u16::MAX as usize));
+        let last = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'b'];
+        assert!(reassembler.push(&first).unwrap().is_none());
+        assert!(reassembler.push(&last).unwrap().is_none());
+        assert!(reassembler.target.is_none());
     }
 
     #[test]

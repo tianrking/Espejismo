@@ -355,9 +355,12 @@ async fn handle_udp_associate(
     let udp_addr = udp.local_addr()?;
     socks5::reply_udp_associate(control_stream, udp_addr).await?;
     let mut buf = vec![0_u8; 65_535];
+    let mut reassembler = socks5::SocksUdpReassembler::default();
     loop {
         let (n, peer) = timeout(idle, udp.recv_from(&mut buf)).await??;
-        let packet = socks5::parse_udp_packet(&buf[..n])?;
+        let Some(packet) = reassembler.push_from(peer, &buf[..n])? else {
+            continue;
+        };
         let response = relay_udp_packet(tunnel.clone(), &packet.target, &packet.payload).await?;
         let wrapped = socks5::build_udp_packet(&packet.target, &response)?;
         udp.send_to(&wrapped, peer).await?;
