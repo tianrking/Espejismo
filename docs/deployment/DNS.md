@@ -11,10 +11,11 @@ configuration and policy apply. Espejismo does not select a public resolver,
 implement DNS-over-HTTPS (DoH), or provide a DoH URL, bootstrap address, or
 resolver-specific TLS settings.
 
-Connection setup waits at most 10 seconds for a platform lookup. This bounds the
-async wait and reports a contextual timeout; it cannot forcibly cancel a
-platform resolver call that is already running. Espejismo does not add a second
-retry policy on top of the operating system resolver.
+Connection setup allows up to three platform lookup attempts with 100 ms and
+250 ms delays between failures, within a 10 second overall async deadline. The
+resolver call is bounded by Tokio's timeout; this cannot forcibly stop
+platform resolver work that continues outside the async future. Successful
+hostname results are cached briefly; failed lookups are not cached.
 
 With SOCKS5, use `socks5h://` in applications such as curl when the destination
 hostname should be sent through the proxy and resolved by the remote server.

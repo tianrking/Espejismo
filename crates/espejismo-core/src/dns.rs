@@ -17,6 +17,10 @@ pub const DNS_RESOLUTION_TIMEOUT: Duration = Duration::from_secs(10);
 // hostname results briefly and bound process-wide memory use.
 const DNS_CACHE_TTL: Duration = Duration::from_secs(60);
 const DNS_CACHE_CAPACITY: usize = 256;
+const DNS_MAX_ATTEMPTS: usize = 3;
+// Retry briefly inside the existing overall resolution deadline.
+const DNS_RETRY_DELAYS: [Duration; DNS_MAX_ATTEMPTS - 1] =
+    [Duration::from_millis(100), Duration::from_millis(250)];
 
 #[derive(Default)]
 struct DnsCache {
@@ -70,7 +74,7 @@ pub async fn resolve_socket_addrs(authority: &str) -> Result<Vec<SocketAddr>> {
         return Ok(addrs);
     }
 
-    let addrs = with_timeout(lookup_host(authority), DNS_RESOLUTION_TIMEOUT, authority).await?;
+    let addrs = with_retry(|| lookup_host(authority), DNS_RESOLUTION_TIMEOUT, authority).await?;
     let addrs = collect_addresses(addrs, authority)?;
     cache().lock().unwrap_or_else(|e| e.into_inner()).insert(
         authority.to_owned(),
@@ -91,14 +95,27 @@ fn collect_addresses(
     Ok(addrs)
 }
 
-async fn with_timeout<F, T>(future: F, limit: Duration, authority: &str) -> Result<T>
+async fn with_retry<F, Fut, T>(mut resolve: F, limit: Duration, authority: &str) -> Result<T>
 where
-    F: Future<Output = std::io::Result<T>>,
+    F: FnMut() -> Fut,
+    Fut: Future<Output = std::io::Result<T>>,
 {
-    timeout(limit, future)
-        .await
-        .with_context(|| format!("DNS resolution timed out after {limit:?}: {authority}"))?
-        .with_context(|| format!("DNS lookup failed: {authority}"))
+    timeout(limit, async {
+        let mut last_error = None;
+        for attempt in 0..DNS_MAX_ATTEMPTS {
+            match resolve().await {
+                Ok(value) => return Ok(value),
+                Err(error) => last_error = Some(error),
+            }
+            if let Some(delay) = DNS_RETRY_DELAYS.get(attempt) {
+                tokio::time::sleep(*delay).await;
+            }
+        }
+        Err(last_error.expect("DNS retry policy always makes at least one attempt"))
+    })
+    .await
+    .with_context(|| format!("DNS resolution timed out after {limit:?}: {authority}"))?
+    .with_context(|| format!("DNS lookup failed after {DNS_MAX_ATTEMPTS} attempts: {authority}"))
 }
 
 #[cfg(test)]
@@ -199,8 +216,8 @@ mod tests {
     async fn dns_timeout_returns_without_waiting_for_resolver() {
         let result = timeout(
             Duration::from_millis(50),
-            with_timeout(
-                std::future::pending::<std::io::Result<()>>(),
+            with_retry(
+                || std::future::pending::<std::io::Result<()>>(),
                 Duration::from_millis(10),
                 "slow.example:443",
             ),
@@ -211,6 +228,58 @@ mod tests {
         let error = result.unwrap_err().to_string();
         assert!(error.contains("timed out"));
         assert!(error.contains("slow.example:443"));
+    }
+
+    #[tokio::test]
+    async fn dns_retry_retries_failures_and_stops_after_success() {
+        let mut attempts = 0;
+        let result = with_retry(
+            || {
+                attempts += 1;
+                async move {
+                    if attempts < 3 {
+                        Err(std::io::Error::new(
+                            std::io::ErrorKind::TimedOut,
+                            "temporary",
+                        ))
+                    } else {
+                        Ok("resolved")
+                    }
+                }
+            },
+            Duration::from_secs(1),
+            "retry.example:443",
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, "resolved");
+        assert_eq!(attempts, 3);
+    }
+
+    #[tokio::test]
+    async fn dns_retry_reports_last_failure_after_attempt_limit() {
+        let mut attempts = 0;
+        let error = with_retry(
+            || {
+                attempts += 1;
+                async move {
+                    Err::<(), _>(std::io::Error::new(
+                        std::io::ErrorKind::ConnectionRefused,
+                        format!("failure {attempts}"),
+                    ))
+                }
+            },
+            Duration::from_secs(1),
+            "failed.example:443",
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+
+        assert_eq!(attempts, DNS_MAX_ATTEMPTS);
+        assert!(error.contains("after 3 attempts"));
+        assert!(error.contains("failed.example:443"));
     }
 
     #[tokio::test]
