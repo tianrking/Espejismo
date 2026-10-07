@@ -91,13 +91,15 @@ fn https_proxy_tls_config() -> Arc<ClientConfig> {
             roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
             // Pin HTTPS proxy TLS to the ring provider already selected by the
             // workspace, while retaining rustls' safe TLS 1.2/1.3 defaults.
-            Arc::new(
-                ClientConfig::builder_with_provider(https_proxy_tls_provider())
-                    .with_safe_default_protocol_versions()
-                    .expect("ring supports the safe default TLS protocol versions")
-                    .with_root_certificates(roots)
-                    .with_no_client_auth(),
-            )
+            let mut config = ClientConfig::builder_with_provider(https_proxy_tls_provider())
+                .with_safe_default_protocol_versions()
+                .expect("ring supports the safe default TLS protocol versions")
+                .with_root_certificates(roots)
+                .with_no_client_auth();
+            // TLS key logging exposes traffic secrets and is intended only for
+            // explicitly configured diagnostics. This proxy path never opts in.
+            config.key_log = Arc::new(tokio_rustls::rustls::NoKeyLog);
+            Arc::new(config)
         })
         .clone()
 }
@@ -169,6 +171,10 @@ mod tests {
         assert!(
             first.alpn_protocols.is_empty(),
             "HTTPS proxy TLS must not negotiate an application protocol"
+        );
+        assert!(
+            !first.key_log.will_log("CLIENT_TRAFFIC_SECRET_0"),
+            "HTTPS proxy TLS secrets must not be written to a key log"
         );
     }
 
