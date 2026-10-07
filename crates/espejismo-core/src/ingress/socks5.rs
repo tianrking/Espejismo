@@ -91,7 +91,14 @@ where
             let len = stream.read_u8().await? as usize;
             let mut name = vec![0_u8; len];
             stream.read_exact(&mut name).await?;
-            String::from_utf8(name)?
+            let name = match String::from_utf8(name) {
+                Ok(name) if !name.is_empty() && !name.as_bytes().contains(&0) => name,
+                _ => {
+                    reply(stream, 0x08).await?;
+                    bail!("invalid SOCKS5 domain name");
+                }
+            };
+            name
         }
         4 => {
             let mut ip = [0_u8; 16];
@@ -317,6 +324,30 @@ mod tests {
         );
         assert_eq!(&response[..2], &[5, 0]);
         assert_eq!(&response[2..4], &[5, 0]);
+    }
+
+    #[tokio::test]
+    async fn connect_preserves_domain_for_remote_resolution() {
+        let domain = b"remote.test.invalid";
+        let mut request = vec![5, 1, 0, 5, 1, 0, 3, domain.len() as u8];
+        request.extend_from_slice(domain);
+        request.extend_from_slice(&[0x01, 0xbb]);
+        let (result, response) = exchange(request, None).await;
+        assert!(matches!(result.unwrap(), SocksRequest::Connect(target)
+            if target.host == "remote.test.invalid" && target.port == 443));
+        assert_eq!(&response[2..4], &[5, 0]);
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_empty_non_utf8_and_nul_domain_names() {
+        for domain in [vec![], vec![0xff], vec![b'a', 0, b'b']] {
+            let mut request = vec![5, 1, 0, 5, 1, 0, 3, domain.len() as u8];
+            request.extend_from_slice(&domain);
+            request.extend_from_slice(&[0, 80]);
+            let (result, response) = exchange(request, None).await;
+            assert!(result.is_err());
+            assert_eq!(&response[2..4], &[5, 8]);
+        }
     }
 
     #[tokio::test]

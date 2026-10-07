@@ -55,7 +55,8 @@ For hostname requests, configure applications to use remote name resolution
 (often shown as `socks5h://`); an application using `socks5://` may resolve the
 name locally before sending the request. The remote resolves destination names
 for relayed traffic. See [DNS Behavior](DNS.md) for the resolver path and
-limits.
+limits. SOCKS5 domain requests must contain a non-empty UTF-8 name without NUL
+bytes; malformed names receive reply `0x08` (address type unsupported).
 
 UDP relay still passes through the remote egress policy. If an upstream proxy
 is configured in `remote.egress`, UDP is available only when that proxy is
