@@ -5,9 +5,9 @@ use base64::Engine;
 use espejismo_core::{EgressProxy, EgressProxyKind, TransportStream};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::{Duration, timeout};
-use tokio_rustls::TlsConnector;
+use tokio::time::{timeout, Duration};
 use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio_rustls::TlsConnector;
 
 const MAX_HTTP_CONNECT_RESPONSE: usize = 16 * 1024;
 const HTTPS_PROXY_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -145,15 +145,15 @@ mod tests {
 
     use espejismo_core::{EgressProxy, EgressProxyKind};
     use tokio::{
-        io::{AsyncReadExt, duplex},
+        io::{duplex, AsyncReadExt},
         time::timeout,
     };
-    use tokio_rustls::TlsAcceptor;
     use tokio_rustls::rustls::{
-        DigitallySignedStruct, ServerConfig, SignatureScheme,
         client::danger::{HandshakeSignatureValid, ServerCertVerifier},
         pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime},
+        DigitallySignedStruct, ServerConfig, SignatureScheme,
     };
+    use tokio_rustls::TlsAcceptor;
 
     use super::{build_connect_request, connect_tls_to_proxy_with_timeout, https_proxy_tls_config};
 
@@ -174,8 +174,8 @@ mod tests {
 
     #[tokio::test]
     async fn https_proxy_tls_succeeds_when_server_advertises_alpn() {
-        use tokio_rustls::TlsConnector;
         use tokio_rustls::rustls::ClientConfig;
+        use tokio_rustls::TlsConnector;
 
         let cert = CertificateDer::from(
             include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
@@ -232,8 +232,94 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tls12_ocsp_staple_bytes_reach_certificate_verifier_unchanged() {
+        use std::sync::Mutex;
+        use tokio_rustls::rustls::{version, ClientConfig, ServerConfig};
+        use tokio_rustls::TlsConnector;
+
+        // rustls transports the staple to the verifier but does not validate
+        // OCSP itself. Exercise empty and opaque non-empty boundary values.
+        for staple in [Vec::new(), vec![0x30], vec![0x30; 4096]] {
+            let seen = Arc::new(Mutex::new(None));
+            let cert = CertificateDer::from(
+                include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+            );
+            let key = PrivateKeyDer::try_from(
+                include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+            )
+            .unwrap();
+            let server_config = ServerConfig::builder_with_protocol_versions(&[&version::TLS12])
+                .with_no_client_auth()
+                .with_single_cert_with_ocsp(vec![cert], key, staple.clone())
+                .unwrap();
+            let verifier = Arc::new(OcspCaptureVerifier(seen.clone()));
+            let client_config = ClientConfig::builder_with_protocol_versions(&[&version::TLS12])
+                .dangerous()
+                .with_custom_certificate_verifier(verifier)
+                .with_no_client_auth();
+
+            let (client, server) = duplex(16 * 1024);
+            let server_task = tokio::spawn(async move {
+                TlsAcceptor::from(Arc::new(server_config))
+                    .accept(server)
+                    .await
+                    .unwrap();
+            });
+            let name = ServerName::try_from("localhost").unwrap();
+            TlsConnector::from(Arc::new(client_config))
+                .connect(name, client)
+                .await
+                .unwrap();
+            server_task.await.unwrap();
+            assert_eq!(*seen.lock().unwrap(), Some(staple));
+        }
+    }
+
+    #[derive(Debug)]
+    struct OcspCaptureVerifier(Arc<std::sync::Mutex<Option<Vec<u8>>>>);
+
+    impl ServerCertVerifier for OcspCaptureVerifier {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            ocsp_response: &[u8],
+            _now: UnixTime,
+        ) -> Result<
+            tokio_rustls::rustls::client::danger::ServerCertVerified,
+            tokio_rustls::rustls::Error,
+        > {
+            *self.0.lock().unwrap() = Some(ocsp_response.to_vec());
+            Ok(tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+            AlpnTestVerifier.verify_tls12_signature(message, cert, dss)
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+            AlpnTestVerifier.verify_tls13_signature(message, cert, dss)
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            AlpnTestVerifier.supported_verify_schemes()
+        }
+    }
+
+    #[tokio::test]
     async fn https_proxy_session_tickets_are_reused_and_replenished() {
-        use tokio_rustls::rustls::{ClientConfig, HandshakeKind, ServerConfig, version};
+        use tokio_rustls::rustls::{version, ClientConfig, HandshakeKind, ServerConfig};
 
         let cert = CertificateDer::from(
             include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
