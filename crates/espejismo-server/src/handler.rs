@@ -283,12 +283,28 @@ async fn should_accept_http2(
     settings: &crate::RemoteSettings,
 ) -> Result<bool> {
     let mut buf = vec![0_u8; espejismo_core::HTTP2_PREFACE.len()];
-    let n = match timeout(settings.fallback_http.probe_timeout, stream.peek(&mut buf)).await {
-        Ok(Ok(n)) => n,
-        Ok(Err(err)) => return Err(err.into()),
-        Err(_) => return Ok(false),
+    let probe = async {
+        loop {
+            let n = stream.peek(&mut buf).await?;
+            if n == 0 {
+                return Ok::<bool, std::io::Error>(false);
+            }
+            let available = &buf[..n];
+            if !espejismo_core::HTTP2_PREFACE.starts_with(available) {
+                return Ok::<bool, std::io::Error>(false);
+            }
+            if http2_preface_matches(available) {
+                return Ok::<bool, std::io::Error>(true);
+            }
+            // TCP may expose only part of the connection preface in a peek.
+            // Keep the bytes queued and wait briefly for the rest.
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
     };
-    Ok(http2_preface_matches(&buf[..n]))
+    match timeout(settings.fallback_http.probe_timeout, probe).await {
+        Ok(result) => result.map_err(Into::into),
+        Err(_) => Ok(false),
+    }
 }
 
 async fn handle_mux_stream(

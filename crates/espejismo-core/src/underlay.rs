@@ -589,6 +589,14 @@ mod tests {
     #[test]
     fn http2_preface_matcher_requires_standard_preface() {
         assert!(http2_preface_matches(HTTP2_PREFACE));
+        assert!(http2_preface_matches(
+            b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\nextra"
+        ));
+        assert!(!http2_preface_matches(
+            &HTTP2_PREFACE[..HTTP2_PREFACE.len() - 1]
+        ));
+        assert!(!http2_preface_matches(b""));
+        assert!(!http2_preface_matches(b"PRI * HTTP/2.0\r\n\r\nSX\r\n\r\n"));
         assert!(!http2_preface_matches(b"GET / HTTP/1.1\r\n"));
     }
 
