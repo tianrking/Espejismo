@@ -121,7 +121,20 @@ pub(crate) fn parse_v2(input: &[u8]) -> Result<ProxyHeader, &'static str> {
     if input.len() < consumed {
         return Err("incomplete v2 address block or TLVs");
     }
-    let _ = addr_len;
+    // TLVs are opaque to this parser, but their framing still has to fit the
+    // declared address block so malformed lengths cannot be silently accepted.
+    let mut offset = 16 + addr_len;
+    while offset < consumed {
+        if consumed - offset < 3 {
+            return Err("truncated v2 TLV header");
+        }
+        let value_len = u16::from_be_bytes([input[offset + 1], input[offset + 2]]) as usize;
+        offset += 3;
+        if value_len > consumed - offset {
+            return Err("truncated v2 TLV value");
+        }
+        offset += value_len;
+    }
     Ok(ProxyHeader {
         source,
         destination,
@@ -208,5 +221,25 @@ mod tests {
         let mut truncated = v2_header(0x11, &[0; 12]);
         truncated.pop();
         assert!(parse_v2(&truncated).is_err());
+    }
+
+    #[test]
+    fn validates_v2_tlv_framing_and_preserves_following_payload() {
+        let mut valid = v2_header(0x11, &[192, 0, 2, 1, 198, 51, 100, 2, 0, 80, 1, 187]);
+        valid.extend_from_slice(&[0xea, 0, 2, 0xaa, 0xbb]);
+        valid[14..16].copy_from_slice(&17u16.to_be_bytes());
+        valid.extend_from_slice(b"DATA");
+        let parsed = parse_v2(&valid).unwrap();
+        assert_eq!(&valid[parsed.consumed..], b"DATA");
+
+        let mut partial_tlv_header = v2_header(0x11, &[0; 12]);
+        partial_tlv_header.extend_from_slice(&[0xea, 0]);
+        partial_tlv_header[14..16].copy_from_slice(&14u16.to_be_bytes());
+        assert_eq!(parse_v2(&partial_tlv_header), Err("truncated v2 TLV header"));
+
+        let mut partial_tlv_value = v2_header(0x11, &[0; 12]);
+        partial_tlv_value.extend_from_slice(&[0xea, 0, 2, 0xaa]);
+        partial_tlv_value[14..16].copy_from_slice(&16u16.to_be_bytes());
+        assert_eq!(parse_v2(&partial_tlv_value), Err("truncated v2 TLV value"));
     }
 }
