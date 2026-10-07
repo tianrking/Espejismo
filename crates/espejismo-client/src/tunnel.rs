@@ -895,8 +895,13 @@ async fn apply_reconnect_backoff(lane: &TunnelLane) {
 }
 
 fn sample_reconnect_backoff(failures: u32) -> Duration {
-    let jitter_percent = rand::thread_rng().gen_range(80..=120);
-    reconnect_backoff(failures, jitter_percent)
+    let nominal = reconnect_backoff(failures, 100).as_millis() as u64;
+    let low = reconnect_backoff(failures, 80).as_millis() as u64;
+    let high = reconnect_backoff(failures, 120).as_millis() as u64;
+    if low == high {
+        return Duration::from_millis(nominal);
+    }
+    Duration::from_millis(rand::thread_rng().gen_range(low..=high))
 }
 
 fn unix_now_secs() -> u64 {
@@ -1177,8 +1182,8 @@ mod tests {
     }
 
     #[test]
-    fn handshake_timeout_backoff_samples_spread_lanes_within_the_jitter_window() {
-        // A handshake timeout is recorded as a lane failure before retry, so
+    fn connect_timeout_backoff_samples_spread_lanes_within_the_jitter_window() {
+        // A connect timeout is recorded as a lane failure before retry, so
         // all lanes at this failure count must receive independent delays.
         const LANES: usize = 256;
         let delays: Vec<_> = (0..LANES)

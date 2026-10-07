@@ -233,7 +233,8 @@ Client TCP/underlay connect or handshake failure leaves the lane unavailable;
 that open request fails, and a later request observes the lane's reconnect
 backoff. The first connection attempt has no delay. After each consecutive
 lane error, the next demand waits for an exponential delay starting at 500 ms,
-with a fresh 80–120% random multiplier and a 16 s maximum. The failure count is
+with a fresh uniformly sampled integer-millisecond delay in the 80–120% range
+and a 16 s maximum. The failure count is
 lane-local and is reset when a lane connection succeeds.
 A failed connect/handshake is returned to its caller immediately; it does not
 consume the mux stream-open attempt budget. A mux stream-open failure clears
