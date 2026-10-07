@@ -1176,6 +1176,36 @@ mod tests {
     }
 
     #[test]
+    fn keepalive_timeout_failure_uses_bounded_reconnect_backoff() {
+        // A dead yamux session is discovered on the next stream open and is
+        // recorded through the same lane failure path as other reconnects.
+        let mut health = LaneHealth {
+            reconnect_count: 1,
+            ..LaneHealth::default()
+        };
+
+        record_lane_failure(&mut health);
+        assert_eq!(health.consecutive_failures, 1);
+        assert_eq!(
+            reconnect_backoff(health.consecutive_failures, 100),
+            Duration::from_millis(500)
+        );
+
+        record_lane_failure(&mut health);
+        let retry = sample_reconnect_backoff(health.consecutive_failures);
+        assert!((800..=1_200).contains(&retry.as_millis()));
+
+        // A newly established session clears failures so future keepalive
+        // timeouts start from the initial retry delay.
+        assert!(record_lane_connected(&mut health, Instant::now()));
+        assert_eq!(health.consecutive_failures, 0);
+        assert_eq!(
+            reconnect_backoff(health.consecutive_failures, 100),
+            Duration::ZERO
+        );
+    }
+
+    #[test]
     fn reconnect_backoff_applies_bounded_jitter() {
         assert_eq!(reconnect_backoff(3, 80), Duration::from_millis(1_600));
         assert_eq!(reconnect_backoff(3, 120), Duration::from_millis(2_400));
