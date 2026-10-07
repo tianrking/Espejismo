@@ -1,11 +1,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use rand::seq::SliceRandom;
 use rand::Rng;
-use tokio::io::{copy_bidirectional, AsyncWriteExt};
+use rand::seq::SliceRandom;
+use tokio::io::{AsyncWriteExt, copy_bidirectional};
 use tokio::net::TcpStream;
-use tokio::time::{sleep, timeout, Duration};
+use tokio::time::{Duration, sleep, timeout};
 
 use crate::tarpit;
 
@@ -204,7 +204,7 @@ fn unix_secs(time: SystemTime) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        build_builtin_fallback_response, looks_like_http_probe, quiet_reject, FallbackHttpRuntime,
+        FallbackHttpRuntime, build_builtin_fallback_response, looks_like_http_probe, quiet_reject,
     };
     use std::time::Duration;
     use tokio::time::Instant;
@@ -222,6 +222,35 @@ mod tests {
     fn ignores_non_http_prefixes() {
         assert!(!looks_like_http_probe(b"\x16\x03\x01\x02\x00"));
         assert!(!looks_like_http_probe(b"\x8f\xf2\x00\x11"));
+    }
+
+    #[test]
+    fn tls_client_hello_with_sni_is_not_routed_as_http() {
+        // A minimal TLS record containing a ClientHello with the SNI extension
+        // for example.com. The fallback probe only recognizes HTTP methods;
+        // TLS remains on the tunnel authentication path regardless of SNI.
+        let client_hello_with_sni = [
+            0x16, 0x03, 0x01, 0x00, 0x45, // TLS handshake record
+            0x01, 0x00, 0x00, 0x41, // ClientHello
+            0x03, 0x03, // legacy_version
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // random
+            0x00, // session id length
+            0x00, 0x02, 0x13, 0x01, // cipher suites
+            0x01, 0x00, // compression methods
+            0x00, 0x16, // extensions length
+            0x00, 0x00, 0x00, 0x12, // server_name extension
+            0x00, 0x10, 0x00, 0x00, 0x0b, b'e', b'x', b'a', b'm', b'p', b'l', b'e', b'.', b'c',
+            b'o', b'm',
+        ];
+
+        assert!(!looks_like_http_probe(&client_hello_with_sni));
+        for end in 1..client_hello_with_sni.len() {
+            assert!(
+                !looks_like_http_probe(&client_hello_with_sni[..end]),
+                "truncated ClientHello prefix of length {end} must not match HTTP"
+            );
+        }
     }
 
     #[test]
