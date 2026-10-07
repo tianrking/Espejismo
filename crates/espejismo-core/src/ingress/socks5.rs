@@ -288,6 +288,9 @@ fn parse_udp_packet_inner(input: &[u8]) -> Result<ParsedSocksUdpPacket> {
                 bail!("SOCKS UDP domain packet too short");
             }
             let host = String::from_utf8(input[idx..idx + len].to_vec())?;
+            if host.is_empty() || host.as_bytes().contains(&0) {
+                bail!("invalid SOCKS UDP domain name");
+            }
             idx += len;
             host
         }
@@ -723,6 +726,14 @@ mod tests {
     fn udp_packet_rejects_truncated_domain() {
         let packet = [0x00, 0x00, 0x00, 0x03, 10, b'e', b'x'];
         assert!(parse_udp_packet(&packet).is_err());
+    }
+
+    #[test]
+    fn udp_packet_rejects_empty_and_nul_domain_names() {
+        let empty = [0, 0, 0, 3, 0, 0, 53];
+        let nul = [0, 0, 0, 3, 1, 0, 0, 53];
+        assert!(parse_udp_packet(&empty).is_err());
+        assert!(parse_udp_packet(&nul).is_err());
     }
 
     #[test]
