@@ -1310,8 +1310,8 @@ fn unix_now() -> Result<i64> {
 mod tests {
     use super::{
         accept_handshake, accept_handshake_with_replay, accept_handshake_with_users,
-        connect_handshake, parse_plain_client_hello, HandshakeConfig, HandshakeUser,
-        HandshakeWindow, SERVER_HELLO_LEN, STEALTH_HANDSHAKE_NONCE_LEN,
+        connect_handshake, parse_plain_client_hello, parse_stealth_client_hello, HandshakeConfig,
+        HandshakeUser, HandshakeWindow, SERVER_HELLO_LEN, STEALTH_HANDSHAKE_NONCE_LEN,
         VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
     };
     use crate::config::MuxMode;
@@ -1407,6 +1407,41 @@ mod tests {
         )
         .unwrap();
         parse_plain_client_hello(&cfg, &payload, auth_key).unwrap();
+    }
+
+    #[test]
+    fn client_hello_parsers_enforce_padding_boundaries() {
+        let key = [7_u8; 32];
+        let cfg = HandshakeConfig::new(b"padding-boundary-secret-long-enough".to_vec(), 30, 4, 0)
+            .with_handshake_window(HandshakeWindow {
+                enabled: false,
+                step_secs: 30,
+                previous_windows: 0,
+                future_windows: 0,
+            });
+        let mut fixed = vec![0_u8; 32 + super::CLIENT_HELLO_FIXED_BODY_LEN];
+
+        // A zero-padding hello is the exact minimum accepted by both parsers.
+        assert!(parse_plain_client_hello(&cfg, &fixed, key).is_ok());
+        assert!(parse_stealth_client_hello(&cfg, &fixed, 140, key).is_ok());
+
+        // Declared padding must fit both the actual payload and configured cap.
+        fixed[32 + 82..32 + 84].copy_from_slice(&1_u16.to_be_bytes());
+        assert!(parse_plain_client_hello(&cfg, &fixed, key).is_err());
+        assert!(parse_stealth_client_hello(&cfg, &fixed, 140, key).is_err());
+
+        fixed.push(0);
+        assert!(parse_plain_client_hello(&cfg, &fixed, key).is_ok());
+        // At the minimum stealth frame, no client padding can fit.
+        assert!(parse_stealth_client_hello(&cfg, &fixed, 140, key).is_err());
+        // One additional byte of frame capacity permits exactly one byte.
+        assert!(parse_stealth_client_hello(&cfg, &fixed, 141, key).is_ok());
+        assert!(parse_stealth_client_hello(&cfg, &fixed, 139, key).is_err());
+
+        fixed[32 + 82..32 + 84].copy_from_slice(&5_u16.to_be_bytes());
+        fixed.extend_from_slice(&[0; 5]);
+        assert!(parse_plain_client_hello(&cfg, &fixed, key).is_err());
+        assert!(parse_stealth_client_hello(&cfg, &fixed, 145, key).is_err());
     }
 
     #[tokio::test]

@@ -118,6 +118,8 @@ The server MUST reject a client hello when:
 - The envelope is shorter than the minimum fixed body.
 - The masked length exceeds configured bounds.
 - The padding length exceeds `remote.max_handshake_padding`.
+- The declared padding bytes are missing from the payload; trailing envelope
+  padding beyond the declared hello body is ignored.
 - The puzzle is invalid.
 - No configured user/window key authenticates the HMAC.
 - More than one configured user/window candidate could match the masked hello
@@ -148,7 +150,10 @@ variable-length envelope to fixed-size masked blocks.
 The configured stealth frame size MUST be large enough to hold the fixed
 handshake body plus the nonce, length metadata, authentication data, and minimum
 padding. Implementations MUST reject too-small stealth frame sizes at config
-check or startup.
+check or startup. The declared client padding MUST also fit both the configured
+padding cap and the bytes remaining in the received frame after its nonce and
+fixed hello body. A frame exactly at the minimum size therefore carries no
+client padding.
 
 ## Frame Transport
 
