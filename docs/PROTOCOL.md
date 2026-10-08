@@ -54,7 +54,9 @@ Unless otherwise stated:
 
 ## Protocol Version And Capabilities
 
-The current protocol version is `1`.
+The current protocol version is `1`. Both peers require an exact match; there
+is no range negotiation, fallback, or inference from binary release versions.
+Values below or above `1` (including the `u16` maximum) are unsupported.
 
 Handshake capabilities are authenticated as part of the client hello and server
 reply. Current capability bits are:

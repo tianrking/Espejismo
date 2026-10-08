@@ -38,6 +38,12 @@ const VARIABLE_HANDSHAKE_NONCE_LEN: usize = 24;
 const VARIABLE_HANDSHAKE_LEN_LEN: usize = 4;
 const VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX: usize = 512;
 pub const PROTOCOL_VERSION: u16 = 1;
+
+// Version compatibility is deliberately exact: release numbers do not imply
+// wire compatibility, and this protocol has no version negotiation fallback.
+fn supports_protocol_version(version: u16) -> bool {
+    version == PROTOCOL_VERSION
+}
 pub const CAP_TCP_CONNECT: u64 = 1 << 0;
 pub const CAP_UDP_ASSOCIATE: u64 = 1 << 1;
 pub const CAP_MUX_YAMUX: u64 = 1 << 8;
@@ -530,7 +536,7 @@ fn finish_client_handshake(
     let server_public = PublicKey::from(slice_32(&reply[..32])?);
     let server_version = u16::from_be_bytes(reply[32..34].try_into()?);
     let server_capabilities = u64::from_be_bytes(reply[34..42].try_into()?);
-    if server_version != PROTOCOL_VERSION {
+    if !supports_protocol_version(server_version) {
         bail!("unsupported server protocol version {server_version}");
     }
     if server_capabilities & CAP_TCP_CONNECT == 0 {
@@ -867,7 +873,7 @@ async fn verify_client_hello(
     let timestamp = i64::from_be_bytes(client_hello.fixed_body[..8].try_into()?);
     let client_version = u16::from_be_bytes(client_hello.fixed_body[64..66].try_into()?);
     let client_capabilities = u64::from_be_bytes(client_hello.fixed_body[66..74].try_into()?);
-    if client_version != PROTOCOL_VERSION {
+    if !supports_protocol_version(client_version) {
         bail!("unsupported client protocol version {client_version}");
     }
     if client_capabilities & CAP_TCP_CONNECT == 0 {
@@ -1314,6 +1320,17 @@ mod tests {
         HandshakeUser, HandshakeWindow, SERVER_HELLO_LEN, STEALTH_HANDSHAKE_NONCE_LEN,
         VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
     };
+
+    #[test]
+    fn protocol_version_accepts_only_the_current_exact_value() {
+        for version in [0, 2, u16::MAX] {
+            assert!(
+                !super::supports_protocol_version(version),
+                "unexpectedly accepted protocol version {version}"
+            );
+        }
+        assert!(super::supports_protocol_version(super::PROTOCOL_VERSION));
+    }
     use crate::config::MuxMode;
     use crate::protocol::replay::ReplayCache;
     use std::sync::Arc;
