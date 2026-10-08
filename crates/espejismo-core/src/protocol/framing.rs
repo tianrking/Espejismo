@@ -746,6 +746,7 @@ fn should_send_padding(options: &FrameOptions, disabled_until: Option<Instant>) 
 }
 
 fn observe_backpressure(options: &FrameOptions, elapsed: Duration) -> Option<Instant> {
+    // Treat slow writes as a temporary padding circuit breaker; zero disables it.
     if options.backpressure_threshold_ms == 0 || options.backpressure_cooldown_ms == 0 {
         return None;
     }
@@ -757,13 +758,67 @@ fn observe_backpressure(options: &FrameOptions, elapsed: Duration) -> Option<Ins
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
     use tokio::io::duplex;
+    use tokio::time::Instant;
 
     use super::{
-        ChunkPolicy, Frame, FrameOptions, FrameReader, FrameType, FrameWriter, ObfuscationProfile,
-        NORMAL_PAYLOAD_CAPACITY,
+        observe_backpressure, should_send_padding, ChunkPolicy, Frame, FrameOptions, FrameReader,
+        FrameType, FrameWriter, ObfuscationProfile, NORMAL_PAYLOAD_CAPACITY,
     };
     use crate::crypto::{accept_handshake, connect_handshake, HandshakeConfig};
+
+    #[test]
+    fn padding_breaker_respects_disabled_and_threshold_boundaries() {
+        let options = FrameOptions {
+            backpressure_threshold_ms: 10,
+            backpressure_cooldown_ms: 250,
+            ..FrameOptions::default()
+        };
+        assert_eq!(
+            observe_backpressure(&options, Duration::from_millis(9)),
+            None
+        );
+        let before = Instant::now();
+        let until = observe_backpressure(&options, Duration::from_millis(10)).unwrap();
+        let remaining = until.duration_since(before);
+        assert!(remaining >= Duration::from_millis(250));
+        assert!(remaining <= Duration::from_millis(251));
+
+        let disabled_threshold = FrameOptions {
+            backpressure_threshold_ms: 0,
+            ..options.clone()
+        };
+        let disabled_cooldown = FrameOptions {
+            backpressure_cooldown_ms: 0,
+            ..options
+        };
+        assert_eq!(
+            observe_backpressure(&disabled_threshold, Duration::from_secs(1)),
+            None
+        );
+        assert_eq!(
+            observe_backpressure(&disabled_cooldown, Duration::from_secs(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn padding_breaker_disables_only_until_cooldown_expires() {
+        let options = FrameOptions {
+            padding_chance_percent: 100,
+            ..FrameOptions::default()
+        };
+        assert!(should_send_padding(&options, None));
+        assert!(!should_send_padding(
+            &options,
+            Some(Instant::now() + Duration::from_secs(1))
+        ));
+        assert!(should_send_padding(
+            &options,
+            Some(Instant::now() - Duration::from_millis(1))
+        ));
+    }
 
     #[test]
     fn normal_chunk_bounds_leave_room_for_frame_metadata_and_aead_tag() {
