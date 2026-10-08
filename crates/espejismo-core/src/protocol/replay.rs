@@ -18,7 +18,9 @@ pub struct ReplayCache {
 impl ReplayCache {
     pub fn new(ttl_secs: i64) -> Self {
         Self {
-            ttl_secs,
+            // A non-positive TTL still retains entries at their insertion
+            // timestamp; they expire only once time advances.
+            ttl_secs: ttl_secs.max(0),
             seen: HashSet::new(),
             order: VecDeque::new(),
         }
@@ -55,6 +57,7 @@ impl ReplayCache {
         public_key: [u8; 32],
     ) -> Result<()> {
         self.prune(now);
+        let inserted_at = self.insertion_time(now);
         let digest_key = ReplayKey::FirstPacketDigest(digest);
         let public_key_key = ReplayKey::EphemeralPublicKey(public_key);
         if self.seen.contains(&digest_key) {
@@ -65,7 +68,7 @@ impl ReplayCache {
         }
         for key in [digest_key, public_key_key] {
             self.seen.insert(key);
-            self.order.push_back((now, key));
+            self.order.push_back((inserted_at, key));
         }
         Ok(())
     }
@@ -76,8 +79,17 @@ impl ReplayCache {
             bail!("replayed key");
         }
         self.seen.insert(key);
-        self.order.push_back((now, key));
+        self.order.push_back((self.insertion_time(now), key));
         Ok(())
+    }
+
+    // Keep queue timestamps ordered even when the wall clock moves backwards.
+    // This lets pruning stop at the first live entry without stranding newer,
+    // already-expired entries behind it.
+    fn insertion_time(&self, now: i64) -> i64 {
+        self.order
+            .back()
+            .map_or(now, |(last_inserted_at, _)| now.max(*last_inserted_at))
     }
 
     fn prune(&mut self, now: i64) {
@@ -131,6 +143,30 @@ mod tests {
         let key = [10_u8; 32];
         cache.check_and_insert(100, key).unwrap();
         assert!(cache.check_and_insert(99, key).is_err());
+    }
+
+    #[test]
+    fn rollback_insertions_do_not_strand_expired_entries() {
+        let mut cache = ReplayCache::new(60);
+        let older = [21_u8; 32];
+        let rollback_insert = [22_u8; 32];
+        cache.check_and_insert(100, older).unwrap();
+        cache.check_and_insert(90, rollback_insert).unwrap();
+
+        // Both entries use the monotonic insertion timestamp 100. Once the
+        // window expires, pruning removes both in queue order.
+        cache.check_and_insert(161, rollback_insert).unwrap();
+    }
+
+    #[test]
+    fn non_positive_ttl_keeps_same_second_replays_blocked() {
+        for ttl in [0, -1] {
+            let mut cache = ReplayCache::new(ttl);
+            let key = [23_u8; 32];
+            cache.check_and_insert(100, key).unwrap();
+            assert!(cache.check_and_insert(100, key).is_err());
+            cache.check_and_insert(101, key).unwrap();
+        }
     }
 
     #[test]
