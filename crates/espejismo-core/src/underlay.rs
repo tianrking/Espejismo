@@ -5,12 +5,12 @@
 
 use std::collections::HashMap;
 
-use anyhow::{bail, ensure, Context, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use anyhow::{Context, Result, bail, ensure};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
 use rand::RngCore;
 use sha1::{Digest, Sha1};
-use tokio::io::{duplex, split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, duplex, split};
 use tokio::sync::Mutex;
 use tracing::debug;
 
@@ -409,9 +409,7 @@ where
         reader.read_exact(&mut payload).await?;
     }
     if masked {
-        for (i, byte) in payload.iter_mut().enumerate() {
-            *byte ^= mask[i % 4];
-        }
+        apply_websocket_mask(&mut payload, &mask);
     }
     match opcode {
         0x2 => Ok(Some(WsFrame::Data(payload))),
@@ -441,6 +439,12 @@ where
 
 fn valid_websocket_close_code(code: u16) -> bool {
     matches!(code, 1000..=1003 | 1007..=1014 | 2000..=2999 | 3000..=4999)
+}
+
+fn apply_websocket_mask(payload: &mut [u8], mask: &[u8; 4]) {
+    for (i, byte) in payload.iter_mut().enumerate() {
+        *byte ^= mask[i % mask.len()];
+    }
 }
 
 async fn write_ws_frame<W>(
@@ -475,9 +479,7 @@ where
     writer.write_all(&header).await?;
     if masked {
         let mut masked_payload = payload.to_vec();
-        for (i, byte) in masked_payload.iter_mut().enumerate() {
-            *byte ^= mask[i % 4];
-        }
+        apply_websocket_mask(&mut masked_payload, &mask);
         writer.write_all(&masked_payload).await?;
     } else {
         writer.write_all(payload).await?;
@@ -605,11 +607,61 @@ pub fn default_websocket_max_frame_bytes() -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        connect_http2_underlay, connect_websocket_underlay, http2_preface_matches,
-        websocket_accept, websocket_upgrade_header_matches, HTTP2_PREFACE,
+        HTTP2_PREFACE, connect_http2_underlay, connect_websocket_underlay, http2_preface_matches,
+        websocket_accept, websocket_upgrade_header_matches,
     };
     use bytes::Bytes;
-    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex};
+
+    #[test]
+    fn websocket_mask_xor_repeats_key_every_four_bytes() {
+        let mask = [0x12, 0x34, 0x56, 0x78];
+        for size in [0, 1, 3, 4, 5, 8, 9] {
+            let original = vec![0xa5; size];
+            let mut masked = original.clone();
+            super::apply_websocket_mask(&mut masked, &mask);
+            for (index, byte) in masked.iter().enumerate() {
+                assert_eq!(*byte, original[index] ^ mask[index % 4], "size {size}");
+            }
+            super::apply_websocket_mask(&mut masked, &mask);
+            assert_eq!(masked, original, "mask must be reversible at size {size}");
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_mask_roles_and_truncated_mask_boundaries_are_enforced() {
+        // A server accepts masked client frames; a client accepts unmasked
+        // server frames. The mask key must be complete before payload bytes.
+        for (frame, role, should_pass) in [
+            (
+                &[0x82, 0x80, 1, 2, 3, 4][..],
+                super::WebSocketRole::Server,
+                true,
+            ),
+            (
+                &[0x82, 0x80, 1, 2, 3][..],
+                super::WebSocketRole::Server,
+                false,
+            ),
+            (
+                &[0x82, 0x80, 1, 2, 3, 4][..],
+                super::WebSocketRole::Client,
+                false,
+            ),
+            (&[0x82, 0x00][..], super::WebSocketRole::Client, true),
+            (&[0x82, 0x00][..], super::WebSocketRole::Server, false),
+        ] {
+            let (mut wire, mut peer) = duplex(16);
+            peer.write_all(frame).await.unwrap();
+            drop(peer);
+            let result = super::read_ws_frame(&mut wire, role, 1024).await;
+            assert_eq!(
+                result.is_ok(),
+                should_pass,
+                "frame {frame:?}, role {role:?}"
+            );
+        }
+    }
 
     #[tokio::test]
     async fn websocket_ping_payload_boundaries_roundtrip_and_reject_oversize() {
