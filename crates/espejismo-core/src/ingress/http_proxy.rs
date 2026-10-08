@@ -42,9 +42,12 @@ where
             bail!("HTTP proxy header too large");
         }
         let read_len = remaining.min(read_buf.len());
-        let n = timeout(HTTP_PROXY_HEADER_TIMEOUT, stream.read(&mut read_buf[..read_len]))
-            .await
-            .context("HTTP proxy header read timeout")??;
+        let n = timeout(
+            HTTP_PROXY_HEADER_TIMEOUT,
+            stream.read(&mut read_buf[..read_len]),
+        )
+        .await
+        .context("HTTP proxy header read timeout")??;
         if n == 0 {
             bail!("HTTP proxy connection closed before headers complete");
         }
@@ -115,6 +118,8 @@ where
     let mut prebuffer = rewritten.into_bytes();
     let mut prebuffer_body_bytes = 0;
     if let Some(extra) = overflow {
+        // Keep already-read body bytes opaque: chunk framing and HTTP trailers
+        // are forwarded downstream as part of the original request body.
         prebuffer_body_bytes = extra.len();
         prebuffer.extend_from_slice(&extra);
     }
@@ -247,6 +252,45 @@ mod tests {
         assert!(target
             .prebuffer
             .starts_with(b"GET /files/256m.bin?mirror=hk HTTP/1.1\r\nHost: example.test\r\n"));
+        writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn chunked_request_preserves_declared_and_received_trailers() {
+        let (mut client, mut proxy) = duplex(4096);
+        let writer = tokio::spawn(async move {
+            client
+                .write_all(
+                    b"POST http://example.test/upload HTTP/1.1\r\n\
+                      Host: example.test\r\n\
+                      Transfer-Encoding: chunked\r\n\
+                      Trailer: Digest, X-Request-Id\r\n\r\n\
+                      3\r\nabc\r\n0\r\nDigest: sha-256=abc\r\nX-Request-Id: 7\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let target = accept_http_proxy(&mut proxy).await.unwrap();
+        assert_eq!(target.authority, "example.test:80");
+        assert_eq!(target.content_length, None);
+        let body_start = target
+            .prebuffer
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        assert_eq!(
+            target.prebuffer_body_bytes,
+            target.prebuffer.len() - body_start
+        );
+        assert!(target
+            .prebuffer
+            .windows(b"Trailer: Digest, X-Request-Id\r\n".len())
+            .any(|window| window == b"Trailer: Digest, X-Request-Id\r\n"));
+        assert!(target
+            .prebuffer
+            .ends_with(b"3\r\nabc\r\n0\r\nDigest: sha-256=abc\r\nX-Request-Id: 7\r\n\r\n"));
         writer.await.unwrap();
     }
 
