@@ -236,6 +236,7 @@ async fn read_socks5_reply_addr(stream: &mut TcpStream) -> Result<SocketAddr> {
 
 pub(crate) fn encode_socks5_udp_datagram(host: &str, port: u16, payload: &[u8]) -> Result<Vec<u8>> {
     let host_bytes = host.as_bytes();
+    anyhow::ensure!(!host_bytes.is_empty(), "SOCKS5 UDP target host is empty");
     anyhow::ensure!(
         host_bytes.len() <= u8::MAX as usize,
         "SOCKS5 UDP target host too long"
@@ -259,7 +260,9 @@ pub(crate) fn decode_socks5_udp_datagram(input: &[u8]) -> Result<Vec<u8>> {
         0x01 => offset += 4,
         0x03 => {
             anyhow::ensure!(input.len() > offset, "SOCKS5 UDP domain length missing");
-            offset += 1 + input[offset] as usize;
+            let domain_len = input[offset] as usize;
+            anyhow::ensure!(domain_len > 0, "SOCKS5 UDP domain is empty");
+            offset += 1 + domain_len;
         }
         0x04 => offset += 16,
         atyp => anyhow::bail!("SOCKS5 UDP response has unsupported address type {atyp}"),
@@ -317,6 +320,13 @@ mod tests {
             }
             assert!(decode_socks5_udp_datagram(packet).unwrap().is_empty());
         }
+    }
+
+    #[test]
+    fn socks5_udp_datagram_rejects_empty_domain_addresses() {
+        let packet = [0, 0, 0, 3, 0, 0, 53];
+        assert!(decode_socks5_udp_datagram(&packet).is_err());
+        assert!(encode_socks5_udp_datagram("", 53, b"query").is_err());
     }
 
     #[tokio::test]
