@@ -5,12 +5,12 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result, bail, ensure};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use anyhow::{bail, ensure, Context, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use bytes::Bytes;
 use rand::RngCore;
 use sha1::{Digest, Sha1};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, duplex, split};
+use tokio::io::{duplex, split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::sync::Mutex;
 use tracing::debug;
 
@@ -398,11 +398,32 @@ where
     }
     match opcode {
         0x0 | 0x2 => Ok(Some(WsFrame::Data(payload))),
-        0x8 => Ok(None),
+        0x8 => {
+            // RFC 6455 permits an empty close payload, or a two-byte status
+            // code followed by a UTF-8 reason. A one-byte code is truncated.
+            ensure!(
+                payload.is_empty() || payload.len() >= 2,
+                "websocket close payload is truncated"
+            );
+            if payload.len() >= 2 {
+                let code = u16::from_be_bytes([payload[0], payload[1]]);
+                ensure!(
+                    valid_websocket_close_code(code),
+                    "invalid websocket close code {code}"
+                );
+                std::str::from_utf8(&payload[2..])
+                    .context("websocket close reason is not UTF-8")?;
+            }
+            Ok(None)
+        }
         0x9 => Ok(Some(WsFrame::Ping(payload))),
         0xa => Ok(Some(WsFrame::Pong)),
         other => bail!("unsupported websocket opcode {other}"),
     }
+}
+
+fn valid_websocket_close_code(code: u16) -> bool {
+    matches!(code, 1000..=1003 | 1007..=1014 | 2000..=2999 | 3000..=4999)
 }
 
 async fn write_ws_frame<W>(
@@ -567,11 +588,11 @@ pub fn default_websocket_max_frame_bytes() -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        HTTP2_PREFACE, connect_http2_underlay, connect_websocket_underlay, http2_preface_matches,
-        websocket_accept, websocket_upgrade_header_matches,
+        connect_http2_underlay, connect_websocket_underlay, http2_preface_matches,
+        websocket_accept, websocket_upgrade_header_matches, HTTP2_PREFACE,
     };
     use bytes::Bytes;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex};
+    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
 
     #[tokio::test]
     async fn websocket_ping_payload_boundaries_roundtrip_and_reject_oversize() {
@@ -615,6 +636,51 @@ mod tests {
         let mut response = [0; 4];
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(response, [0x8a, 2, 9, 8]);
+    }
+
+    #[tokio::test]
+    async fn websocket_close_frame_boundaries_validate_payload() {
+        for payload in [Vec::new(), [0x03, 0xe8].into(), {
+            let mut payload = vec![0x03, 0xe8]; // Normal closure (1000).
+            payload.extend(std::iter::repeat_n(b'a', 123));
+            payload
+        }] {
+            let mut wire_bytes = vec![0x88, payload.len() as u8];
+            wire_bytes.extend_from_slice(&payload);
+            let (mut wire, mut peer) = duplex(256);
+            peer.write_all(&wire_bytes).await.unwrap();
+            assert!(
+                super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
+                    .await
+                    .unwrap()
+                    .is_none()
+            );
+        }
+
+        // A close frame cannot carry half a status code, an invalid code, or
+        // a non-UTF-8 reason. The 125-byte control-frame limit is inclusive.
+        for payload in [
+            vec![0x03],
+            vec![0x03, 0xed], // 1005 is reserved and cannot appear on wire.
+            vec![0x03, 0xe8, 0xff],
+        ] {
+            let mut wire_bytes = vec![0x88, payload.len() as u8];
+            wire_bytes.extend_from_slice(&payload);
+            let (mut wire, mut peer) = duplex(256);
+            peer.write_all(&wire_bytes).await.unwrap();
+            assert!(
+                super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
+                    .await
+                    .is_err()
+            );
+        }
+        let (mut wire, mut peer) = duplex(256);
+        peer.write_all(&[0x88, 126, 0, 126]).await.unwrap();
+        assert!(
+            super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
+                .await
+                .is_err()
+        );
     }
 
     async fn http2_server_after_raw_priority(
