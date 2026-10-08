@@ -214,11 +214,39 @@ mod tests {
 
     #[test]
     fn detects_common_http_methods() {
-        assert!(looks_like_http_probe(b"GET / HTTP/1.1\r\n"));
-        assert!(looks_like_http_probe(b"POST /submit HTTP/1.1\r\n"));
-        assert!(looks_like_http_probe(
-            b"CONNECT example.com:443 HTTP/1.1\r\n"
-        ));
+        for request in [
+            b"GET / HTTP/1.1\r\n".as_slice(),
+            b"POST /submit HTTP/1.1\r\n",
+            b"HEAD / HTTP/1.1\r\n",
+            b"PUT /resource HTTP/1.1\r\n",
+            b"PATCH /resource HTTP/1.1\r\n",
+            b"DELETE /resource HTTP/1.1\r\n",
+            b"OPTIONS * HTTP/1.1\r\n",
+            b"CONNECT example.com:443 HTTP/1.1\r\n",
+            b"TRACE / HTTP/1.1\r\n",
+            b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n",
+        ] {
+            assert!(looks_like_http_probe(request), "request {request:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_incomplete_or_near_match_http_methods() {
+        // A method must be complete, uppercase, and followed by a space before
+        // the first peek can select the HTTP fallback.
+        for prefix in [
+            b"G".as_slice(),
+            b"GE",
+            b"GET",
+            b"get / HTTP/1.1\r\n",
+            b"GETX / HTTP/1.1\r\n",
+            b"CONNECTX host:443 HTTP/1.1\r\n",
+        ] {
+            assert!(
+                !looks_like_http_probe(prefix),
+                "prefix {prefix:?} must not select HTTP fallback"
+            );
+        }
     }
 
     #[test]
