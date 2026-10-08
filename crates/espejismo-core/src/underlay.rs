@@ -539,7 +539,81 @@ mod tests {
         connect_http2_underlay, connect_websocket_underlay, http2_preface_matches,
         websocket_accept, websocket_upgrade_header_matches, HTTP2_PREFACE,
     };
-    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+    use bytes::Bytes;
+    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
+
+    async fn http2_server_after_raw_priority(
+        payload: &[u8],
+        stream_id: u32,
+    ) -> (h2::server::Connection<DuplexStream, Bytes>, DuplexStream) {
+        let (mut peer, server_io) = duplex(1024);
+        let mut wire = HTTP2_PREFACE.to_vec();
+        // Empty client SETTINGS frame, followed by a raw PRIORITY frame.
+        wire.extend_from_slice(&[0, 0, 0, 4, 0, 0, 0, 0, 0]);
+        wire.extend_from_slice(&[
+            (payload.len() >> 16) as u8,
+            (payload.len() >> 8) as u8,
+            payload.len() as u8,
+            2,
+            0,
+        ]);
+        wire.extend_from_slice(&stream_id.to_be_bytes());
+        wire.extend_from_slice(payload);
+        peer.write_all(&wire).await.unwrap();
+        let connection = h2::server::Builder::new()
+            .handshake::<_, Bytes>(server_io)
+            .await
+            .unwrap();
+        (connection, peer)
+    }
+
+    // Exercise the h2 frame decoder with in-memory wire bytes; this pins the
+    // RFC PRIORITY payload length and stream identifier boundary behavior.
+    #[tokio::test]
+    async fn http2_priority_rejects_payload_lengths_around_five_bytes() {
+        for length in [0, 4, 6] {
+            let (mut server, _peer) = http2_server_after_raw_priority(&vec![0; length], 1).await;
+            let result = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+                .await
+                .expect("malformed PRIORITY should be processed");
+            assert!(
+                result.is_none() || result.unwrap().is_err(),
+                "length {length}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn http2_priority_accepts_five_byte_payload() {
+        let (mut server, _peer) = http2_server_after_raw_priority(&[0, 0, 0, 0, 0], 1).await;
+        // A valid PRIORITY frame on an idle stream is ignored by the server;
+        // the connection remains open awaiting the next request.
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), server.accept(),)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn http2_priority_rejects_stream_zero() {
+        let (mut server, _peer) = http2_server_after_raw_priority(&[0; 5], 0).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+            .await
+            .expect("stream zero PRIORITY should be processed");
+        assert!(result.is_none() || result.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn http2_priority_self_dependency_is_stream_error_not_connection_error() {
+        let (mut server, _peer) = http2_server_after_raw_priority(&[0, 0, 0, 1, 0], 1).await;
+        // RFC 9113 §5.3.1 requires a stream error; the connection stays open.
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), server.accept())
+                .await
+                .is_err()
+        );
+    }
 
     #[test]
     fn websocket_accept_matches_rfc_example() {
