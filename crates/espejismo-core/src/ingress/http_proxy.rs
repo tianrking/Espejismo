@@ -230,6 +230,8 @@ fn rewrite_absolute_request(method: &str, path: &str, version: &str, lines: &[&s
         {
             continue;
         }
+        // Keep Expect: 100-continue intact. The upstream server owns the
+        // interim response; the bidirectional proxy path relays it to the client.
         rewritten.push_str(line);
         rewritten.push_str("\r\n");
     }

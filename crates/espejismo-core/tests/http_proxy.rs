@@ -178,3 +178,44 @@ async fn rejects_http_proxy_header_over_size_limit() {
     assert!(format!("{error:#}").contains("HTTP proxy header too large"));
     writer.await.unwrap();
 }
+#[tokio::test]
+async fn expect_continue_is_forwarded_without_inventing_an_interim_response() {
+    let (mut client, mut proxy) = duplex(4096);
+    let writer = tokio::spawn(async move {
+        client
+            .write_all(b"POST http://example.test/upload HTTP/1.1\r\nHost: example.test\r\nExpect: 100-continue\r\nContent-Length: 4\r\n\r\n")
+            .await
+            .unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        response
+    });
+
+    let target = accept_http_proxy_with_auth(&mut proxy, None).await.unwrap();
+    assert!(target.prebuffer.starts_with(b"POST /upload HTTP/1.1\r\n"));
+    assert!(
+        target
+            .prebuffer
+            .windows(22)
+            .any(|part| part == b"Expect: 100-continue\r\n")
+    );
+    assert_eq!(target.prebuffer_body_bytes, 0);
+    assert!(target.prebuffer.ends_with(b"\r\n\r\n"));
+    drop(proxy);
+    assert!(writer.await.unwrap().is_empty());
+}
+#[tokio::test]
+async fn expect_continue_keeps_body_bytes_coalesced_with_headers() {
+    let (mut client, mut proxy) = duplex(4096);
+    let writer = tokio::spawn(async move {
+        client
+            .write_all(b"POST http://example.test/upload HTTP/1.1\r\nExpect: 100-continue\r\nContent-Length: 4\r\n\r\ndata")
+            .await
+            .unwrap();
+    });
+
+    let target = accept_http_proxy_with_auth(&mut proxy, None).await.unwrap();
+    writer.await.unwrap();
+    assert_eq!(target.prebuffer_body_bytes, 4);
+    assert!(target.prebuffer.ends_with(b"\r\n\r\ndata"));
+ }
