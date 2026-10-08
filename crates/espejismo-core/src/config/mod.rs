@@ -74,6 +74,10 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
             anyhow::anyhow!(error)
         }
     })?;
+    // RFC 9113 limits both stream and connection flow-control windows to
+    // 2^31-1. h2 asserts this bound when configuring stream windows, so reject
+    // invalid operator input here instead of panicking during transport setup.
+    const HTTP2_MAX_WINDOW_BYTES: u32 = (1 << 31) - 1;
     let validate_stealth_frame_size = |frame_size: usize, field: &str| -> Result<()> {
         anyhow::ensure!(
             frame_size <= 64 * 1024,
@@ -343,6 +347,14 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
         anyhow::ensure!(
             config.shared.underlay.http2.initial_stream_window_bytes >= 65_535,
             "shared.underlay.http2.initial_stream_window_bytes must be >= 65535"
+        );
+        anyhow::ensure!(
+            config.shared.underlay.http2.initial_stream_window_bytes <= HTTP2_MAX_WINDOW_BYTES,
+            "shared.underlay.http2.initial_stream_window_bytes must be <= 2147483647"
+        );
+        anyhow::ensure!(
+            config.shared.underlay.http2.initial_connection_window_bytes <= HTTP2_MAX_WINDOW_BYTES,
+            "shared.underlay.http2.initial_connection_window_bytes must be <= 2147483647"
         );
         anyhow::ensure!(
             config.shared
@@ -1322,6 +1334,41 @@ mod tests {
         "#;
         let err = parse_config(config).unwrap_err().to_string();
         assert!(err.contains("http2.path"), "{err}");
+    }
+
+    #[test]
+    fn validates_http2_flow_control_window_boundaries() {
+        let valid = r#"
+            [shared.underlay]
+            mode = "http2"
+
+            [shared.underlay.http2]
+            initial_stream_window_bytes = 2147483647
+            initial_connection_window_bytes = 2147483647
+        "#;
+        assert!(parse_config(valid).is_ok());
+
+        for field in [
+            "initial_stream_window_bytes",
+            "initial_connection_window_bytes",
+        ] {
+            let invalid = format!(
+                "[shared.underlay]\nmode = \"http2\"\n\
+                 [shared.underlay.http2]\n{field} = 2147483648\n"
+            );
+            let err = parse_config(&invalid).unwrap_err().to_string();
+            assert!(err.contains(field), "{field}: {err}");
+        }
+
+        let minimum = r#"
+            [shared.underlay]
+            mode = "http2"
+
+            [shared.underlay.http2]
+            initial_stream_window_bytes = 65535
+            initial_connection_window_bytes = 65535
+        "#;
+        assert!(parse_config(minimum).is_ok());
     }
 
     #[test]

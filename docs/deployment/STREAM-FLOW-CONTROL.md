@@ -45,6 +45,15 @@ Native mux remains a beta option; Yamux is the recommended production mode.
 Its settings and queue behavior should not be assumed to match Yamux's update
 threshold or initial credit semantics.
 
+## HTTP/2 underlay
+
+When the optional HTTP/2 underlay is enabled, `initial_stream_window_bytes`
+and `initial_connection_window_bytes` configure the corresponding HTTP/2 receive
+windows. Both must be at least 65,535 bytes, and neither may exceed 2^31-1,
+the protocol limit. The connection window must also be at least as large as
+the stream window. These are transport-level limits; the tunnel's own
+multiplexer continues to apply its independent flow control.
+
 ## Tuning
 
 Start with defaults and measure a representative workload. If a single long
