@@ -567,6 +567,35 @@ mod tests {
         (connection, peer)
     }
 
+    async fn http2_server_after_raw_frames(
+        frames: &[u8],
+    ) -> (h2::server::Connection<DuplexStream, Bytes>, DuplexStream) {
+        let (mut peer, server_io) = duplex(1024);
+        let mut wire = HTTP2_PREFACE.to_vec();
+        // Empty client SETTINGS frame, followed by caller-supplied frames.
+        wire.extend_from_slice(&[0, 0, 0, 4, 0, 0, 0, 0, 0]);
+        wire.extend_from_slice(frames);
+        peer.write_all(&wire).await.unwrap();
+        let connection = h2::server::Builder::new()
+            .handshake::<_, Bytes>(server_io)
+            .await
+            .unwrap();
+        (connection, peer)
+    }
+
+    fn raw_frame(frame_type: u8, flags: u8, stream_id: u32, payload: &[u8]) -> Vec<u8> {
+        let mut frame = vec![
+            (payload.len() >> 16) as u8,
+            (payload.len() >> 8) as u8,
+            payload.len() as u8,
+            frame_type,
+            flags,
+        ];
+        frame.extend_from_slice(&stream_id.to_be_bytes());
+        frame.extend_from_slice(payload);
+        frame
+    }
+
     // Exercise the h2 frame decoder with in-memory wire bytes; this pins the
     // RFC PRIORITY payload length and stream identifier boundary behavior.
     #[tokio::test]
@@ -613,6 +642,49 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    // A split HPACK block must continue on the same stream and finish with
+    // END_HEADERS; the h2 crate owns these wire-level framing rules.
+    #[tokio::test]
+    async fn http2_continuation_completes_split_headers() {
+        let block = [0x82, 0x86, 0x84, 0x01, 0x01, b'x'];
+        let mut frames = raw_frame(1, 0, 1, &block[..3]);
+        frames.extend_from_slice(&raw_frame(9, 4, 1, &block[3..]));
+        let (mut server, _peer) = http2_server_after_raw_frames(&frames).await;
+        let accepted = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+            .await
+            .expect("completed CONTINUATION should be processed")
+            .expect("valid request should be accepted")
+            .expect("valid header block should decode");
+        assert_eq!(accepted.0.method(), http::Method::GET);
+        assert_eq!(accepted.0.uri().path(), "/");
+    }
+
+    #[tokio::test]
+    async fn http2_continuation_rejects_different_stream_id() {
+        let block = [0x82, 0x86, 0x84, 0x01, 0x01, b'x'];
+        let mut frames = raw_frame(1, 0, 1, &block[..3]);
+        frames.extend_from_slice(&raw_frame(9, 4, 3, &block[3..]));
+        let (mut server, _peer) = http2_server_after_raw_frames(&frames).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+            .await
+            .expect("invalid CONTINUATION should be processed");
+        assert!(result.is_none() || result.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn http2_continuation_requires_end_headers_before_another_frame() {
+        let block = [0x82, 0x86, 0x84, 0x01, 0x01, b'x'];
+        let mut frames = raw_frame(1, 0, 1, &block[..3]);
+        frames.extend_from_slice(&raw_frame(9, 0, 1, &block[3..]));
+        // SETTINGS is illegal while the header block remains open.
+        frames.extend_from_slice(&raw_frame(4, 0, 0, &[]));
+        let (mut server, _peer) = http2_server_after_raw_frames(&frames).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+            .await
+            .expect("unterminated header block should be processed");
+        assert!(result.is_none() || result.unwrap().is_err());
     }
 
     #[test]
