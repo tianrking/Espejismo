@@ -12,14 +12,24 @@ pub(crate) struct ProxyHeader {
 }
 
 pub(crate) fn parse_v1(input: &[u8]) -> Result<ProxyHeader, &'static str> {
+    // HAProxy's v1 limit is 107 bytes including the terminating CRLF.
     let end = input
         .windows(2)
         .position(|w| w == b"\r\n")
-        .ok_or("incomplete v1 line")?;
-    if end > 107 {
-        return Err("v1 line exceeds 108 bytes");
+        .ok_or_else(|| {
+            if input.len() >= 106 {
+                "v1 line exceeds 107 bytes"
+            } else {
+                "incomplete v1 line"
+            }
+        })?;
+    if end + 2 > 107 {
+        return Err("v1 line exceeds 107 bytes");
     }
     let line = std::str::from_utf8(&input[..end]).map_err(|_| "v1 line is not ASCII")?;
+    if !line.is_ascii() {
+        return Err("v1 line is not ASCII");
+    }
     let fields: Vec<_> = line.split(' ').collect();
     if fields.len() == 2 && fields[0] == "PROXY" && fields[1] == "UNKNOWN" {
         return Err("UNKNOWN address family has no socket addresses");
@@ -176,6 +186,25 @@ mod tests {
         }
         assert!(parse_v1(&[b"PROXY ".as_slice(), &[b'a'; 103], b"\r\n"].concat()).is_err());
         assert!(parse_v1(b"PROXY TCP4").is_err());
+    }
+
+    #[test]
+    fn enforces_v1_limit_including_crlf_and_payload_boundary() {
+        // 105 bytes before CRLF is the largest permitted line body.
+        let mut max_line = b"PROXY ".to_vec();
+        max_line.extend(std::iter::repeat_n(b'a', 99));
+        max_line.extend_from_slice(b"\r\nPAYLOAD");
+        assert_eq!(max_line.len(), 107 + b"PAYLOAD".len());
+        assert_eq!(parse_v1(&max_line), Err("invalid v1 fields"));
+
+        let mut too_long = b"PROXY ".to_vec();
+        too_long.extend(std::iter::repeat_n(b'a', 100));
+        too_long.extend_from_slice(b"\r\n");
+        assert_eq!(parse_v1(&too_long), Err("v1 line exceeds 107 bytes"));
+
+        let mut unterminated = b"PROXY ".to_vec();
+        unterminated.extend(std::iter::repeat_n(b'a', 101));
+        assert_eq!(parse_v1(&unterminated), Err("v1 line exceeds 107 bytes"));
     }
 
     fn v2_header(family: u8, address: &[u8]) -> Vec<u8> {

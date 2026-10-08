@@ -1,26 +1,34 @@
-# HAProxy PROXY protocol parser tests
+# HAProxy PROXY protocol v1 boundary tests
 
-The server had no PROXY protocol parser or tests. Added a small, socket-independent
-parser module for the HAProxy PROXY v1 TCP4/TCP6 lines and v2 PROXY command with
-IPv4/IPv6 address blocks. It returns source/destination socket addresses and the
-exact header length so callers can preserve application bytes following the
-preamble. V2 TLV bytes are included in the consumed length; TLV interpretation
-and `LOCAL`/`UNKNOWN` address reporting are not part of this narrow parser.
+## Findings and change
 
-The reference guide's sing-box and shadowsocks-rust pointers reinforce keeping
-protocol handling explicit and independently testable. This change does not
-enable PROXY headers on the listener, change ingress behavior, or alter the
-project's non-camouflage positioning; a trusted-proxy configuration and listener
-integration remain a separate design decision.
+The server has a socket-independent parser for HAProxy PROXY v1/v2. Its v1
+length check previously counted only bytes before CRLF and allowed a line longer
+than the protocol's 107-byte maximum. It also reported an overlong unterminated
+line as merely incomplete. The [HAProxy PROXY protocol specification](https://github.com/haproxy/haproxy/blob/master/doc/proxy-protocol.txt)
+defines the 107-byte maximum including CRLF. This round corrects the accounting
+and rejects an unterminated input once it can no longer fit within that bound.
+ASCII is checked explicitly as required by v1.
 
-Expected benefit: deterministic coverage of valid IPv4/IPv6 inputs, payload
-boundary handling, and rejection of malformed, oversized, unsupported, or
-truncated frames without requiring sockets. No performance improvement is
-claimed.
+Added a regression test for a 107-byte line (which proceeds to field validation),
+a 108-byte line, an oversized unterminated line, and preservation of bytes after
+CRLF. Existing IPv4/IPv6, malformed-field and port-range tests remain in place.
 
-Verification: `cargo test --offline -p espejismo-server proxy_protocol::tests`
-passed all 4 focused parser tests. `cargo test --offline -p espejismo-server`
-passed 40 tests, with 1 existing loopback-dependent test ignored. Tests exercise
-v1 IPv4/IPv6 and payload offset, v1 malformed/oversized input, v2 IPv4/IPv6 and
-TLV length accounting, and v2 signature/family/version/truncation failures.
+## Approach and expected benefit
+
+Following the references' emphasis on explicit, independently testable protocol
+parsing (sing-box and shadowsocks-rust), the fix stays inside the pure parser and
+uses byte-level boundary inputs; it needs no listener/socket and adds no runtime
+dependency. It closes acceptance of oversized v1 preambles and prevents callers
+from treating irrecoverably oversized partial data as a header still in flight.
+This is a correctness/robustness change; no throughput improvement is claimed.
+It does not enable PROXY headers on the listener or change the project's
+non-camouflage positioning.
+
+## Verification
+
+- `$HOME/.cargo/bin/cargo test --offline -p espejismo-server proxy_protocol::tests` — 6 passed, 0 failed. Covers v1 maximum size, over-limit complete and incomplete lines, IPv4/IPv6 parsing, payload offset, malformed fields, plus existing v2 parser cases.
+- `$HOME/.cargo/bin/cargo test --offline -p espejismo-server` — 48 passed, 0 failed, 1 ignored (`requires loopback bind`). The ignored test is the existing SOCKS5 relay loopback test, unrelated to this change.
+- `git diff --check` — passed.
+
 No regression was observed in the server package.
