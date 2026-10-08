@@ -20,8 +20,9 @@ proxy = "socks5://user:pass@127.0.0.1:1080"
 Rules:
 
 - `deny_private_ips`: blocks private, loopback, link-local, and special IP
-  targets. For direct egress, resolved destination IPs are checked too. The
-  setting defaults to `false`.
+  targets, including IPv4-mapped IPv6 literals according to their embedded
+  IPv4 address. For direct egress, resolved destination IPs are checked too.
+  The setting defaults to `false`.
 - `allow_hosts`: optional host allowlist. An empty list imposes no host
   restriction. Entries match case-insensitively and may be exact names or
   `*.example.com` patterns. A wildcard pattern matches both `example.com` and

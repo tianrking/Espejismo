@@ -237,6 +237,11 @@ fn is_private_or_special(ip: IpAddr) -> bool {
                 || ip.octets()[0] == 0
         }
         IpAddr::V6(ip) => {
+            // Treat IPv4-mapped addresses like their IPv4 destination so they
+            // cannot bypass the same egress boundary through IPv6 syntax.
+            if let Some(mapped) = ip.to_ipv4_mapped() {
+                return is_private_or_special(IpAddr::V4(mapped));
+            }
             ip.is_loopback()
                 || ip.is_unspecified()
                 || ip.is_unique_local()
@@ -270,6 +275,54 @@ mod tests {
         let error = policy.validate_authority("example.net:443").unwrap_err();
         assert!(error.to_string().contains("example.net"));
         assert!(error.to_string().contains("remote.egress.allow_hosts"));
+    }
+
+    #[test]
+    fn wildcard_host_rules_respect_label_boundaries_and_case() {
+        let policy = EgressPolicy {
+            allow_hosts: vec!["*.Example.com".to_string()],
+            ..EgressPolicy::default()
+        };
+        assert!(policy.validate_authority("EXAMPLE.COM:443").is_ok());
+        assert!(policy.validate_authority("api.eu.example.com:443").is_ok());
+        assert!(policy.validate_authority("badexample.com:443").is_err());
+        assert!(policy.validate_authority("example.com.evil:443").is_err());
+    }
+
+    #[test]
+    fn block_rules_override_allows_and_empty_allows_still_block() {
+        let policy = EgressPolicy {
+            allow_hosts: vec!["*.example.com".into()],
+            block_hosts: vec!["admin.example.com".into()],
+            allow_ports: vec![0, u16::MAX],
+            block_ports: vec![u16::MAX],
+            ..EgressPolicy::default()
+        };
+        assert!(policy.validate_authority("api.example.com:0").is_ok());
+        assert!(policy.validate_authority("admin.example.com:0").is_err());
+        assert!(policy.validate_authority("api.example.com:65535").is_err());
+
+        let blocks_only = EgressPolicy {
+            block_ports: vec![0],
+            ..EgressPolicy::default()
+        };
+        assert!(blocks_only.validate_authority("example.com:1").is_ok());
+        assert!(blocks_only.validate_authority("example.com:0").is_err());
+    }
+
+    #[test]
+    fn deny_private_ips_covers_ipv4_mapped_ipv6_literals_and_resolved_addrs() {
+        let policy = EgressPolicy {
+            deny_private_ips: true,
+            ..EgressPolicy::default()
+        };
+        assert!(policy.validate_authority("[::ffff:127.0.0.1]:443").is_err());
+        assert!(policy
+            .validate_resolved_addr("[::ffff:10.0.0.1]:443".parse().unwrap())
+            .is_err());
+        assert!(policy
+            .validate_authority("[::ffff:8.8.8.8]:443")
+            .is_ok());
     }
 
     #[test]
