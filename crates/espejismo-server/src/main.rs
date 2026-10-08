@@ -942,6 +942,39 @@ mod connection_limit_tests {
         drop(second);
         assert_eq!(limit.available_permits(), 2);
     }
+
+    #[test]
+    fn physical_connection_limit_capacity_handles_configuration_boundaries() {
+        let mut config = parse_config(&example_config()).expect("example config parses");
+
+        config.shared.max_physical_connections = 0;
+        assert_eq!(connection_limit_capacity(&config), 1);
+
+        config.shared.max_physical_connections = 1;
+        assert_eq!(connection_limit_capacity(&config), 1);
+
+        config.shared.max_physical_connections = 65_535;
+        assert_eq!(connection_limit_capacity(&config), 65_535);
+    }
+
+    #[test]
+    fn single_connection_limit_rejects_until_the_only_permit_is_released() {
+        let limit = Arc::new(Semaphore::new(1));
+
+        let permit = try_connection_permit(&limit).expect("first connection admitted");
+        assert!(
+            try_connection_permit(&limit).is_none(),
+            "second connection rejected"
+        );
+        assert_eq!(limit.available_permits(), 0);
+
+        drop(permit);
+        assert_eq!(limit.available_permits(), 1);
+        assert!(
+            try_connection_permit(&limit).is_some(),
+            "capacity is reusable"
+        );
+    }
 }
 
 #[cfg(test)]

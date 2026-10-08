@@ -446,6 +446,9 @@ The client pool defaults to `min_connections = 1` and `max_connections = 4`.
 
 The server's physical connection limit also bounds the number of simultaneous
 handshakes, since a connection permit is acquired before peer authentication.
+This is a concurrent connection cap, not a time-based connection rate limit:
+connections rejected at capacity do not consume permits, and a permit becomes
+available when its handler ends.
 `remote.tarpit_max` is a separate cap on connections held by the fallback
 tarpit and does not increase the physical connection limit. OS listen backlog
 and file-descriptor limits can impose lower effective admission limits.
