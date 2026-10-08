@@ -3,7 +3,8 @@
 The local client exposes a SOCKS5 listener for applications on the client
 machine. It accepts SOCKS5 `CONNECT` for TCP and `UDP ASSOCIATE` for UDP, then
 relays the requested traffic through the encrypted tunnel to the remote
-server. It is an ordinary proxy ingress; it does not imitate another protocol
+server. `BIND` is unsupported and receives the SOCKS5 command-not-supported
+reply. It is an ordinary proxy ingress; it does not imitate another protocol
 or change Espejismo's transport identity.
 
 ## Listener address

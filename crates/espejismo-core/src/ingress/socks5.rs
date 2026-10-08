@@ -469,6 +469,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn bind_requests_are_rejected_for_address_and_port_boundaries() {
+        // BIND is intentionally unsupported. Exercise each SOCKS address form
+        // and both port boundaries so it always receives command-not-supported.
+        let cases = [
+            vec![5, 1, 0, 5, 2, 0, 1, 0, 0, 0, 0, 0, 0],
+            vec![5, 1, 0, 5, 2, 0, 1, 255, 255, 255, 255, 255, 255],
+            vec![5, 1, 0, 5, 2, 0, 3, 1, b'x', 0, 0],
+            vec![5, 1, 0, 5, 2, 0, 3, 1, b'x', 0xff, 0xff],
+            vec![
+                5, 1, 0, 5, 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        ];
+
+        for request in cases {
+            let (result, response) = exchange(request, None).await;
+            assert!(result.is_err());
+            assert_eq!(&response[2..4], &[5, 7]);
+        }
+    }
+
+    #[tokio::test]
     async fn concurrent_ingress_burst_keeps_socks_requests_isolated() {
         let burst = (1..=128).map(|port| {
             let request = vec![
