@@ -140,6 +140,11 @@ body carries client-to-remote bytes and the response body carries
 remote-to-client bytes. This keeps the same Espejismo crypto and mux layers
 above a real HTTP/2 stream abstraction.
 
+HTTP/2 header compression is provided by the `h2` dependency's HPACK
+implementation. The underlay tests exercise header-value preservation over an
+in-memory HTTP/2 connection, including empty, repeated, and large values; the
+project does not maintain a separate HPACK codec.
+
 `[shared.port_hopping]` can optionally choose the remote port per time window.
 The client rewrites the configured server port for each new physical lane, while
 the remote binds the configured candidate ports and sends all accepted sockets

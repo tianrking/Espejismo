@@ -702,6 +702,58 @@ mod tests {
         assert!(!http2_preface_matches(b"GET / HTTP/1.1\r\n"));
     }
 
+    // HPACK belongs to the h2 crate; this checks that its encoded header block
+    // preserves field boundaries and values used by our HTTP/2 adapter.
+    #[tokio::test]
+    async fn http2_hpack_preserves_empty_duplicate_and_large_header_values() {
+        let (client_io, server_io) = duplex(256 * 1024);
+        let (mut client, client_driver) = h2::client::Builder::new()
+            .handshake::<_, bytes::Bytes>(client_io)
+            .await
+            .unwrap();
+        let mut server = h2::server::Builder::new()
+            .handshake::<_, bytes::Bytes>(server_io)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = client_driver.await;
+        });
+
+        let large_value = "x".repeat(16 * 1024);
+        let mut request = http::Request::builder()
+            .method("POST")
+            .uri("/hpack-boundary")
+            .body(())
+            .unwrap();
+        request
+            .headers_mut()
+            .insert("x-empty", http::HeaderValue::from_static(""));
+        request
+            .headers_mut()
+            .append("x-repeat", http::HeaderValue::from_static("first"));
+        request
+            .headers_mut()
+            .append("x-repeat", http::HeaderValue::from_static("second"));
+        request.headers_mut().insert(
+            "x-large",
+            http::HeaderValue::from_str(&large_value).unwrap(),
+        );
+
+        let (_response, _send_stream) = client.send_request(request, true).unwrap();
+        let (received, _respond) = server.accept().await.unwrap().unwrap();
+        assert_eq!(received.headers()["x-empty"], "");
+        assert_eq!(
+            received
+                .headers()
+                .get_all("x-repeat")
+                .iter()
+                .map(|value| value.to_str().unwrap())
+                .collect::<Vec<_>>(),
+            ["first", "second"]
+        );
+        assert_eq!(received.headers()["x-large"], large_value);
+    }
+
     #[tokio::test]
     async fn http2_underlay_roundtrips_binary_bytes() {
         let (client, server) = duplex(64 * 1024);
