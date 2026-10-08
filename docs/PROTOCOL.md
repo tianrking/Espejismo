@@ -40,7 +40,9 @@ and policy layer.
 
 The WebSocket adapter answers control PING frames with a PONG carrying the same
 payload (including an empty payload), accepts PONG frames, and rejects
-fragmented frames, reserved bits, and control payloads longer than 125 bytes.
+fragmented data frames, standalone continuation frames, reserved bits,
+non-minimal payload-length encodings, and control payloads longer than 125
+bytes.
 
 When `[shared.port_hopping].enabled = true`, the client deterministically
 selects a configured remote port from the current time window before opening a

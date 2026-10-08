@@ -342,6 +342,7 @@ fn spawn_http2_io(
     app_stream
 }
 
+#[derive(Debug)]
 enum WsFrame {
     Data(Vec<u8>),
     Ping(Vec<u8>),
@@ -361,6 +362,10 @@ where
     let opcode = head[0] & 0x0f;
     ensure!(head[0] & 0x70 == 0, "websocket reserved bits are set");
     ensure!(
+        opcode != 0x0,
+        "websocket continuation frames are unsupported"
+    );
+    ensure!(
         head[0] & 0x80 != 0,
         "websocket fragmented frames are unsupported"
     );
@@ -368,8 +373,20 @@ where
     let mut len = u64::from(head[1] & 0x7f);
     if len == 126 {
         len = u64::from(reader.read_u16().await?);
+        ensure!(
+            len >= 126,
+            "websocket frame length is not minimally encoded"
+        );
     } else if len == 127 {
         len = reader.read_u64().await?;
+        ensure!(
+            len & (1_u64 << 63) == 0,
+            "websocket frame length has its high bit set"
+        );
+        ensure!(
+            len > 65_535,
+            "websocket frame length is not minimally encoded"
+        );
     }
     ensure!(
         len <= max_frame_bytes as u64,
@@ -397,7 +414,7 @@ where
         }
     }
     match opcode {
-        0x0 | 0x2 => Ok(Some(WsFrame::Data(payload))),
+        0x2 => Ok(Some(WsFrame::Data(payload))),
         0x8 => {
             // RFC 6455 permits an empty close payload, or a two-byte status
             // code followed by a UTF-8 reason. A one-byte code is truncated.
@@ -623,6 +640,60 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn websocket_data_length_boundaries_roundtrip_and_reject_noncanonical_lengths() {
+        for size in [0, 1, 125, 126, 127, 65_535, 65_536] {
+            let payload = vec![0x5a; size];
+            let expected = payload.clone();
+            let (mut wire, mut peer) = duplex(size.saturating_mul(2).max(256));
+            let writer = tokio::spawn(async move {
+                super::write_ws_frame(&mut peer, super::WebSocketRole::Client, 0x2, &payload)
+                    .await
+                    .unwrap();
+            });
+            match super::read_ws_frame(&mut wire, super::WebSocketRole::Server, 65_536)
+                .await
+                .unwrap()
+                .unwrap()
+            {
+                super::WsFrame::Data(actual) => assert_eq!(actual, expected, "size {size}"),
+                _ => panic!("expected binary data frame"),
+            }
+            writer.await.unwrap();
+        }
+
+        // Lengths below 126 and 65,536 must use their shorter header form.
+        for frame in [
+            [0x82, 126, 0, 125].as_slice(),
+            [0x82, 127, 0, 0, 0, 0, 0, 0, 0, 126].as_slice(),
+        ] {
+            let (mut wire, mut peer) = duplex(32);
+            peer.write_all(frame).await.unwrap();
+            assert!(
+                super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
+                    .await
+                    .is_err()
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_fragment_boundaries_are_rejected() {
+        // A non-final binary frame starts a fragmented message; a final
+        // continuation frame is also invalid without a fragmented message.
+        for (frame, expected_error) in [
+            (&[0x02, 0x00][..], "fragmented frames are unsupported"),
+            (&[0x80, 0x00][..], "continuation frames are unsupported"),
+        ] {
+            let (mut wire, mut peer) = duplex(16);
+            peer.write_all(frame).await.unwrap();
+            let error = super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
+                .await
+                .unwrap_err();
+            assert!(error.to_string().contains(expected_error));
+        }
     }
 
     #[tokio::test]
