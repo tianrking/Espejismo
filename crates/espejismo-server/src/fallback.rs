@@ -38,7 +38,9 @@ pub(crate) async fn should_route_to_http_fallback(
     if !fallback.enabled {
         return Ok(false);
     }
-    let mut buf = [0_u8; 16];
+    // The HTTP/2 prior-knowledge preface is 24 bytes. Read the complete
+    // preface before classifying it so a spoofed 16-byte prefix is not enough.
+    let mut buf = [0_u8; 24];
     let n = match timeout(fallback.probe_timeout, stream.peek(&mut buf)).await {
         Ok(Ok(n)) => n,
         Ok(Err(err)) => return Err(err.into()),
@@ -90,7 +92,8 @@ fn looks_like_http_probe(prefix: &[u8]) -> bool {
     // Keep this classifier deliberately narrow: TLS-looking and arbitrary
     // binary prefixes must continue to authenticated tunnel handling, never
     // trigger protocol downgrade into the optional HTTP fallback.
-    let methods: [&[u8]; 10] = [
+    const HTTP2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    let methods: [&[u8]; 9] = [
         b"GET ",
         b"POST ",
         b"HEAD ",
@@ -100,9 +103,8 @@ fn looks_like_http_probe(prefix: &[u8]) -> bool {
         b"OPTIONS ",
         b"CONNECT ",
         b"TRACE ",
-        b"PRI * HTTP/2.0",
     ];
-    methods.iter().any(|m| prefix.starts_with(m))
+    prefix == HTTP2_PREFACE || methods.iter().any(|m| prefix.starts_with(m))
 }
 
 async fn write_builtin_fallback_response(
@@ -245,6 +247,28 @@ mod tests {
             assert!(
                 !looks_like_http_probe(prefix),
                 "prefix {prefix:?} must not select HTTP fallback"
+            );
+        }
+    }
+
+    #[test]
+    fn requires_complete_http2_preface_to_select_fallback() {
+        let preface = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+        assert!(looks_like_http_probe(preface));
+        for end in 0..preface.len() {
+            assert!(
+                !looks_like_http_probe(&preface[..end]),
+                "truncated HTTP/2 preface at {end} bytes must not select fallback"
+            );
+        }
+        for spoof in [
+            b"PRI * HTTP/2.0".as_slice(),
+            b"PRI * HTTP/2.0\r\n\r\nXX\r\n\r\n",
+            b"PRI * HTTP/2.0\r\n\r\nSM\r\n\rX",
+        ] {
+            assert!(
+                !looks_like_http_probe(spoof),
+                "spoofed HTTP/2 preface {spoof:?} must not select fallback"
             );
         }
     }
