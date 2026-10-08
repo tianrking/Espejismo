@@ -2,9 +2,9 @@ use std::io;
 use std::time::Duration;
 
 use futures::StreamExt;
-use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
-use super::{client_session, server_session, NativeMuxConfig};
+use super::{NativeMuxConfig, client_session, server_session};
 use crate::protocol::request::StreamPriority;
 
 #[test]
@@ -15,8 +15,14 @@ fn native_stream_id_allocator_uses_last_ids_before_exhaustion() {
     assert_eq!(super::allocate_stream_id(&mut next_odd), None);
 
     let mut next_even = u64::from(u32::MAX - 3);
-    assert_eq!(super::allocate_stream_id(&mut next_even), Some(u32::MAX - 3));
-    assert_eq!(super::allocate_stream_id(&mut next_even), Some(u32::MAX - 1));
+    assert_eq!(
+        super::allocate_stream_id(&mut next_even),
+        Some(u32::MAX - 3)
+    );
+    assert_eq!(
+        super::allocate_stream_id(&mut next_even),
+        Some(u32::MAX - 1)
+    );
     assert_eq!(super::allocate_stream_id(&mut next_even), None);
 }
 
@@ -34,10 +40,12 @@ async fn native_frame_reader_handles_empty_truncated_and_oversized_input() {
 
     let (writer, mut reader) = tokio::io::duplex(64);
     drop(writer);
-    assert!(super::frame::read_frame(&mut reader)
-        .await
-        .unwrap()
-        .is_none());
+    assert!(
+        super::frame::read_frame(&mut reader)
+            .await
+            .unwrap()
+            .is_none()
+    );
 
     for length in 1..9 {
         let (mut writer, mut reader) = tokio::io::duplex(64);
@@ -67,14 +75,16 @@ fn native_pending_frames_enforce_limit() {
             queued_stream: None,
         })
         .unwrap();
-    assert!(pending
-        .push_control(super::pending::PendingFrame {
-            kind: super::FRAME_PING,
-            stream_id: 0,
-            payload: vec![1; 8],
-            queued_stream: None,
-        })
-        .is_err());
+    assert!(
+        pending
+            .push_control(super::pending::PendingFrame {
+                kind: super::FRAME_PING,
+                stream_id: 0,
+                payload: vec![1; 8],
+                queued_stream: None,
+            })
+            .is_err()
+    );
 }
 
 #[test]
@@ -99,9 +109,7 @@ fn native_pending_frames_report_watermarks_and_congestion_recovery() {
     assert_eq!(pending.occupancy_percent(), 50);
     assert!(!pending.is_congested());
 
-    pending
-        .push_data(StreamPriority::Bulk, frame(2))
-        .unwrap();
+    pending.push_data(StreamPriority::Bulk, frame(2)).unwrap();
     assert_eq!(pending.occupancy_percent(), 75);
     assert!(pending.is_congested());
     pending.push_data(StreamPriority::Bulk, frame(3)).unwrap();
@@ -189,6 +197,77 @@ fn native_pending_frames_preserve_priority_when_bulk_is_not_backlogged() {
 
     assert_eq!(pending.pop_next().unwrap().stream_id, 3);
     assert_eq!(pending.pop_next().unwrap().stream_id, 1);
+}
+
+#[test]
+fn native_pending_frames_apply_burst_limit_at_exact_boundary() {
+    use super::pending::{PendingFrame, PendingFrames};
+
+    let mut pending = PendingFrames::new(16);
+    let frame = |stream_id| PendingFrame {
+        kind: super::FRAME_DATA,
+        stream_id,
+        payload: vec![],
+        queued_stream: Some(stream_id),
+    };
+
+    // The burst counter only advances while both classes are backlogged.
+    for id in 0..8 {
+        pending
+            .push_data(StreamPriority::Interactive, frame(id))
+            .unwrap();
+        assert_eq!(pending.pop_next().unwrap().stream_id, id);
+    }
+    pending.push_data(StreamPriority::Bulk, frame(90)).unwrap();
+    pending
+        .push_data(StreamPriority::Interactive, frame(8))
+        .unwrap();
+    assert_eq!(pending.pop_next().unwrap().stream_id, 8);
+    assert_eq!(pending.pop_next().unwrap().stream_id, 90);
+}
+
+#[test]
+fn native_pending_frames_control_and_empty_queues_do_not_corrupt_burst_state() {
+    use super::pending::{PendingFrame, PendingFrames};
+
+    let mut pending = PendingFrames::new(16);
+    let data = |stream_id| PendingFrame {
+        kind: super::FRAME_DATA,
+        stream_id,
+        payload: vec![],
+        queued_stream: Some(stream_id),
+    };
+    for id in 0..8 {
+        pending
+            .push_data(StreamPriority::Interactive, data(id))
+            .unwrap();
+    }
+    pending.push_data(StreamPriority::Bulk, data(120)).unwrap();
+    for id in 0..8 {
+        assert_eq!(pending.pop_next().unwrap().stream_id, id);
+    }
+    pending
+        .push_control(PendingFrame {
+            kind: super::FRAME_PING,
+            stream_id: 0,
+            payload: vec![],
+            queued_stream: None,
+        })
+        .unwrap();
+    assert_eq!(pending.pop_next().unwrap().kind, super::FRAME_PING);
+    assert_eq!(pending.pop_next().unwrap().stream_id, 120);
+
+    // After draining both classes, a new contention period starts fresh.
+    for id in 30..40 {
+        pending
+            .push_data(StreamPriority::Interactive, data(id))
+            .unwrap();
+    }
+    pending.push_data(StreamPriority::Bulk, data(130)).unwrap();
+    for id in 30..38 {
+        assert_eq!(pending.pop_next().unwrap().stream_id, id);
+    }
+    assert_eq!(pending.pop_next().unwrap().stream_id, 130);
 }
 
 #[tokio::test]
@@ -366,10 +445,12 @@ async fn native_mux_enforces_max_streams() {
         .await
         .unwrap();
     let first_server_stream = server_session.next().await.unwrap().unwrap();
-    assert!(client_control
-        .open_stream(StreamPriority::Interactive)
-        .await
-        .is_err());
+    assert!(
+        client_control
+            .open_stream(StreamPriority::Interactive)
+            .await
+            .is_err()
+    );
     drop(first_stream);
     drop(first_server_stream);
 }
@@ -407,9 +488,11 @@ async fn native_mux_bounds_aggregate_unread_data_across_many_streams() {
         assert_eq!(stream.write(&[0; WINDOW]).await.unwrap(), WINDOW);
     }
     for stream in &mut client_streams {
-        assert!(tokio::time::timeout(Duration::from_millis(25), stream.write(b"x"))
-            .await
-            .is_err());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), stream.write(b"x"))
+                .await
+                .is_err()
+        );
     }
 
     for stream in &mut server_streams {
@@ -594,10 +677,12 @@ async fn native_mux_goaway_drains_existing_streams() {
             assert_eq!(client_read.read(&mut eof).await.unwrap(), 0);
         },
     );
-    assert!(client_control
-        .open_stream(StreamPriority::Interactive)
-        .await
-        .is_err());
+    assert!(
+        client_control
+            .open_stream(StreamPriority::Interactive)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -654,9 +739,8 @@ async fn native_mux_idle_gc_waits_for_all_concurrent_streams_to_close() {
     let (mut client_control, mut client_session) = client_session(client_io, config);
     let (_server_control, mut server_session) = server_session(server_io, config);
 
-    let client_session_task = tokio::spawn(async move {
-        while client_session.next().await.is_some() {}
-    });
+    let client_session_task =
+        tokio::spawn(async move { while client_session.next().await.is_some() {} });
     let server_session_task = tokio::spawn(async move {
         let mut accepted_streams = Vec::with_capacity(STREAMS);
         while let Some(stream) = server_session.next().await {

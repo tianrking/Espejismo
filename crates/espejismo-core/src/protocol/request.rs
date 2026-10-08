@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -142,9 +142,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        read_tunnel_request, write_tcp_connect_with_priority, write_udp_datagram_with_priority,
-        StreamPriority, TunnelRequest, CMD_TCP_CONNECT, CMD_UDP_DATAGRAM,
+        CMD_TCP_CONNECT, CMD_UDP_DATAGRAM, StreamPriority, TunnelRequest, read_tunnel_request,
+        write_tcp_connect_with_priority, write_udp_datagram_with_priority,
     };
+
+    #[test]
+    fn stream_priority_rejects_values_outside_wire_assignments() {
+        for value in [0, 3, u8::MAX] {
+            assert!(StreamPriority::try_from(value).is_err(), "value {value}");
+        }
+        assert_eq!(
+            StreamPriority::try_from(1).unwrap(),
+            StreamPriority::Interactive
+        );
+        assert_eq!(StreamPriority::try_from(2).unwrap(), StreamPriority::Bulk);
+    }
 
     #[tokio::test]
     async fn tcp_connect_wire_format_matches_protocol_doc() {
@@ -206,14 +218,16 @@ mod tests {
         let payload = vec![0_u8; u16::MAX as usize + 1];
         let mut wire = Vec::new();
 
-        assert!(write_udp_datagram_with_priority(
-            &mut wire,
-            "example.com:53",
-            StreamPriority::Interactive,
-            &payload,
-        )
-        .await
-        .is_err());
+        assert!(
+            write_udp_datagram_with_priority(
+                &mut wire,
+                "example.com:53",
+                StreamPriority::Interactive,
+                &payload,
+            )
+            .await
+            .is_err()
+        );
         assert!(wire.is_empty());
     }
 

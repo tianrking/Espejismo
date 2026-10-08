@@ -7,6 +7,10 @@ wide QoS guarantee. It does not set IP DSCP, reserve bandwidth, cap rates, or
 change the remote egress policy. For rate caps, see the pacing and per-user
 bandwidth settings in [Configuration](CONFIG.md).
 
+In native mux mode, if both data queues remain non-empty, up to eight
+interactive data frames are sent before one bulk frame. Control frames remain
+ahead of both classes and do not count toward that data-frame burst.
+
 ## What gets each priority
 
 The client assigns priorities automatically:
