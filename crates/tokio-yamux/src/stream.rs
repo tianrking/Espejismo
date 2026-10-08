@@ -201,9 +201,12 @@ impl StreamHandle {
         }
         if flags.contains(Flag::Rst) {
             self.state = StreamState::Reset;
-            // Reset is terminal: bytes received earlier in the queue must not
-            // leak to the application after the peer aborts the stream.
-            self.read_buf.clear();
+            // Do NOT clear read_buf here: check_self_state delivers already-queued
+            // bytes to the application first, then reports ConnectionReset once the
+            // queue drains. Wiping the queue loses data legitimately received before
+            // the reset (e.g. a peer that finishes its transfer and drops the
+            // stream, which sends RST on Drop). The payload of a DATA+RST frame
+            // itself is still discarded below.
         }
         Ok(())
     }
@@ -921,7 +924,7 @@ mod test {
     }
 
     #[test]
-    fn reset_discards_buffered_data_and_data_on_reset_frame() {
+    fn reset_delivers_queued_data_then_reports_reset() {
         rt().block_on(async {
             let (mut frame_sender, frame_receiver) = channel(4);
             let (unbound_sender, _unbound_receiver) = unbounded();
@@ -952,7 +955,12 @@ mod test {
                 .await
                 .unwrap();
 
+            // Bytes legitimately received before the reset are still delivered;
+            // only the payload carried by the DATA+RST frame itself is discarded.
             let mut byte = [0; 32];
+            let n = stream.read(&mut byte).await.unwrap();
+            assert_eq!(&byte[..n], b"queued before reset");
+            // Once the queue drains, the reset surfaces as an error.
             assert_eq!(
                 stream.read(&mut byte).await.unwrap_err().kind(),
                 ErrorKind::ConnectionReset
