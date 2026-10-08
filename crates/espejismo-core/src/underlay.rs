@@ -735,6 +735,52 @@ mod tests {
         assert_eq!(&reply, b"reply");
     }
 
+    // A peer RST_STREAM must terminate the adapter's application read side.
+    // Use in-memory transport so this protocol edge case also runs in the sandbox.
+    #[tokio::test]
+    async fn http2_underlay_closes_reader_after_peer_reset() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let (mut client_conn, client_driver) = h2::client::Builder::new()
+            .handshake::<_, bytes::Bytes>(client_io)
+            .await
+            .unwrap();
+        let mut server_conn = h2::server::Builder::new()
+            .handshake::<_, bytes::Bytes>(server_io)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = client_driver.await;
+        });
+
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("/reset")
+            .body(())
+            .unwrap();
+        let (response, client_send) = client_conn.send_request(request, false).unwrap();
+        let (request, mut respond) = server_conn.accept().await.unwrap().unwrap();
+        drop(request);
+        let mut server_send = respond
+            .send_response(
+                http::Response::builder().status(200).body(()).unwrap(),
+                false,
+            )
+            .unwrap();
+        tokio::spawn(async move { while server_conn.accept().await.is_some() {} });
+
+        let response = response.await.unwrap();
+        let mut app = super::spawn_http2_io(client_send, response.into_body());
+        server_send.send_reset(h2::Reason::CANCEL);
+        let mut byte = [0_u8; 1];
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), app.read(&mut byte))
+                .await
+                .expect("RST_STREAM should close the adapter reader")
+                .unwrap(),
+            0
+        );
+    }
+
     // h2 exposes HTTP/2 PING as a connection-level health check. Keep its
     // single-in-flight boundary covered independently of the tunnel stream.
     #[tokio::test]
