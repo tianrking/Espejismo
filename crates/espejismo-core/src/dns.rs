@@ -44,6 +44,9 @@ impl DnsCache {
     }
 
     fn insert(&mut self, authority: String, addrs: Vec<SocketAddr>, now: Instant) {
+        // Drop stale entries before making a capacity decision. This keeps an
+        // expired entry from influencing which live result gets evicted.
+        self.entries.retain(|_, (_, expires)| now < *expires);
         if self.entries.len() >= DNS_CACHE_CAPACITY && !self.entries.contains_key(&authority) {
             if let Some(oldest) = self
                 .entries
@@ -169,6 +172,60 @@ mod tests {
     }
 
     #[test]
+    fn dns_cache_insert_prunes_expired_entries_before_capacity_eviction() {
+        let start = Instant::now();
+        let mut cache = DnsCache::default();
+        let addr = "192.0.2.10:443".parse().unwrap();
+
+        // Model entries with different ages: one expired, the rest still live.
+        cache.insert("expired.example:443".into(), vec![addr], start);
+        for index in 0..DNS_CACHE_CAPACITY - 1 {
+            cache.insert(
+                format!("live-{index}.example:443"),
+                vec![addr],
+                start + Duration::from_secs(1),
+            );
+        }
+        let now = start + DNS_CACHE_TTL;
+        cache.insert("new.example:443".into(), vec![addr], now);
+
+        assert_eq!(cache.entries.len(), DNS_CACHE_CAPACITY);
+        assert!(!cache.entries.contains_key("expired.example:443"));
+        assert!(cache.entries.contains_key("live-0.example:443"));
+        assert!(cache.entries.contains_key("new.example:443"));
+    }
+
+    #[test]
+    fn dns_cache_replacing_key_refreshes_value_and_expiration() {
+        let start = Instant::now();
+        let mut cache = DnsCache::default();
+        let old_addr = "192.0.2.10:443".parse().unwrap();
+        let new_addr = "192.0.2.11:443".parse().unwrap();
+        cache.insert("replace.example:443".into(), vec![old_addr], start);
+
+        let refreshed_at = start + DNS_CACHE_TTL - Duration::from_nanos(1);
+        cache.insert(
+            "replace.example:443".into(),
+            vec![new_addr],
+            refreshed_at,
+        );
+
+        assert_eq!(cache.entries.len(), 1);
+        assert_eq!(
+            cache.get("replace.example:443", refreshed_at),
+            Some(vec![new_addr])
+        );
+        assert_eq!(
+            cache.get("replace.example:443", refreshed_at + DNS_CACHE_TTL - Duration::from_nanos(1)),
+            Some(vec![new_addr])
+        );
+        assert_eq!(
+            cache.get("replace.example:443", refreshed_at + DNS_CACHE_TTL),
+            None
+        );
+    }
+
+    #[test]
     fn dns_cache_stays_bounded_and_evicts_earliest_expiry() {
         let start = Instant::now();
         let mut cache = DnsCache::default();
@@ -179,7 +236,7 @@ mod tests {
             cache.insert(
                 authority,
                 vec![addr],
-                start + Duration::from_secs(index as u64),
+                start + Duration::from_millis(index as u64),
             );
         }
         assert_eq!(cache.entries.len(), DNS_CACHE_CAPACITY);
@@ -187,7 +244,7 @@ mod tests {
         cache.insert(
             "overflow.example:443".into(),
             vec!["192.0.2.200:443".parse().unwrap()],
-            start + Duration::from_secs(DNS_CACHE_CAPACITY as u64),
+            start + Duration::from_millis(DNS_CACHE_CAPACITY as u64),
         );
 
         assert_eq!(cache.entries.len(), DNS_CACHE_CAPACITY);
