@@ -735,6 +735,48 @@ mod tests {
         assert_eq!(&reply, b"reply");
     }
 
+    // h2 exposes HTTP/2 PING as a connection-level health check. Keep its
+    // single-in-flight boundary covered independently of the tunnel stream.
+    #[tokio::test]
+    async fn http2_ping_allows_one_outstanding_probe_at_a_time() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let (_client, mut client_conn) = h2::client::Builder::new()
+            .handshake::<_, bytes::Bytes>(client_io)
+            .await
+            .unwrap();
+        let mut server_conn = h2::server::Builder::new()
+            .handshake::<_, bytes::Bytes>(server_io)
+            .await
+            .unwrap();
+        let mut client_ping = client_conn.ping_pong().expect("client ping handle");
+        let mut server_ping = server_conn.ping_pong().expect("server ping handle");
+
+        tokio::spawn(async move {
+            let _ = client_conn.await;
+        });
+        tokio::spawn(async move { while server_conn.accept().await.is_some() {} });
+
+        client_ping.send_ping(h2::Ping::opaque()).unwrap();
+        assert!(client_ping.send_ping(h2::Ping::opaque()).is_err());
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            futures::future::poll_fn(|cx| client_ping.poll_pong(cx)),
+        )
+        .await
+        .expect("PING should be acknowledged")
+        .unwrap();
+
+        // The peer's own PING must also make the round trip after the first
+        // probe has completed, exercising both directions of the connection.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            server_ping.ping(h2::Ping::opaque()),
+        )
+            .await
+            .expect("peer PING should be acknowledged")
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn http2_underlay_carries_crypto_handshake() {
         let (client, server) = duplex(64 * 1024);
