@@ -128,6 +128,13 @@ where
         return Ok(());
     }
 
+    // A liveness probe has no body semantics. Answer immediately so a stale
+    // or bogus Content-Length cannot make the probe wait for body bytes.
+    if health_probe {
+        write_response(&mut stream, 200, "text/plain", b"ok\n").await?;
+        return Ok(());
+    }
+
     let content_length = content_length(&headers)?;
     let mut body = vec![0_u8; content_length];
     if content_length > 0 {
@@ -177,9 +184,6 @@ where
                 body.as_bytes(),
             )
             .await?;
-        }
-        ("GET", "/healthz") => {
-            write_response(&mut stream, 200, "text/plain", b"ok\n").await?;
         }
         ("POST", "/reload") => {
             let Some(reload) = state.reload else {
@@ -644,6 +648,23 @@ mod tests {
         ).await;
         assert!(accepted.starts_with("HTTP/1.1 200"));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn health_probe_ignores_invalid_or_unfinished_request_body() {
+        for headers in [
+            "Content-Length: nope\r\n",
+            "Content-Length: 16777216\r\n",
+            "Content-Length: 4\r\n",
+        ] {
+            let response = request(
+                admin_state(None),
+                &format!("GET /healthz HTTP/1.1\r\nHost: localhost\r\n{headers}\r\n"),
+            )
+            .await;
+            assert!(response.starts_with("HTTP/1.1 200"), "{headers}: {response}");
+            assert!(response.ends_with("ok\n"), "{headers}: {response}");
+        }
     }
 
     #[tokio::test]

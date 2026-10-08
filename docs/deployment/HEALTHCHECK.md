@@ -4,6 +4,7 @@ Espejismo provides one HTTP liveness endpoint on the optional admin listener:
 `GET /healthz`. It responds with HTTP `200` and the plain text body `ok` plus
 a newline. It is available on both `espejismo-local` and `espejismo-remote`
 when `[admin].listen` is configured. The listener is disabled by default.
+The endpoint answers without waiting for or validating a request body.
 
 `/healthz` only confirms that the process can accept and answer this request.
 It does not check tunnel connectivity, peer reachability, proxy traffic, or
