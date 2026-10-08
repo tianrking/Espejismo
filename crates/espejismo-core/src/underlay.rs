@@ -5,12 +5,13 @@
 
 use std::collections::HashMap;
 
-use anyhow::{bail, ensure, Context, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use anyhow::{Context, Result, bail, ensure};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use bytes::Bytes;
 use rand::RngCore;
 use sha1::{Digest, Sha1};
-use tokio::io::{duplex, split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, duplex, split};
+use tokio::sync::Mutex;
 use tracing::debug;
 
 const WEBSOCKET_GUID: &str = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -220,16 +221,27 @@ where
     let max_frame_bytes = max_frame_bytes.max(1024);
     let (app_stream, pump_stream) = duplex(max_frame_bytes.max(IO_BUFFER) * 2);
     let (mut app_reader, mut app_writer) = split(pump_stream);
-    let (mut wire_reader, mut wire_writer) = split(stream);
+    let (mut wire_reader, wire_writer) = split(stream);
+    let wire_writer = std::sync::Arc::new(Mutex::new(wire_writer));
+    let ping_writer = wire_writer.clone();
 
     tokio::spawn(async move {
         loop {
             match read_ws_frame(&mut wire_reader, role, max_frame_bytes).await {
-                Ok(Some(payload)) => {
+                Ok(Some(WsFrame::Data(payload))) => {
                     if app_writer.write_all(&payload).await.is_err() {
                         break;
                     }
                 }
+                Ok(Some(WsFrame::Ping(payload))) => {
+                    if write_ws_frame(&mut *ping_writer.lock().await, role, 0xa, &payload)
+                        .await
+                        .is_err()
+                    {
+                        break;
+                    }
+                }
+                Ok(Some(WsFrame::Pong)) => {}
                 Ok(None) => {
                     let _ = app_writer.shutdown().await;
                     break;
@@ -244,16 +256,20 @@ where
     });
 
     tokio::spawn(async move {
+        let wire_writer = wire_writer;
         let mut buf = vec![0_u8; IO_BUFFER.min(max_frame_bytes)];
         loop {
             match app_reader.read(&mut buf).await {
                 Ok(0) => {
-                    let _ = write_ws_frame(&mut wire_writer, role, 0x8, &[]).await;
+                    let mut wire_writer = wire_writer.lock().await;
+                    let _ = write_ws_frame(&mut *wire_writer, role, 0x8, &[]).await;
                     let _ = wire_writer.shutdown().await;
                     break;
                 }
                 Ok(n) => {
-                    if let Err(err) = write_ws_frame(&mut wire_writer, role, 0x2, &buf[..n]).await {
+                    if let Err(err) =
+                        write_ws_frame(&mut *wire_writer.lock().await, role, 0x2, &buf[..n]).await
+                    {
                         debug!(error = %err, "websocket underlay writer stopped");
                         break;
                     }
@@ -326,17 +342,28 @@ fn spawn_http2_io(
     app_stream
 }
 
+enum WsFrame {
+    Data(Vec<u8>),
+    Ping(Vec<u8>),
+    Pong,
+}
+
 async fn read_ws_frame<R>(
     reader: &mut R,
     role: WebSocketRole,
     max_frame_bytes: usize,
-) -> Result<Option<Vec<u8>>>
+) -> Result<Option<WsFrame>>
 where
     R: AsyncRead + Unpin,
 {
     let mut head = [0_u8; 2];
     reader.read_exact(&mut head).await?;
     let opcode = head[0] & 0x0f;
+    ensure!(head[0] & 0x70 == 0, "websocket reserved bits are set");
+    ensure!(
+        head[0] & 0x80 != 0,
+        "websocket fragmented frames are unsupported"
+    );
     let masked = head[1] & 0x80 != 0;
     let mut len = u64::from(head[1] & 0x7f);
     if len == 126 {
@@ -348,6 +375,9 @@ where
         len <= max_frame_bytes as u64,
         "websocket frame exceeds configured limit"
     );
+    if opcode >= 0x8 {
+        ensure!(len <= 125, "websocket control frame exceeds 125 bytes");
+    }
     let expected_masked = role == WebSocketRole::Server;
     ensure!(
         masked == expected_masked,
@@ -367,9 +397,10 @@ where
         }
     }
     match opcode {
-        0x0 | 0x2 => Ok(Some(payload)),
+        0x0 | 0x2 => Ok(Some(WsFrame::Data(payload))),
         0x8 => Ok(None),
-        0x9 | 0xa => Ok(Some(Vec::new())),
+        0x9 => Ok(Some(WsFrame::Ping(payload))),
+        0xa => Ok(Some(WsFrame::Pong)),
         other => bail!("unsupported websocket opcode {other}"),
     }
 }
@@ -536,11 +567,55 @@ pub fn default_websocket_max_frame_bytes() -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        connect_http2_underlay, connect_websocket_underlay, http2_preface_matches,
-        websocket_accept, websocket_upgrade_header_matches, HTTP2_PREFACE,
+        HTTP2_PREFACE, connect_http2_underlay, connect_websocket_underlay, http2_preface_matches,
+        websocket_accept, websocket_upgrade_header_matches,
     };
     use bytes::Bytes;
-    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex};
+
+    #[tokio::test]
+    async fn websocket_ping_payload_boundaries_roundtrip_and_reject_oversize() {
+        for payload in [Vec::new(), vec![0x5a; 125]] {
+            let expected = payload.clone();
+            let (mut wire, mut peer) = duplex(512);
+            let write = tokio::spawn(async move {
+                super::write_ws_frame(&mut peer, super::WebSocketRole::Client, 0x9, &payload)
+                    .await
+                    .unwrap();
+            });
+            let frame = super::read_ws_frame(&mut wire, super::WebSocketRole::Server, 1024)
+                .await
+                .unwrap()
+                .unwrap();
+            match frame {
+                super::WsFrame::Ping(actual) => assert_eq!(actual, expected),
+                _ => panic!("expected PING frame"),
+            }
+            write.await.unwrap();
+        }
+
+        // Control frames cannot use the 16-bit extended length form.
+        let (mut wire, mut peer) = duplex(512);
+        peer.write_all(&[0x89, 126, 0, 126]).await.unwrap();
+        assert!(
+            super::read_ws_frame(&mut wire, super::WebSocketRole::Server, 1024)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_underlay_echoes_ping_payload_as_pong() {
+        let (mut peer, server_wire) = duplex(1024);
+        let _app = super::spawn_websocket_io(server_wire, super::WebSocketRole::Server, 1024);
+        // Client PING, masked with 01 02 03 04; decoded payload is 09 08.
+        peer.write_all(&[0x89, 0x82, 1, 2, 3, 4, 8, 10])
+            .await
+            .unwrap();
+        let mut response = [0; 4];
+        peer.read_exact(&mut response).await.unwrap();
+        assert_eq!(response, [0x8a, 2, 9, 8]);
+    }
 
     async fn http2_server_after_raw_priority(
         payload: &[u8],
@@ -795,10 +870,8 @@ mod tests {
             Some("session=; theme=dark; token=a=b")
         );
 
-        let empty_cookie = super::parse_http_headers(
-            "GET /espejismo HTTP/1.1\r\nCookie:\t \r\n\r\n",
-        )
-        .unwrap();
+        let empty_cookie =
+            super::parse_http_headers("GET /espejismo HTTP/1.1\r\nCookie:\t \r\n\r\n").unwrap();
         assert_eq!(
             empty_cookie.fields.get("cookie").map(String::as_str),
             Some("")
@@ -1056,9 +1129,9 @@ mod tests {
             std::time::Duration::from_secs(1),
             server_ping.ping(h2::Ping::opaque()),
         )
-            .await
-            .expect("peer PING should be acknowledged")
-            .unwrap();
+        .await
+        .expect("peer PING should be acknowledged")
+        .unwrap();
     }
 
     #[tokio::test]

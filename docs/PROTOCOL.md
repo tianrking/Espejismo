@@ -38,6 +38,10 @@ path. Multiplexing and transport adapters sit above the encrypted frame
 transport so underlays reuse the same handshake, frame codec, request prefaces,
 and policy layer.
 
+The WebSocket adapter answers control PING frames with a PONG carrying the same
+payload (including an empty payload), accepts PONG frames, and rejects
+fragmented frames, reserved bits, and control payloads longer than 125 bytes.
+
 When `[shared.port_hopping].enabled = true`, the client deterministically
 selects a configured remote port from the current time window before opening a
 new physical underlay connection. This does not change any handshake, frame, or
