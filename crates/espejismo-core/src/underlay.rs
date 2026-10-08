@@ -687,6 +687,46 @@ mod tests {
         assert!(result.is_none() || result.unwrap().is_err());
     }
 
+    // The tunnel uses one POST stream and never needs server push. Pin the
+    // h2 API boundary so future adapter changes cannot accidentally rely on
+    // pushing when the client has disabled it.
+    #[tokio::test]
+    async fn http2_server_push_rejects_peer_disabled_push() {
+        let (client_io, server_io) = duplex(4096);
+        let mut client_builder = h2::client::Builder::new();
+        client_builder.enable_push(false);
+        let (mut client, client_driver) = client_builder
+            .handshake::<_, Bytes>(client_io)
+            .await
+            .unwrap();
+        let mut server = h2::server::Builder::new()
+            .handshake::<_, Bytes>(server_io)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = client_driver.await;
+        });
+
+        let request = http::Request::builder()
+            .method("GET")
+            .uri("/")
+            .body(())
+            .unwrap();
+        let (_response, _send) = client.send_request(request, true).unwrap();
+        let (_request, mut respond) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+                .await
+                .expect("request should reach server")
+                .expect("connection remains open")
+                .expect("request should decode");
+        let pushed = http::Request::builder()
+            .method("GET")
+            .uri("/asset")
+            .body(())
+            .unwrap();
+        assert!(respond.push_request(pushed).is_err());
+    }
+
     #[test]
     fn websocket_accept_matches_rfc_example() {
         assert_eq!(
