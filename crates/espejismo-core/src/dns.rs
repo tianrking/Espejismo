@@ -1,7 +1,7 @@
 //! Bounded DNS resolution helpers used during connection setup.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     future::Future,
     net::SocketAddr,
     sync::{Mutex, OnceLock},
@@ -88,7 +88,10 @@ fn collect_addresses(
     addrs: impl Iterator<Item = SocketAddr>,
     authority: &str,
 ) -> Result<Vec<SocketAddr>> {
-    let addrs: Vec<_> = addrs.collect();
+    // A resolver may surface the same address through multiple records or
+    // search paths. Keep the first occurrence so callers do not dial it twice.
+    let mut seen = HashSet::new();
+    let addrs: Vec<_> = addrs.filter(|addr| seen.insert(*addr)).collect();
     if addrs.is_empty() {
         anyhow::bail!("DNS lookup returned no addresses: {authority}");
     }
@@ -310,5 +313,18 @@ mod tests {
         let error = collect_addresses(std::iter::empty(), "empty.example:443").unwrap_err();
         assert!(error.to_string().contains("returned no addresses"));
         assert!(error.to_string().contains("empty.example:443"));
+    }
+
+    #[test]
+    fn duplicate_resolver_addresses_are_returned_once_in_original_order() {
+        let first = "192.0.2.10:443".parse().unwrap();
+        let second = "[2001:db8::10]:443".parse().unwrap();
+        let addrs = collect_addresses(
+            [first, second, first, second, first].into_iter(),
+            "multi.example:443",
+        )
+        .unwrap();
+
+        assert_eq!(addrs, vec![first, second]);
     }
 }
