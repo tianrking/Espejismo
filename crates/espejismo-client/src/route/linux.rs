@@ -254,22 +254,29 @@ async fn resolve_server_ipv4(server: &str) -> Result<Vec<Ipv4Addr>> {
     let addrs = espejismo_core::resolve_socket_addrs(server)
         .await
         .with_context(|| format!("resolve local.server {server}"))?;
-    let mut ips = Vec::new();
-    for addr in addrs {
-        if addr.port() != port {
-            continue;
-        }
-        if let IpAddr::V4(ip) = addr.ip() {
-            if !ips.contains(&ip) {
-                ips.push(ip);
-            }
-        }
-    }
+    let ips = server_ipv4_candidates(addrs, port);
     anyhow::ensure!(
         !ips.is_empty(),
         "local.server must resolve to at least one IPv4 address for Linux auto-route"
     );
     Ok(ips)
+}
+
+fn server_ipv4_candidates(
+    addrs: impl IntoIterator<Item = std::net::SocketAddr>,
+    port: u16,
+) -> Vec<Ipv4Addr> {
+    let mut ips = Vec::new();
+    for addr in addrs {
+        if addr.port() == port {
+            if let IpAddr::V4(ip) = addr.ip() {
+                if !ips.contains(&ip) {
+                    ips.push(ip);
+                }
+            }
+        }
+    }
+    ips
 }
 
 fn default_true() -> bool {
@@ -478,7 +485,28 @@ fn run_quiet(program: &str, args: &[&str]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_default_route;
+    use super::{parse_default_route, server_ipv4_candidates};
+    use std::net::SocketAddr;
+
+    #[test]
+    fn server_route_candidates_keep_unique_ipv4_at_configured_port_only() {
+        let addrs = [
+            "192.0.2.10:443".parse::<SocketAddr>().unwrap(),
+            "192.0.2.10:443".parse().unwrap(),
+            "192.0.2.11:8443".parse().unwrap(),
+            "[2001:db8::1]:443".parse().unwrap(),
+        ];
+        assert_eq!(
+            server_ipv4_candidates(addrs, 443),
+            vec!["192.0.2.10".parse::<std::net::Ipv4Addr>().unwrap()]
+        );
+    }
+
+    #[test]
+    fn server_route_candidates_can_be_empty_for_ipv6_only_resolution() {
+        let addrs = ["[2001:db8::1]:443".parse::<SocketAddr>().unwrap()];
+        assert!(server_ipv4_candidates(addrs, 443).is_empty());
+    }
 
     #[test]
     fn parses_default_route_with_gateway_metric() {
