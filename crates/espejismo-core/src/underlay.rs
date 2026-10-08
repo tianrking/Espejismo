@@ -596,6 +596,34 @@ mod tests {
         assert!(!super::websocket_response_matches(&missing_upgrade));
     }
 
+    #[test]
+    fn websocket_http_headers_parse_cookie_field_boundaries() {
+        // Cookie is an opaque HTTP field here; preserve its delimiters and
+        // embedded '=' characters while trimming surrounding field whitespace.
+        let headers = super::parse_http_headers(
+            "GET /espejismo HTTP/1.1\r\nCookie: session=; theme=dark; token=a=b\r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(
+            headers.fields.get("cookie").map(String::as_str),
+            Some("session=; theme=dark; token=a=b")
+        );
+
+        let empty_cookie = super::parse_http_headers(
+            "GET /espejismo HTTP/1.1\r\nCookie:\t \r\n\r\n",
+        )
+        .unwrap();
+        assert_eq!(
+            empty_cookie.fields.get("cookie").map(String::as_str),
+            Some("")
+        );
+
+        let duplicate_cookie = super::parse_http_headers(
+            "GET /espejismo HTTP/1.1\r\nCookie: a=1\r\nCookie: b=2\r\n\r\n",
+        );
+        assert!(duplicate_cookie.is_err());
+    }
+
     #[tokio::test]
     async fn websocket_underlay_roundtrips_binary_bytes() {
         let (client, server) = duplex(64 * 1024);
