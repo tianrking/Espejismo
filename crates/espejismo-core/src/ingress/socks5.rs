@@ -573,6 +573,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn empty_method_list_is_rejected_with_no_acceptable_method() {
+        for auth in [None, Some(auth())] {
+            let (result, response) = exchange(vec![5, 0], auth).await;
+            assert!(result.is_err());
+            assert_eq!(response, [5, 0xff]);
+        }
+    }
+
+    #[tokio::test]
+    async fn password_auth_rejects_unsupported_subnegotiation_version() {
+        let (result, response) = exchange(vec![5, 1, 2, 2], Some(auth())).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 2, 1, 1]);
+    }
+
+    #[tokio::test]
     async fn password_auth_checks_credentials_and_nonempty_fields() {
         let valid = vec![
             5, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4, b'p', b'a', b's', b's', 5, 1, 0, 1, 127, 0,
