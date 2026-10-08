@@ -87,6 +87,9 @@ where
 }
 
 fn looks_like_http_probe(prefix: &[u8]) -> bool {
+    // Keep this classifier deliberately narrow: TLS-looking and arbitrary
+    // binary prefixes must continue to authenticated tunnel handling, never
+    // trigger protocol downgrade into the optional HTTP fallback.
     let methods: [&[u8]; 10] = [
         b"GET ",
         b"POST ",
@@ -222,6 +225,21 @@ mod tests {
     fn ignores_non_http_prefixes() {
         assert!(!looks_like_http_probe(b"\x16\x03\x01\x02\x00"));
         assert!(!looks_like_http_probe(b"\x8f\xf2\x00\x11"));
+    }
+
+    #[test]
+    fn tls_record_prefixes_never_select_http_fallback() {
+        // Cover TLS handshake, alert, and application-data records, including
+        // every partial record-header length seen while a peer is sending.
+        for content_type in [0x14, 0x15, 0x16, 0x17] {
+            let record = [content_type, 0x03, 0x03, 0x00, 0x10, 0x01, 0x02];
+            for end in 0..=record.len() {
+                assert!(
+                    !looks_like_http_probe(&record[..end]),
+                    "TLS content type {content_type:#x} prefix length {end} must not select HTTP fallback"
+                );
+            }
+        }
     }
 
     #[test]
