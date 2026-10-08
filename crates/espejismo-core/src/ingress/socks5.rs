@@ -59,7 +59,14 @@ impl SocksUdpReassembler {
     }
 
     fn push_for_peer(&mut self, peer: Option<IpAddr>, input: &[u8]) -> Result<Option<UdpPacket>> {
-        let parsed = parse_udp_packet_inner(input)?;
+        let parsed = match parse_udp_packet_inner(input) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                // A malformed datagram breaks the ordered fragment sequence.
+                self.reset();
+                return Err(error);
+            }
+        };
         if parsed.frag == 0 {
             self.reset();
             return Ok(Some(parsed.packet));
@@ -708,6 +715,19 @@ mod tests {
         assert!(reassembler.push(&first).unwrap().is_none());
         assert!(reassembler.push(&gap).unwrap().is_none());
         assert!(reassembler.push(&changed).unwrap().is_none());
+        assert!(reassembler.target.is_none());
+        assert!(reassembler.payload.is_empty());
+    }
+
+    #[test]
+    fn socks_udp_reassembler_discards_sequence_after_malformed_datagram() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        let final_fragment = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'b'];
+
+        assert!(reassembler.push(&first).unwrap().is_none());
+        assert!(reassembler.push(&[0, 0, 0, 1]).is_err());
+        assert!(reassembler.push(&final_fragment).unwrap().is_none());
         assert!(reassembler.target.is_none());
         assert!(reassembler.payload.is_empty());
     }

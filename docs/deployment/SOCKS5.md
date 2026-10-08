@@ -49,7 +49,8 @@ path when allowing remote clients to reach this listener.
 
 TCP uses SOCKS5 `CONNECT`. UDP uses `UDP ASSOCIATE`; the client opens a
 loopback-only UDP relay socket for the association. SOCKS UDP fragmentation is
-not supported. The UDP association uses the same local proxy authentication
+not supported for relay, and an invalid datagram clears any in-progress
+fragment reassembly. The UDP association uses the same local proxy authentication
 setting as CONNECT.
 
 For hostname requests, configure applications to use remote name resolution
