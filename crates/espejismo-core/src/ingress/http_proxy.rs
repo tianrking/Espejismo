@@ -112,6 +112,7 @@ where
         });
     }
 
+    validate_transfer_encoding(&header_lines)?;
     let content_length = parse_content_length(&header_lines);
     let (authority, path) = parse_absolute_http_target(target)?;
     let rewritten = rewrite_absolute_request(method, &path, version, &header_lines);
@@ -141,6 +142,35 @@ fn parse_content_length(lines: &[&str]) -> Option<u64> {
             .then(|| value.trim().parse::<u64>().ok())
             .flatten()
     })
+}
+
+// This proxy forwards request bodies without decoding them. Accept only the
+// framing it can safely account for, and reject ambiguous framing before the
+// request is sent to an upstream server.
+fn validate_transfer_encoding(lines: &[&str]) -> Result<()> {
+    let mut encodings = Vec::new();
+    let mut has_content_length = false;
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            has_content_length = true;
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            encodings.extend(value.split(',').map(str::trim));
+        }
+    }
+    if encodings.is_empty() {
+        return Ok(());
+    }
+    if has_content_length {
+        bail!("HTTP request has both Transfer-Encoding and Content-Length");
+    }
+    if encodings.len() != 1 || !encodings[0].eq_ignore_ascii_case("chunked") {
+        bail!("HTTP proxy only supports a single chunked Transfer-Encoding");
+    }
+    Ok(())
 }
 
 fn parse_absolute_http_target(target: &str) -> Result<(String, String)> {
@@ -217,7 +247,7 @@ fn find_header_end(data: &[u8], search_from: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{accept_http_proxy, parse_content_length};
+    use super::{accept_http_proxy, parse_content_length, validate_transfer_encoding};
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
 
     #[test]
@@ -230,6 +260,21 @@ mod tests {
     fn ignores_invalid_content_length() {
         let lines = ["Content-Length: nope"];
         assert_eq!(parse_content_length(&lines), None);
+    }
+
+    #[test]
+    fn accepts_only_one_chunked_transfer_encoding() {
+        assert!(validate_transfer_encoding(&["Transfer-Encoding: ChUnKeD"]).is_ok());
+        for headers in [
+            vec!["Transfer-Encoding: gzip, chunked"],
+            vec!["Transfer-Encoding: chunked", "Transfer-Encoding: chunked"],
+            vec!["Transfer-Encoding: gzip"],
+            vec!["Transfer-Encoding:"],
+            vec!["Transfer-Encoding: chunked", "Content-Length: 0"],
+        ] {
+            assert!(validate_transfer_encoding(&headers).is_err(), "{headers:?}");
+        }
+        assert!(validate_transfer_encoding(&["Content-Length: 0"]).is_ok());
     }
 
     #[tokio::test]
@@ -292,6 +337,22 @@ mod tests {
             .prebuffer
             .ends_with(b"3\r\nabc\r\n0\r\nDigest: sha-256=abc\r\nX-Request-Id: 7\r\n\r\n"));
         writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_conflicting_transfer_encoding_and_content_length() {
+        let (mut client, mut proxy) = duplex(4096);
+        client
+            .write_all(
+                b"POST http://example.test/upload HTTP/1.1\r\n\
+                  Transfer-Encoding: chunked\r\n\
+                  Content-Length: 3\r\n\r\n\
+                  3\r\nabc\r\n0\r\n\r\n",
+            )
+            .await
+            .unwrap();
+
+        assert!(accept_http_proxy(&mut proxy).await.is_err());
     }
 
     #[tokio::test]

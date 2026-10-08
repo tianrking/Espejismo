@@ -66,6 +66,10 @@ stream with no stable cleartext TLV markers or borrowed protocol fingerprint.
   HTTP proxy parsing, configuration/profile loading, encrypted transport
   adapter, UDP underlay primitives, update metadata checks, and adaptive frame
   writer.
+- The HTTP proxy forwards chunked request bodies opaquely, including trailers.
+  Absolute-form requests accept one `Transfer-Encoding: chunked` field and
+  reject other or repeated transfer codings and any request that also carries
+  `Content-Length`, avoiding ambiguous upstream body framing.
 - `espejismo-client`: builds `espejismo-local`, the local SOCKS5 and HTTP proxy
   ingress.
 - `espejismo-server`: builds `espejismo-remote`, the authenticated remote
