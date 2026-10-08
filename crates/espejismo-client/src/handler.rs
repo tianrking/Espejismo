@@ -309,6 +309,9 @@ async fn write_all_chunked<W>(writer: &mut W, data: &[u8]) -> std::io::Result<()
 where
     W: AsyncWrite + Unpin,
 {
+    if data.is_empty() {
+        return Ok(());
+    }
     for chunk in data.chunks(HTTP_BODY_COPY_BUFFER_SIZE) {
         writer.write_all(chunk).await?;
     }
@@ -487,6 +490,30 @@ mod tests {
         let mut received = Vec::new();
         peer.read_to_end(&mut received).await.unwrap();
         assert_eq!(received, data);
+    }
+
+    #[tokio::test]
+    async fn chunked_prebuffer_write_handles_buffer_boundaries() {
+        for len in [
+            0,
+            1,
+            128 * 1024 - 1,
+            128 * 1024,
+            128 * 1024 + 1,
+            256 * 1024 + 7,
+        ] {
+            let (mut tunnel, mut peer) = duplex(512 * 1024);
+            let data = (0..len)
+                .map(|index| (index % 251) as u8)
+                .collect::<Vec<_>>();
+
+            write_all_chunked(&mut tunnel, &data).await.unwrap();
+            tunnel.shutdown().await.unwrap();
+
+            let mut received = Vec::new();
+            peer.read_to_end(&mut received).await.unwrap();
+            assert_eq!(received, data, "body length {len}");
+        }
     }
 
     #[tokio::test]
