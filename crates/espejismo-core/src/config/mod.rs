@@ -979,14 +979,19 @@ mod tests {
 
         let bad_mtu = r#"
             [local.tun]
-            mtu = 500
+            mtu = 575
         "#;
         let err = parse_config(bad_mtu).unwrap_err().to_string();
         assert!(err.contains("local.tun.mtu"), "{err}");
         assert!(err.contains("576"), "{err}");
         assert!(err.contains("mtu = 1500"), "{err}");
 
+        // 576 is the configured lower boundary. MTU is represented as u16,
+        // so preserve the full accepted range without narrowing conversions.
         parse_config("[local.tun]\nmtu = 576\nprefix = 32\n").unwrap();
+        let upper_boundary = parse_config("[local.tun]\nmtu = 65535\nprefix = 32\n")
+            .expect("the u16 MTU upper boundary should parse");
+        assert_eq!(upper_boundary.local.tun.mtu, u16::MAX);
     }
 
     #[test]

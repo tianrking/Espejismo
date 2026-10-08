@@ -1,40 +1,34 @@
-# TUN MTU test coverage
+# TUN MTU Boundary Tests
 
-## Findings and approach
+## Scope and rationale
 
-The TUN device and the `netstack-smoltcp` stack both receive the configured
-`local.tun.mtu`. The existing client tests covered UDP queue limits but did not
-exercise netstack construction at different MTUs. `netstack-smoltcp 0.2.2`
-uses smoltcp 0.12 with IPv4/IPv6 enabled, but does not enable smoltcp's
-`proto-ipv4-fragmentation` feature. Its MTU configures device capabilities and
-TCP socket sizing; this does not establish IP fragment generation or
-reassembly.
+The current TUN path takes its MTU from configuration and passes it to both
+`tun-rs` and `netstack-smoltcp`; there is no path-MTU discovery algorithm to
+change. Configuration validation enforces a minimum of 576 bytes, and the
+configuration field is a `u16`. The existing netstack construction test covers
+common values (576, 1280, 1400, and 1500), but the configuration test did not
+exercise the exact rejected value adjacent to the minimum or the representable
+upper boundary.
 
-Following the references' preference for explicit protocol boundaries and
-small, executable regressions, this change makes the `u16` to `usize` conversion
-explicit at the netstack boundary and adds a build regression for MTUs 576,
-1280, 1400, and 1500 bytes. No fragmentation support or tunnel behavior is
-claimed or introduced, preserving the existing TCP/yamux TUN design and
-project positioning.
-
-Expected benefit: catches a future regression where common configured MTUs
-cannot initialize the userspace stack. Runtime and throughput improvement are
-not expected; this is a correctness/robustness test task, so percentage
-performance gain is not applicable. The test checks stack construction only,
-not live packet fragmentation or path-MTU discovery.
+The change strengthens regression coverage only: reject 575, accept 576, and
+preserve 65535 through config parsing without narrowing. This follows the
+reference list's guidance to study sing-box's cross-platform TUN implementation
+while keeping Espejismo's existing TUN behavior and minimal configuration
+model. The upper-bound assertion covers parsing and the `u16` representation;
+it does not claim that every operating system can create a device at that MTU.
+No path probing, automatic MTU changes, dependencies, or platform-specific
+socket behavior are introduced. Expected performance impact is none; this is a
+validation test change, not a performance optimization.
 
 ## Verification
 
+- `cargo test -p espejismo-core rejects_invalid_tun_prefix_and_mtu`: passed.
+  Covers the adjacent invalid MTU (575), exact minimum accepted MTU (576), and
+  maximum `u16` MTU (65535), including preservation of the parsed value.
 - `cargo test -p espejismo-client userspace_netstack_builds_with_common_tun_mtu_values`:
-  passed for all four MTUs.
-- `cargo test -p espejismo-client`: 44 passed, 0 failed. This includes the new
-  MTU stack-build test and existing TUN UDP queue/backpressure tests.
-- No throughput benchmark was run because this change makes no performance
-  claim and does not alter packet processing.
-
-## Open boundary
-
-If actual IP fragmentation/reassembly coverage is required, it needs either a
-netstack feature/dependency change with resource-limit review or an end-to-end
-TUN integration harness. The present regression intentionally does not imply
-that oversized IP packets are fragmented by the userspace stack.
+  passed. Confirms netstack construction for 576, 1280, 1400, and 1500 bytes.
+- Full package runs passed: `cargo test -p espejismo-core` (216 unit tests and
+  9 integration/doc-config tests passed; 1 loopback test ignored) and
+  `cargo test -p espejismo-client` (50 tests passed).
+- No throughput comparison applies: runtime code and packet handling are
+  unchanged.
