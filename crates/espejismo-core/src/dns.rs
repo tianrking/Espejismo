@@ -22,6 +22,10 @@ const DNS_MAX_ATTEMPTS: usize = 3;
 const DNS_RETRY_DELAYS: [Duration; DNS_MAX_ATTEMPTS - 1] =
     [Duration::from_millis(100), Duration::from_millis(250)];
 
+fn dns_retry_delay_after_failure(attempt: usize) -> Option<Duration> {
+    DNS_RETRY_DELAYS.get(attempt).copied()
+}
+
 #[derive(Default)]
 struct DnsCache {
     entries: HashMap<String, (Vec<SocketAddr>, Instant)>,
@@ -110,8 +114,8 @@ where
                 Ok(value) => return Ok(value),
                 Err(error) => last_error = Some(error),
             }
-            if let Some(delay) = DNS_RETRY_DELAYS.get(attempt) {
-                tokio::time::sleep(*delay).await;
+            if let Some(delay) = dns_retry_delay_after_failure(attempt) {
+                tokio::time::sleep(delay).await;
             }
         }
         Err(last_error.expect("DNS retry policy always makes at least one attempt"))
@@ -124,6 +128,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dns_retry_wait_budget_has_no_delay_after_final_attempt() {
+        assert_eq!(dns_retry_delay_after_failure(0), Some(Duration::from_millis(100)));
+        assert_eq!(dns_retry_delay_after_failure(1), Some(Duration::from_millis(250)));
+        assert_eq!(dns_retry_delay_after_failure(2), None);
+        assert_eq!(dns_retry_delay_after_failure(usize::MAX), None);
+
+        let total: Duration = (0..DNS_MAX_ATTEMPTS)
+            .filter_map(dns_retry_delay_after_failure)
+            .sum();
+        assert_eq!(total, Duration::from_millis(350));
+        assert!(total < DNS_RESOLUTION_TIMEOUT);
+    }
 
     #[test]
     fn dns_cache_hits_until_ttl_boundary_then_expires() {
