@@ -28,7 +28,10 @@ Rules:
   `*.example.com` patterns. A wildcard pattern matches both `example.com` and
   its subdomains (for example, `api.example.com`).
 - `block_hosts`: optional host blocklist, with the same matching syntax as
-  `allow_hosts`. A matching block rule takes precedence over the host allowlist.
+  `allow_hosts`. Matching is case-insensitive; `*.example.com` blocks the
+  apex and subdomains at label boundaries, but not names such as
+  `badexample.com` or `example.com.evil`. A matching block rule takes
+  precedence over the host allowlist.
 - `allow_ports`: optional port allowlist. An empty list imposes no port
   restriction.
 - `block_ports`: optional port blocklist. A blocked port takes precedence over

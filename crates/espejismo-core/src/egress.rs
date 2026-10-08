@@ -290,6 +290,33 @@ mod tests {
     }
 
     #[test]
+    fn block_host_wildcards_cover_apex_and_subdomains_only() {
+        let policy = EgressPolicy {
+            block_hosts: vec!["*.Example.com".to_string()],
+            ..EgressPolicy::default()
+        };
+
+        for blocked in ["example.com:443", "API.example.com:443", "a.b.example.com:443"] {
+            assert!(policy.validate_authority(blocked).is_err(), "{blocked} should be blocked");
+        }
+        for allowed in ["badexample.com:443", "example.com.evil:443", "example.net:443"] {
+            assert!(policy.validate_authority(allowed).is_ok(), "{allowed} should not match");
+        }
+    }
+
+    #[test]
+    fn exact_block_host_is_case_insensitive_and_does_not_match_suffixes() {
+        let policy = EgressPolicy {
+            block_hosts: vec!["Metadata.Example.com".to_string()],
+            ..EgressPolicy::default()
+        };
+
+        assert!(policy.validate_authority("metadata.example.com:443").is_err());
+        assert!(policy.validate_authority("sub.metadata.example.com:443").is_ok());
+        assert!(policy.validate_authority("metadata.example.com.evil:443").is_ok());
+    }
+
+    #[test]
     fn block_rules_override_allows_and_empty_allows_still_block() {
         let policy = EgressPolicy {
             allow_hosts: vec!["*.example.com".into()],
