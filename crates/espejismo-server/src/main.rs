@@ -351,6 +351,9 @@ async fn main() -> Result<()> {
     // Stop accepting first, then give established tunnels a bounded chance to
     // finish before the process exits. This is connection draining, not
     // cross-process migration: unfinished streams are still interrupted.
+    // Dropping the receiver makes listener tasks stop forwarding newly
+    // accepted sockets while existing peer tasks drain.
+    drop(accepted_rx);
     drain_peer_tasks(&mut peer_tasks, PEER_SHUTDOWN_GRACE).await;
     Ok(())
 }
@@ -1021,7 +1024,18 @@ mod connection_limit_tests {
 mod restart_drain_tests {
     use super::drain_peer_tasks;
     use std::time::Duration;
-    use tokio::sync::oneshot;
+    use tokio::sync::{mpsc, oneshot};
+
+    #[tokio::test]
+    async fn shutdown_rejects_connections_accepted_during_peer_drain() {
+        let (accepted_tx, accepted_rx) = mpsc::channel::<()>(1);
+        drop(accepted_rx);
+
+        assert!(
+            accepted_tx.send(()).await.is_err(),
+            "listener forwarding must fail once shutdown closes admission"
+        );
+    }
 
     #[tokio::test]
     async fn shutdown_waits_for_an_existing_peer_to_finish() {
