@@ -491,7 +491,14 @@ mod tests {
         ];
 
         for request in cases {
-            let (result, response) = exchange(request, None).await;
+            // Unsupported BIND must fail during request parsing; it must not
+            // wait for a peer connection or a listener timeout.
+            let (result, response) = tokio::time::timeout(
+                Duration::from_secs(1),
+                exchange(request, None),
+            )
+            .await
+            .expect("BIND rejection must not wait for a second connection");
             assert!(result.is_err());
             assert_eq!(&response[2..4], &[5, 7]);
         }

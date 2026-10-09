@@ -14,9 +14,15 @@ The references index contains no SOCKS ingress implementation to adapt; the
 protocol-level response is the relevant design constraint. The SOCKS5 guide
 now states explicitly that BIND is unsupported.
 
+This implementation intentionally has no BIND listener, allocated bind
+address/port, or second-peer accept timeout. The boundary test therefore also
+places a one-second ceiling on each in-memory request exchange, guarding that
+unsupported BIND is rejected during parsing rather than waiting for those
+unsupported phases. This adds no runtime timeout policy.
+
 ## Validation
 
-- `cargo test --offline -p espejismo-core bind_requests_are_rejected_for_address_and_port_boundaries`: passed (1 test). Covers IPv4 zero/max ports, domain zero/max ports, and an IPv6 request; verifies every BIND request fails with reply `0x07`.
-- `cargo test --offline -p espejismo-core`: passed (253 unit tests, 1 ignored loopback-bind test, 10 HTTP proxy integration tests, 1 config example test, and 1 doctest; zero failures). The ignored listener test is unrelated and remains annotated `requires loopback bind`.
+- `cargo test --offline -p espejismo-core bind_requests_are_rejected_for_address_and_port_boundaries`: passed (1 test). Covers IPv4 zero/max ports, domain zero/max ports, and an IPv6 request; verifies every BIND request fails with reply `0x07` within one second.
+- `cargo test --offline -p espejismo-core`: passed (284 unit tests, 1 ignored loopback-bind test, 10 HTTP proxy integration tests, 1 config example test, and 1 doctest; zero failures). The ignored listener test is unrelated and remains annotated `requires loopback bind`.
 
 This is a protocol correctness regression test, with no runtime behavior or performance claim. No throughput benchmark applies.
