@@ -5,9 +5,9 @@ use base64::Engine;
 use espejismo_core::{EgressProxy, EgressProxyKind, TransportStream};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::{timeout, Duration};
-use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio::time::{Duration, timeout};
 use tokio_rustls::TlsConnector;
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
 const MAX_HTTP_CONNECT_RESPONSE: usize = 16 * 1024;
 const HTTPS_PROXY_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
@@ -147,15 +147,15 @@ mod tests {
 
     use espejismo_core::{EgressProxy, EgressProxyKind};
     use tokio::{
-        io::{duplex, AsyncReadExt},
+        io::{AsyncReadExt, duplex},
         time::timeout,
     };
+    use tokio_rustls::TlsAcceptor;
     use tokio_rustls::rustls::{
+        DigitallySignedStruct, ServerConfig, SignatureScheme,
         client::danger::{HandshakeSignatureValid, ServerCertVerifier},
         pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime},
-        DigitallySignedStruct, ServerConfig, SignatureScheme,
     };
-    use tokio_rustls::TlsAcceptor;
 
     use super::{build_connect_request, connect_tls_to_proxy_with_timeout, https_proxy_tls_config};
 
@@ -180,8 +180,8 @@ mod tests {
 
     #[tokio::test]
     async fn https_proxy_tls_succeeds_when_server_advertises_alpn() {
-        use tokio_rustls::rustls::ClientConfig;
         use tokio_rustls::TlsConnector;
+        use tokio_rustls::rustls::ClientConfig;
 
         let cert = CertificateDer::from(
             include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
@@ -240,12 +240,18 @@ mod tests {
     #[tokio::test]
     async fn tls12_ocsp_staple_bytes_reach_certificate_verifier_unchanged() {
         use std::sync::Mutex;
-        use tokio_rustls::rustls::{version, ClientConfig, ServerConfig};
         use tokio_rustls::TlsConnector;
+        use tokio_rustls::rustls::{ClientConfig, ServerConfig, version};
 
         // rustls transports the staple to the verifier but does not validate
-        // OCSP itself. Exercise empty and opaque non-empty boundary values.
-        for staple in [Vec::new(), vec![0x30], vec![0x30; 4096]] {
+        // OCSP itself. Exercise empty, minimal, typical, and near-record-sized
+        // opaque responses; TLS may fragment the largest response across records.
+        for staple in [
+            Vec::new(),
+            vec![0x30],
+            vec![0x30; 4096],
+            vec![0x30; 16 * 1024],
+        ] {
             let seen = Arc::new(Mutex::new(None));
             let cert = CertificateDer::from(
                 include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
@@ -264,7 +270,7 @@ mod tests {
                 .with_custom_certificate_verifier(verifier)
                 .with_no_client_auth();
 
-            let (client, server) = duplex(16 * 1024);
+            let (client, server) = duplex(64 * 1024);
             let server_task = tokio::spawn(async move {
                 TlsAcceptor::from(Arc::new(server_config))
                     .accept(server)
@@ -325,7 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn https_proxy_session_tickets_are_reused_and_replenished() {
-        use tokio_rustls::rustls::{version, ClientConfig, HandshakeKind, ServerConfig};
+        use tokio_rustls::rustls::{ClientConfig, HandshakeKind, ServerConfig, version};
 
         let cert = CertificateDer::from(
             include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
@@ -399,7 +405,7 @@ mod tests {
     #[tokio::test]
     async fn https_proxy_tls12_sessions_resume_with_shared_config() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
-        use tokio_rustls::rustls::{version, ClientConfig, HandshakeKind, ServerConfig};
+        use tokio_rustls::rustls::{ClientConfig, HandshakeKind, ServerConfig, version};
         use tokio_rustls::{TlsAcceptor, TlsConnector};
 
         let cert = CertificateDer::from(
@@ -422,10 +428,7 @@ mod tests {
                 .with_no_client_auth(),
         );
 
-        async fn handshake(
-            client: Arc<ClientConfig>,
-            server: Arc<ServerConfig>,
-        ) -> HandshakeKind {
+        async fn handshake(client: Arc<ClientConfig>, server: Arc<ServerConfig>) -> HandshakeKind {
             let (client_io, server_io) = duplex(16 * 1024);
             let server_task = tokio::spawn(async move {
                 let mut tls = TlsAcceptor::from(server).accept(server_io).await.unwrap();
@@ -449,10 +452,7 @@ mod tests {
             handshake(client.clone(), server.clone()).await,
             HandshakeKind::Full
         );
-        assert_eq!(
-            handshake(client, server).await,
-            HandshakeKind::Resumed
-        );
+        assert_eq!(handshake(client, server).await, HandshakeKind::Resumed);
     }
 
     #[tokio::test]

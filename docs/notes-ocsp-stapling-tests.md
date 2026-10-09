@@ -8,11 +8,11 @@ Reference checked: rustls 0.23's `ServerCertVerifier` API and `CertifiedKey::ocs
 
 ## Change and expected effect
 
-Added a TLS 1.2 loopback handshake test that staples zero bytes, a one-byte malformed payload, and a 4096-byte opaque payload. A capture verifier asserts rustls forwards each byte sequence unchanged, covering absent, tiny, and larger response boundaries. Added a test-only verifier that delegates handshake signature checks to the existing verifier helper.
+Added a TLS 1.2 in-memory duplex handshake test that staples zero bytes, a one-byte malformed payload, a 4096-byte opaque payload, and a 16 KiB opaque payload. A capture verifier asserts rustls forwards each byte sequence unchanged, covering empty, minimal, typical, and near-record-sized response boundaries (including record fragmentation). Added a test-only verifier that delegates handshake signature checks to the existing verifier helper.
 
-Expected effect: no runtime or throughput change; improved regression coverage for OCSP response delivery to the verifier callback. Certificate status policy remains the verifier's responsibility.
+Expected effect: no runtime or throughput change; improved regression coverage for OCSP response delivery to the verifier callback, including a larger fragmented response. Certificate status policy remains the verifier's responsibility. The test uses in-memory streams and requires no loopback bind.
 
 ## Verification
 
-- `$HOME/.cargo/bin/cargo test -p espejismo-server --offline`: passed; 42 passed, 0 failed, 1 ignored. This includes the new callback-boundary test and the existing HTTPS proxy handshake, session resumption, timeout, and untrusted-certificate tests.
+- `$HOME/.cargo/bin/cargo test -p espejismo-server --offline`: passed; 53 passed, 0 failed, 1 ignored. `tls12_ocsp_staple_bytes_reach_certificate_verifier_unchanged` confirms empty, 1-byte, 4 KiB, and 16 KiB values are delivered byte-for-byte; the test-only verifier also delegates both TLS signature verification methods. The ignored loopback relay test is unrelated to this change.
 - `$HOME/.cargo/bin/cargo fmt --all -- --check`: reports formatting differences across unrelated pre-existing files; formatted only `crates/espejismo-server/src/http_chain.rs` to avoid unrelated changes.
