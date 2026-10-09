@@ -473,6 +473,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connect_accepts_maximum_wire_domain_length() {
+        let domain = "a".repeat(u8::MAX as usize);
+        let mut request = vec![5, 1, 0, 5, 1, 0, 3, u8::MAX];
+        request.extend_from_slice(domain.as_bytes());
+        request.extend_from_slice(&[0x01, 0xbb]);
+
+        let (result, response) = exchange(request, None).await;
+        assert!(matches!(result.unwrap(), SocksRequest::Connect(target)
+            if target.host == domain && target.port == 443));
+        assert_eq!(&response[2..4], &[5, 0]);
+    }
+
+    #[tokio::test]
+    async fn connect_preserves_idn_domain_utf8_bytes() {
+        // SOCKS5 carries domain bytes; name normalization/IDNA conversion is
+        // left to the remote resolver, so ingress must preserve the input.
+        let domain = "例え.テスト";
+        let mut request = vec![5, 1, 0, 5, 1, 0, 3, domain.len() as u8];
+        request.extend_from_slice(domain.as_bytes());
+        request.extend_from_slice(&[0, 53]);
+
+        let (result, response) = exchange(request, None).await;
+        assert!(matches!(result.unwrap(), SocksRequest::Connect(target)
+            if target.host == domain && target.host.as_bytes() == domain.as_bytes()
+                && target.port == 53));
+        assert_eq!(&response[2..4], &[5, 0]);
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_domain_when_declared_bytes_are_truncated() {
+        let mut request = vec![5, 1, 0, 5, 1, 0, 3, u8::MAX];
+        request.extend_from_slice(b"short");
+
+        let (result, response) = exchange(request, None).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 0]); // method negotiation only; no CONNECT reply
+    }
+
+    #[tokio::test]
     async fn connect_ipv6_literals_preserve_address_and_port_boundaries() {
         for (octets, port, expected_host) in [
             ([0_u8; 16], 0, "::"),
