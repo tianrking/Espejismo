@@ -1,11 +1,11 @@
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
-use rand::Rng;
 use rand::seq::SliceRandom;
-use tokio::io::{AsyncWriteExt, copy_bidirectional};
+use rand::Rng;
+use tokio::io::{copy_bidirectional, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::time::{Duration, sleep, timeout};
+use tokio::time::{sleep, timeout, Duration};
 
 use crate::tarpit;
 
@@ -92,6 +92,16 @@ fn looks_like_http_probe(prefix: &[u8]) -> bool {
     // Keep this classifier deliberately narrow: TLS-looking and arbitrary
     // binary prefixes must continue to authenticated tunnel handling, never
     // trigger protocol downgrade into the optional HTTP fallback.
+    matches!(classify_inbound_prefix(prefix), InboundRoute::HttpFallback)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InboundRoute {
+    HttpFallback,
+    AuthenticatedTunnel,
+}
+
+fn classify_inbound_prefix(prefix: &[u8]) -> InboundRoute {
     const HTTP2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
     let methods: [&[u8]; 9] = [
         b"GET ",
@@ -104,7 +114,14 @@ fn looks_like_http_probe(prefix: &[u8]) -> bool {
         b"CONNECT ",
         b"TRACE ",
     ];
-    prefix == HTTP2_PREFACE || methods.iter().any(|m| prefix.starts_with(m))
+    if prefix == HTTP2_PREFACE || methods.iter().any(|m| prefix.starts_with(m)) {
+        InboundRoute::HttpFallback
+    } else {
+        // SNI does not select upstreams in this server. Every non-HTTP prefix,
+        // including ClientHellos with absent, wildcard-like, or distinct SNI,
+        // remains on the authenticated tunnel path.
+        InboundRoute::AuthenticatedTunnel
+    }
 }
 
 async fn write_builtin_fallback_response(
@@ -209,7 +226,8 @@ fn unix_secs(time: SystemTime) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::{
-        FallbackHttpRuntime, build_builtin_fallback_response, looks_like_http_probe, quiet_reject,
+        build_builtin_fallback_response, classify_inbound_prefix, looks_like_http_probe,
+        quiet_reject, FallbackHttpRuntime, InboundRoute,
     };
     use std::time::Duration;
     use tokio::time::Instant;
@@ -321,6 +339,30 @@ mod tests {
                 "truncated ClientHello prefix of length {end} must not match HTTP"
             );
         }
+    }
+
+    #[test]
+    fn sni_values_never_select_a_fallback_backend() {
+        // SNI-based backend routing is intentionally not implemented. Keep
+        // absent SNI, wildcard-shaped input, and multiple hostnames on the
+        // same authenticated-tunnel route rather than selecting a backend.
+        for (label, hello) in [
+            ("missing SNI", b"\x16\x03\x01\x00\x05hello".as_slice()),
+            ("wildcard-like SNI", b"\x16\x03\x01*.example.test"),
+            ("first backend name", b"\x16\x03\x01one.example.test"),
+            ("second backend name", b"\x16\x03\x01two.example.test"),
+        ] {
+            assert_eq!(
+                classify_inbound_prefix(hello),
+                InboundRoute::AuthenticatedTunnel,
+                "{label} must not select an HTTP fallback backend"
+            );
+        }
+        assert_eq!(
+            classify_inbound_prefix(b"GET / HTTP/1.1\r\n"),
+            InboundRoute::HttpFallback,
+            "HTTP fallback remains limited to recognized HTTP prefixes"
+        );
     }
 
     #[test]
