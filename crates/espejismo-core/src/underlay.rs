@@ -300,7 +300,15 @@ fn spawn_http2_io(
                     if app_writer.write_all(&chunk).await.is_err() {
                         break;
                     }
-                    let _ = recv_stream.flow_control().release_capacity(len);
+                    // Returning capacity is what allows the peer to make
+                    // progress after either the stream or connection window
+                    // is exhausted. Treat a rejected update as a dead reader
+                    // instead of silently pinning the peer at zero credit.
+                    if let Err(err) = recv_stream.flow_control().release_capacity(len) {
+                        debug!(error = %err, "http2 underlay failed to release receive capacity");
+                        let _ = app_writer.shutdown().await;
+                        break;
+                    }
                 }
                 Some(Err(err)) => {
                     debug!(error = %err, "http2 underlay reader stopped");
@@ -324,11 +332,26 @@ fn spawn_http2_io(
                     break;
                 }
                 Ok(n) => {
-                    if let Err(err) =
-                        send_stream.send_data(Bytes::copy_from_slice(&buf[..n]), false)
-                    {
-                        debug!(error = %err, "http2 underlay writer stopped");
-                        break;
+                    let mut offset = 0;
+                    while offset < n {
+                        send_stream.reserve_capacity(n - offset);
+                        let capacity = std::future::poll_fn(|cx| send_stream.poll_capacity(cx))
+                            .await;
+                        let Some(Ok(capacity)) = capacity else {
+                            debug!("http2 underlay writer stopped while waiting for capacity");
+                            return;
+                        };
+                        if capacity == 0 {
+                            continue;
+                        }
+                        let len = capacity.min(n - offset);
+                        if let Err(err) = send_stream
+                            .send_data(Bytes::copy_from_slice(&buf[offset..offset + len]), false)
+                        {
+                            debug!(error = %err, "http2 underlay writer stopped");
+                            return;
+                        }
+                        offset += len;
                     }
                 }
                 Err(err) => {
@@ -1233,6 +1256,62 @@ mod tests {
         let mut reply = [0_u8; 5];
         client.read_exact(&mut reply).await.unwrap();
         assert_eq!(&reply, b"reply");
+    }
+
+    // The smallest supported stream window is 65,535 bytes. Transfer several
+    // windows in each direction to exercise exhaustion and WINDOW_UPDATE on
+    // both the stream and connection flow-control paths without sockets.
+    #[tokio::test]
+    async fn http2_underlay_replenishes_exhausted_flow_control_windows() {
+        let options = super::Http2UnderlayOptions {
+            initial_stream_window_bytes: 65_535,
+            initial_connection_window_bytes: 65_535,
+            max_frame_bytes: 16_384,
+        };
+        let (client_io, server_io) = duplex(64 * 1024);
+        let server_task = tokio::spawn(async move {
+            super::accept_http2_underlay(server_io, "/flow", options)
+                .await
+                .unwrap()
+        });
+        let client = connect_http2_underlay(client_io, "example.com", "/flow", options)
+            .await
+            .unwrap();
+        let server = server_task.await.unwrap();
+        let (mut client_read, mut client_write) = tokio::io::split(client);
+        let (mut server_read, mut server_write) = tokio::io::split(server);
+
+        let payload: Vec<u8> = (0..512 * 1024).map(|n| (n % 251) as u8).collect();
+        let expected = payload.clone();
+        let writer = async {
+            client_write.write_all(&payload).await.unwrap();
+            client_write.shutdown().await.unwrap();
+        };
+        let mut received = Vec::new();
+        let reader = server_read.read_to_end(&mut received);
+        let ((), read_result) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(writer, reader)
+        })
+        .await
+        .expect("first flow-control window update timed out");
+        read_result.unwrap();
+        assert_eq!(received, expected);
+
+        let reply = vec![0xa5; 512 * 1024];
+        let expected_reply = reply.clone();
+        let writer = async {
+            server_write.write_all(&reply).await.unwrap();
+            server_write.shutdown().await.unwrap();
+        };
+        let mut received_reply = Vec::new();
+        let reader = client_read.read_to_end(&mut received_reply);
+        let ((), read_result) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(writer, reader)
+        })
+        .await
+        .expect("reverse flow-control window update timed out");
+        read_result.unwrap();
+        assert_eq!(received_reply, expected_reply);
     }
 
     // A peer RST_STREAM must terminate the adapter's application read side.
