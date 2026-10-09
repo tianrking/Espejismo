@@ -417,6 +417,7 @@ mod tests {
         SocksRequest, SocksTarget, SocksUdpReassembler,
     };
     use crate::ingress::ProxyAuth;
+    use std::time::{Duration, Instant};
 
     fn auth() -> ProxyAuth {
         ProxyAuth {
@@ -737,6 +738,42 @@ mod tests {
         assert!(reassembler.push(&final_fragment).unwrap().is_none());
         assert!(reassembler.target.is_none());
         assert!(reassembler.payload.is_empty());
+    }
+
+    #[test]
+    fn socks_udp_reassembler_expires_incomplete_sequence() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        let late_fragment = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'b'];
+        let restarted = [0, 0, 0x81, 1, 127, 0, 0, 1, 0, 53, b'c'];
+
+        assert!(reassembler.push(&first).unwrap().is_none());
+        // Set the deadline directly so the timeout boundary is deterministic.
+        reassembler.expires_at = Some(Instant::now() - Duration::from_secs(1));
+        assert!(reassembler.push(&late_fragment).unwrap().is_none());
+        assert!(reassembler.target.is_none());
+        assert!(reassembler.payload.is_empty());
+
+        // A new sequence can start after expiry; a final first fragment is complete.
+        let packet = reassembler.push(&restarted).unwrap().unwrap();
+        assert_eq!(packet.payload, b"c");
+    }
+
+    #[test]
+    fn socks_udp_reassembler_accepts_maximum_fragment_sequence() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        assert!(reassembler.push(&first).unwrap().is_none());
+
+        for sequence in 2..0x7f {
+            let fragment = [0, 0, sequence, 1, 127, 0, 0, 1, 0, 53, b'x'];
+            assert!(reassembler.push(&fragment).unwrap().is_none());
+        }
+        let last = [0, 0, 0xff, 1, 127, 0, 0, 1, 0, 53, b'z'];
+        let packet = reassembler.push(&last).unwrap().unwrap();
+        assert_eq!(packet.payload.len(), 127);
+        assert_eq!(packet.payload.first(), Some(&b'a'));
+        assert_eq!(packet.payload.last(), Some(&b'z'));
     }
 
     #[test]
