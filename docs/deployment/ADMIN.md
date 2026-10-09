@@ -31,7 +31,10 @@ loopback. With a token configured, missing or invalid credentials receive
 HTTP 401 before request bodies are read or administrative actions are run.
 This applies uniformly to `/status`, `/connections`, `/metrics`, `/reload`,
 and `/apply`; the authorization tests exercise each route with absent, invalid,
-bearer, and legacy-header credentials.
+bearer, and legacy-header credentials. The admin endpoint does not enable
+browser cross-origin access: `Origin` headers do not affect authorization, and
+`OPTIONS` preflights receive no `Access-Control-*` response headers. Use a
+trusted management client rather than exposing this API to browser origins.
 The endpoint handles at most 32 client connections at once; additional
 connections receive HTTP 503. Reload and apply actions have a 30-second limit
 and return HTTP 504 if the action does not finish in time. Header and body

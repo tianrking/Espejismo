@@ -621,6 +621,40 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cors_origins_and_preflight_do_not_grant_admin_access() {
+        // The admin API is a trusted management endpoint, not a browser API.
+        // Origin headers and OPTIONS preflights must neither authorize access
+        // nor cause the server to emit permissive CORS response headers.
+        for origin in ["https://example.com", "null", "*"] {
+            let response = request(
+                admin_state(None),
+                &format!(
+                    "GET /status HTTP/1.1\r\nHost: localhost\r\nOrigin: {origin}\r\n\r\n"
+                ),
+            )
+            .await;
+            assert!(response.starts_with("HTTP/1.1 401"), "{origin}: {response}");
+            assert!(!response.to_ascii_lowercase().contains("access-control-"));
+        }
+
+        let preflight = request(
+            admin_state(None),
+            "OPTIONS /apply HTTP/1.1\r\nHost: localhost\r\nOrigin: https://example.com\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: authorization, content-type\r\n\r\n",
+        )
+        .await;
+        assert!(preflight.starts_with("HTTP/1.1 401"), "{preflight}");
+        assert!(!preflight.to_ascii_lowercase().contains("access-control-"));
+
+        let public_health = request(
+            admin_state(None),
+            "GET /healthz HTTP/1.1\r\nHost: localhost\r\nOrigin: https://example.com\r\n\r\n",
+        )
+        .await;
+        assert!(public_health.starts_with("HTTP/1.1 200"));
+        assert!(!public_health.to_ascii_lowercase().contains("access-control-"));
+    }
+
+    #[tokio::test]
     async fn every_admin_response_has_fixed_restrictive_csp() {
         let cases = [
             ("GET /healthz HTTP/1.1\r\n\r\n", "HTTP/1.1 200"),
