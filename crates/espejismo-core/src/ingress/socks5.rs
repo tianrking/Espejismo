@@ -1,6 +1,6 @@
 use anyhow::{bail, Result};
 use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
     time::{Duration, Instant},
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
@@ -31,7 +31,7 @@ pub struct SocksUdpReassembler {
     payload: Vec<u8>,
     next_fragment: u8,
     expires_at: Option<Instant>,
-    peer: Option<IpAddr>,
+    peer: Option<SocketAddr>,
 }
 
 impl Default for SocksUdpReassembler {
@@ -55,10 +55,14 @@ impl SocksUdpReassembler {
     }
 
     pub fn push_from(&mut self, peer: SocketAddr, input: &[u8]) -> Result<Option<UdpPacket>> {
-        self.push_for_peer(Some(peer.ip()), input)
+        self.push_for_peer(Some(peer), input)
     }
 
-    fn push_for_peer(&mut self, peer: Option<IpAddr>, input: &[u8]) -> Result<Option<UdpPacket>> {
+    fn push_for_peer(
+        &mut self,
+        peer: Option<SocketAddr>,
+        input: &[u8],
+    ) -> Result<Option<UdpPacket>> {
         let parsed = match parse_udp_packet_inner(input) {
             Ok(parsed) => parsed,
             Err(error) => {
@@ -793,6 +797,38 @@ mod tests {
         assert!(reassembler.push_from(peer_a, &first).unwrap().is_none());
         assert!(reassembler.push_from(peer_b, &last).unwrap().is_none());
         assert!(reassembler.target.is_none());
+    }
+
+    #[test]
+    fn socks_udp_reassembler_rejects_fragment_source_port_changes() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        let last = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'b'];
+        let original = "127.0.0.1:1000".parse().unwrap();
+        let changed_port = "127.0.0.1:1001".parse().unwrap();
+
+        assert!(reassembler.push_from(original, &first).unwrap().is_none());
+        assert!(reassembler
+            .push_from(changed_port, &last)
+            .unwrap()
+            .is_none());
+        assert!(reassembler.target.is_none());
+        assert!(reassembler.payload.is_empty());
+    }
+
+    #[test]
+    fn socks_udp_reassembler_forwards_completed_payload_as_udp_packet() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'd'];
+        let last = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'n', b's'];
+        assert!(reassembler.push(&first).unwrap().is_none());
+        let packet = reassembler.push(&last).unwrap().unwrap();
+        assert_eq!(packet.target.host, "127.0.0.1");
+        assert_eq!(packet.payload, b"dns");
+        let encoded = build_udp_packet(&packet.target, &packet.payload).unwrap();
+        let decoded = parse_udp_packet(&encoded).unwrap();
+        assert_eq!(decoded.target.authority(), "127.0.0.1:53");
+        assert_eq!(decoded.payload, b"dns");
     }
 
     #[test]
