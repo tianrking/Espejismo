@@ -26,6 +26,9 @@ const ADMIN_HEADER_TIMEOUT: Duration = Duration::from_secs(15);
 const ADMIN_BODY_TIMEOUT: Duration = Duration::from_secs(15);
 const ADMIN_ACTION_TIMEOUT: Duration = Duration::from_secs(30);
 const ADMIN_MAX_CONCURRENT_CLIENTS: usize = 32;
+// Admin responses are machine-readable and never need to execute or embed content.
+const ADMIN_CONTENT_SECURITY_POLICY: &str =
+    "default-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
 
 pub type AdminAction = Arc<
     dyn Fn(Option<String>) -> Pin<Box<dyn Future<Output = Result<serde_json::Value>> + Send>>
@@ -333,7 +336,7 @@ where
         _ => "Error",
     };
     let header = format!(
-        "HTTP/1.1 {code} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {code} {reason}\r\nContent-Type: {content_type}\r\nContent-Security-Policy: {ADMIN_CONTENT_SECURITY_POLICY}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(header.as_bytes()).await?;
@@ -567,9 +570,12 @@ mod tests {
         client.read_to_end(&mut response).await.unwrap();
         server.await.unwrap();
         drop(held);
-        assert!(String::from_utf8(response)
-            .unwrap()
-            .starts_with("HTTP/1.1 503"));
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 503"));
+        assert!(response.contains(&format!(
+            "Content-Security-Policy: {}\r\n",
+            super::ADMIN_CONTENT_SECURITY_POLICY
+        )));
     }
 
     fn admin_state(reload: Option<super::AdminAction>) -> AdminState {
@@ -612,6 +618,37 @@ mod tests {
         )
         .await;
         assert!(response.starts_with("HTTP/1.1 401"));
+    }
+
+    #[tokio::test]
+    async fn every_admin_response_has_fixed_restrictive_csp() {
+        let cases = [
+            ("GET /healthz HTTP/1.1\r\n\r\n", "HTTP/1.1 200"),
+            ("GET /status HTTP/1.1\r\n\r\n", "HTTP/1.1 401"),
+            (
+                "GET /status HTTP/1.1\r\nAuthorization: Bearer admin-secret\r\nContent-Security-Policy: default-src *\r\n\r\n",
+                "HTTP/1.1 200",
+            ),
+            (
+                "GET /missing HTTP/1.1\r\nAuthorization: Bearer admin-secret\r\n\r\n",
+                "HTTP/1.1 404",
+            ),
+            (
+                "PATCH /status HTTP/1.1\r\nAuthorization: Bearer admin-secret\r\n\r\n",
+                "HTTP/1.1 405",
+            ),
+        ];
+        let expected = format!(
+            "Content-Security-Policy: {}",
+            super::ADMIN_CONTENT_SECURITY_POLICY
+        );
+        for (request_text, status) in cases {
+            let response = request(admin_state(None), request_text).await;
+            assert!(response.starts_with(status), "{response}");
+            let (headers, _) = response.split_once("\r\n\r\n").unwrap();
+            assert_eq!(headers.matches("Content-Security-Policy:").count(), 1);
+            assert!(headers.lines().any(|line| line == expected), "{headers}");
+        }
     }
 
     #[tokio::test]
