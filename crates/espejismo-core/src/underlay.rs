@@ -5,12 +5,12 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result, bail, ensure};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use anyhow::{bail, ensure, Context, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use bytes::Bytes;
 use rand::RngCore;
 use sha1::{Digest, Sha1};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream, duplex, split};
+use tokio::io::{duplex, split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::sync::Mutex;
 use tracing::debug;
 
@@ -322,6 +322,9 @@ fn spawn_http2_io(
                     break;
                 }
                 None => {
+                    // HTTP/2 trailers end the body but are metadata, not tunnel
+                    // bytes. RecvStream::data() returning None closes the app
+                    // read half after all preceding DATA has been delivered.
                     let _ = app_writer.shutdown().await;
                     break;
                 }
@@ -341,8 +344,8 @@ fn spawn_http2_io(
                     let mut offset = 0;
                     while offset < n {
                         send_stream.reserve_capacity(n - offset);
-                        let capacity = std::future::poll_fn(|cx| send_stream.poll_capacity(cx))
-                            .await;
+                        let capacity =
+                            std::future::poll_fn(|cx| send_stream.poll_capacity(cx)).await;
                         let Some(Ok(capacity)) = capacity else {
                             debug!("http2 underlay writer stopped while waiting for capacity");
                             return;
@@ -638,11 +641,11 @@ pub fn default_websocket_max_frame_bytes() -> usize {
 #[cfg(test)]
 mod tests {
     use super::{
-        HTTP2_PREFACE, connect_http2_underlay, connect_websocket_underlay, http2_preface_matches,
-        websocket_accept, websocket_upgrade_header_matches,
+        connect_http2_underlay, connect_websocket_underlay, http2_preface_matches,
+        websocket_accept, websocket_upgrade_header_matches, HTTP2_PREFACE,
     };
     use bytes::Bytes;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt, DuplexStream, duplex};
+    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
 
     #[test]
     fn websocket_mask_xor_repeats_key_every_four_bytes() {
@@ -788,11 +791,9 @@ mod tests {
         let error = super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
             .await
             .unwrap_err();
-        assert!(
-            error
-                .to_string()
-                .contains("fragmented frames are unsupported")
-        );
+        assert!(error
+            .to_string()
+            .contains("fragmented frames are unsupported"));
     }
 
     #[tokio::test]
@@ -986,23 +987,19 @@ mod tests {
         // and bounded values for ENABLE_PUSH, INITIAL_WINDOW_SIZE and
         // MAX_FRAME_SIZE. Keep malformed peers entirely in memory.
         let invalid = [
-            (0, 0, vec![0; 5]),                    // truncated entry
-            (1, 0, vec![]),                        // SETTINGS on nonzero stream
-            (0, 1, vec![0; 6]),                    // ACK with payload
-            (0, 0, vec![0, 2, 0, 0, 0, 2]),       // ENABLE_PUSH > 1
-            (0, 0, vec![0, 4, 0x80, 0, 0, 0]),    // window > 2^31 - 1
-            (0, 0, vec![0, 5, 0, 0, 0, 1]),       // frame size below 16 KiB
-            (0, 0, vec![0, 5, 1, 0, 0, 0]),       // frame size above 2^24 - 1
+            (0, 0, vec![0; 5]),                // truncated entry
+            (1, 0, vec![]),                    // SETTINGS on nonzero stream
+            (0, 1, vec![0; 6]),                // ACK with payload
+            (0, 0, vec![0, 2, 0, 0, 0, 2]),    // ENABLE_PUSH > 1
+            (0, 0, vec![0, 4, 0x80, 0, 0, 0]), // window > 2^31 - 1
+            (0, 0, vec![0, 5, 0, 0, 0, 1]),    // frame size below 16 KiB
+            (0, 0, vec![0, 5, 1, 0, 0, 0]),    // frame size above 2^24 - 1
         ];
         for (stream_id, flags, payload) in invalid {
-            let (mut server, _peer) =
-                http2_server_after_settings(stream_id, flags, &payload).await;
-            let result = tokio::time::timeout(
-                std::time::Duration::from_secs(1),
-                server.accept(),
-            )
-            .await
-            .expect("invalid SETTINGS should be processed");
+            let (mut server, _peer) = http2_server_after_settings(stream_id, flags, &payload).await;
+            let result = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+                .await
+                .expect("invalid SETTINGS should be processed");
             assert!(result.is_none() || result.unwrap().is_err(), "{payload:?}");
         }
     }
@@ -1221,14 +1218,12 @@ mod tests {
             .push_request(pushed)
             .expect("client permits server push");
         pushed_response.send_reset(h2::Reason::CANCEL);
-        assert!(
-            pushed_response
-                .send_response(
-                    http::Response::builder().status(200).body(()).unwrap(),
-                    true
-                )
-                .is_err()
-        );
+        assert!(pushed_response
+            .send_response(
+                http::Response::builder().status(200).body(()).unwrap(),
+                true
+            )
+            .is_err());
     }
 
     #[test]
@@ -1473,6 +1468,74 @@ mod tests {
         let mut reply = [0_u8; 5];
         client.read_exact(&mut reply).await.unwrap();
         assert_eq!(&reply, b"reply");
+    }
+
+    // Trailers terminate an HTTP/2 body but are not tunnel bytes. Exercise the
+    // boundary through h2's in-memory transport; the adapter must expose only
+    // DATA and then EOF, and HTTP's header-name parser rejects pseudo names as
+    // trailer-field names before serialization.
+    #[tokio::test]
+    async fn http2_underlay_ignores_trailers_and_rejects_invalid_trailer_names() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let (mut client_conn, client_driver) = h2::client::Builder::new()
+            .handshake::<_, Bytes>(client_io)
+            .await
+            .unwrap();
+        let mut server_conn = h2::server::Builder::new()
+            .handshake::<_, Bytes>(server_io)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = client_driver.await;
+        });
+
+        let request = http::Request::builder()
+            .method("POST")
+            .uri("/trailers")
+            .body(())
+            .unwrap();
+        let (_response, mut send) = client_conn.send_request(request, false).unwrap();
+        let (request, mut respond) = server_conn.accept().await.unwrap().unwrap();
+        let response_send = respond
+            .send_response(
+                http::Response::builder().status(200).body(()).unwrap(),
+                false,
+            )
+            .unwrap();
+        tokio::spawn(async move { while server_conn.accept().await.is_some() {} });
+
+        send.send_data(Bytes::from_static(b"payload"), false)
+            .unwrap();
+        let mut trailers = http::HeaderMap::new();
+        trailers.insert("x-checksum", http::HeaderValue::from_static("abc"));
+        send.send_trailers(trailers).unwrap();
+        let mut app = super::spawn_http2_io(response_send, request.into_body());
+        let mut got = Vec::new();
+        app.read_to_end(&mut got).await.unwrap();
+        assert_eq!(got, b"payload");
+
+        assert!(http::HeaderName::from_bytes(b":status").is_err());
+    }
+
+    #[tokio::test]
+    async fn http2_rejects_truncated_trailer_frame() {
+        let (mut peer, server_io) = duplex(1024);
+        let mut wire = HTTP2_PREFACE.to_vec();
+        wire.extend_from_slice(&raw_frame(4, 0, 0, &[]));
+        // Complete request HEADERS, then cut off the following trailer HEADERS
+        // frame after two of its advertised five HPACK bytes.
+        wire.extend_from_slice(&raw_frame(1, 4, 1, &[0x83, 0x86, 0x84]));
+        wire.extend_from_slice(&[0, 0, 5, 1, 4, 0, 0, 0, 1, 0x83, 0x86]);
+        peer.write_all(&wire).await.unwrap();
+        peer.shutdown().await.unwrap();
+        let mut server = h2::server::Builder::new()
+            .handshake::<_, Bytes>(server_io)
+            .await
+            .unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+            .await
+            .expect("truncated frame must not hang");
+        assert!(matches!(result, Some(Err(_)) | None));
     }
 
     // The smallest supported stream window is 65,535 bytes. Transfer several
