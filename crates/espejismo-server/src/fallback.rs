@@ -324,6 +324,59 @@ mod tests {
     }
 
     #[test]
+    fn empty_oversized_and_malformed_sni_client_hellos_are_not_http() {
+        // The fallback classifier must not interpret any TLS-shaped input as
+        // HTTP, even when the SNI extension is empty, malformed, or advertises
+        // lengths larger than the bytes received. This test intentionally
+        // exercises routing classification, not TLS parser validity.
+        let empty_sni_list = [
+            0x16, 0x03, 0x01, 0x00, 0x08, // TLS record
+            0x01, 0x00, 0x00, 0x04, // minimal ClientHello body
+            0x00, 0x00, 0x00, 0x00, // SNI extension with empty server-name list
+        ];
+        let dangling_extension = [
+            0x16, 0x03, 0x01, 0x00, 0x2a, // record
+            0x01, 0x00, 0x00, 0x26, // ClientHello
+            0x03, 0x03, // legacy_version
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // random
+            0x00, 0x00, 0x02, 0x13, 0x01, 0x01, 0x00, // sid, cipher, compression
+            0x00, 0x01, // extensions length
+            0x00, // malformed dangling extension byte
+        ];
+        let oversized_sni = [
+            0x16, 0x03, 0x01, 0xff, 0xff, // oversized TLS record length
+            0x01, 0xff, 0xff, 0xff, // oversized handshake length
+            0x03, 0x03, 0x00, 0x00, 0x00, 0x00, // truncated hello
+        ];
+        let malformed_sni = [
+            0x16, 0x03, 0x01, 0x00, 0x10, // record
+            0x01, 0x00, 0x00, 0x0c, // short ClientHello
+            0x03, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x13, 0x01, 0x01, 0x00, 0x00,
+            0x20, // extensions claim more bytes than present
+            0x00, 0x00, 0x00, 0x1c, 0x00, 0x1a, 0x00, 0x00, 0x17, b'e', b'x',
+        ];
+
+        for (label, input) in [
+            ("empty SNI list", empty_sni_list.as_slice()),
+            ("dangling SNI extension", dangling_extension.as_slice()),
+            ("oversized SNI record", oversized_sni.as_slice()),
+            ("malformed SNI extension", malformed_sni.as_slice()),
+        ] {
+            assert!(
+                !looks_like_http_probe(input),
+                "{label} ClientHello must not select HTTP fallback"
+            );
+            for end in 0..=input.len() {
+                assert!(
+                    !looks_like_http_probe(&input[..end]),
+                    "{label} ClientHello prefix of length {end} must not select HTTP fallback"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn builtin_fallback_response_has_browser_like_headers() {
         let fallback = FallbackHttpRuntime {
             enabled: true,
