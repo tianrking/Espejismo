@@ -1073,6 +1073,55 @@ mod tests {
         assert!(respond.push_request(pushed).is_err());
     }
 
+    // Push is not used by the tunnel. Pin the enabled-peer boundary as well as
+    // cancellation before headers are sent: after RST_STREAM, a response cannot
+    // be started on the promised stream.
+    #[tokio::test]
+    async fn http2_server_push_promise_can_be_cancelled() {
+        let (client_io, server_io) = duplex(4096);
+        let (mut client, client_driver) = h2::client::Builder::new()
+            .handshake::<_, Bytes>(client_io)
+            .await
+            .unwrap();
+        let mut server = h2::server::Builder::new()
+            .handshake::<_, Bytes>(server_io)
+            .await
+            .unwrap();
+        tokio::spawn(async move {
+            let _ = client_driver.await;
+        });
+
+        let request = http::Request::builder()
+            .method("GET")
+            .uri("/")
+            .body(())
+            .unwrap();
+        let (_response, _send) = client.send_request(request, true).unwrap();
+        let (_request, mut respond) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+                .await
+                .expect("request should reach server")
+                .expect("connection remains open")
+                .unwrap();
+        let pushed = http::Request::builder()
+            .method("GET")
+            .uri("/asset")
+            .body(())
+            .unwrap();
+        let mut pushed_response = respond
+            .push_request(pushed)
+            .expect("client permits server push");
+        pushed_response.send_reset(h2::Reason::CANCEL);
+        assert!(
+            pushed_response
+                .send_response(
+                    http::Response::builder().status(200).body(()).unwrap(),
+                    true
+                )
+                .is_err()
+        );
+    }
+
     #[test]
     fn websocket_accept_matches_rfc_example() {
         assert_eq!(
