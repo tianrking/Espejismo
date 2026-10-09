@@ -1116,6 +1116,82 @@ mod test {
     }
 
     #[test]
+    fn exhausted_receive_window_is_restored_after_buffer_is_consumed() {
+        let rt = rt();
+        rt.block_on(async {
+            let (_frame_sender, frame_receiver) = channel(2);
+            let (unbound_sender, mut unbound_receiver) = unbounded();
+            let mut stream = StreamHandle::new(
+                1,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                INITIAL_STREAM_WINDOW,
+            );
+            stream.state = StreamState::Established;
+            stream.recv_window = 0;
+            stream
+                .read_buf
+                .push(BytesMut::zeroed(INITIAL_STREAM_WINDOW as usize));
+
+            // Buffered bytes still occupy the entire receive budget, so no
+            // credit may be re-advertised while the application has not read them.
+            stream.send_window_update().unwrap();
+            assert_eq!(stream.recv_window(), 0);
+            assert!(unbound_receiver.next().now_or_never().is_none());
+
+            stream.read_buf.clear();
+            stream.send_window_update().unwrap();
+            match unbound_receiver.next().await.unwrap() {
+                StreamEvent::Frame(frame) => {
+                    assert_eq!(frame.ty(), Type::WindowUpdate);
+                    assert_eq!(frame.length(), INITIAL_STREAM_WINDOW);
+                }
+                _ => panic!("consuming the buffer must advertise receive credit"),
+            }
+            assert_eq!(stream.recv_window(), INITIAL_STREAM_WINDOW);
+        });
+    }
+
+    #[test]
+    fn zero_send_window_requires_positive_update_to_resume_writer() {
+        let rt = rt();
+        rt.block_on(async {
+            let (_frame_sender, frame_receiver) = channel(2);
+            let (unbound_sender, _unbound_receiver) = unbounded();
+            let mut stream = StreamHandle::new(
+                1,
+                unbound_sender,
+                frame_receiver,
+                StreamState::Init,
+                INITIAL_STREAM_WINDOW,
+            );
+            stream.state = StreamState::Established;
+            stream.send_window = 0;
+
+            let blocked = stream.write(b"x").now_or_never();
+            assert!(
+                blocked.is_none(),
+                "an exhausted window must backpressure writes"
+            );
+
+            stream
+                .handle_window_update(&Frame::new_window_update(Flags::default(), 1, 0))
+                .unwrap();
+            assert_eq!(stream.send_window(), 0);
+            let blocked = stream.write(b"x").now_or_never();
+            assert!(blocked.is_none(), "zero credit must not resume the writer");
+
+            stream
+                .handle_window_update(&Frame::new_window_update(Flags::default(), 1, 1))
+                .unwrap();
+            assert_eq!(stream.send_window(), 1);
+            assert_eq!(stream.write(b"x").await.unwrap(), 1);
+            assert_eq!(stream.send_window(), 0);
+        });
+    }
+
+    #[test]
     fn invalid_receive_credit_does_not_emit_wrapped_window_update() {
         let rt = rt();
         rt.block_on(async {
