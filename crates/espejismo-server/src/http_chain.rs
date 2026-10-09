@@ -300,6 +300,94 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn tls12_ocsp_policy_rejection_fails_handshake_for_missing_or_malformed_staple() {
+        use tokio_rustls::TlsConnector;
+        use tokio_rustls::rustls::{ClientConfig, ServerConfig, version};
+
+        // rustls forwards OCSP bytes to the configured verifier; it does not
+        // apply an OCSP freshness policy on its own. This strict test verifier
+        // rejects absent and malformed responses and verifies that the error
+        // reaches the TLS handshake caller.
+        for staple in [Vec::new(), vec![0x30]] {
+            let cert = CertificateDer::from(
+                include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+            );
+            let key = PrivateKeyDer::try_from(
+                include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+            )
+            .unwrap();
+            let server_config = ServerConfig::builder_with_protocol_versions(&[&version::TLS12])
+                .with_no_client_auth()
+                .with_single_cert_with_ocsp(vec![cert], key, staple.clone())
+                .unwrap();
+            let client_config = ClientConfig::builder_with_protocol_versions(&[&version::TLS12])
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(OcspRejectingVerifier))
+                .with_no_client_auth();
+
+            let (client, server) = duplex(16 * 1024);
+            let server_task = tokio::spawn(async move {
+                TlsAcceptor::from(Arc::new(server_config))
+                    .accept(server)
+                    .await
+            });
+            let result = TlsConnector::from(Arc::new(client_config))
+                .connect(ServerName::try_from("localhost").unwrap(), client)
+                .await;
+            assert!(result.is_err(), "staple {staple:?} should be rejected");
+            assert!(server_task.await.unwrap().is_err());
+        }
+    }
+
+    #[derive(Debug)]
+    struct OcspRejectingVerifier;
+
+    impl ServerCertVerifier for OcspRejectingVerifier {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            ocsp_response: &[u8],
+            _now: UnixTime,
+        ) -> Result<
+            tokio_rustls::rustls::client::danger::ServerCertVerified,
+            tokio_rustls::rustls::Error,
+        > {
+            if ocsp_response.is_empty() || ocsp_response.first() != Some(&0x30) {
+                return Err(tokio_rustls::rustls::Error::General(
+                    "OCSP staple missing or malformed".into(),
+                ));
+            }
+            Err(tokio_rustls::rustls::Error::General(
+                "OCSP response rejected by test policy".into(),
+            ))
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+            AlpnTestVerifier.verify_tls12_signature(message, cert, dss)
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+            AlpnTestVerifier.verify_tls13_signature(message, cert, dss)
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            AlpnTestVerifier.supported_verify_schemes()
+        }
+    }
+
     #[derive(Debug)]
     struct OcspCaptureVerifier(Arc<std::sync::Mutex<Option<Vec<u8>>>>);
 
