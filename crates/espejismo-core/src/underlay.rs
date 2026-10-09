@@ -317,7 +317,10 @@ fn spawn_http2_io(
                     }
                 }
                 Some(Err(err)) => {
-                    debug!(error = %err, "http2 underlay reader stopped");
+                    // A peer reset is a stream-local termination. Keep its
+                    // HTTP/2 reason visible for diagnosis while exposing EOF
+                    // to the byte-stream adapter.
+                    debug!(error = %err, reason = ?err.reason(), "http2 underlay reader stopped");
                     let _ = app_writer.shutdown().await;
                     break;
                 }
@@ -1306,9 +1309,11 @@ mod tests {
         // extension, compressed frames must fail before reaching tunnel bytes.
         let (mut wire, mut peer) = duplex(32);
         peer.write_all(&[0xc2, 0x00]).await.unwrap();
-        assert!(super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
-            .await
-            .is_err());
+        assert!(
+            super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
+                .await
+                .is_err()
+        );
     }
 
     #[test]
@@ -1627,7 +1632,7 @@ mod tests {
     // A peer RST_STREAM must terminate the adapter's application read side.
     // Use in-memory transport so this protocol edge case also runs in the sandbox.
     #[tokio::test]
-    async fn http2_underlay_closes_reader_after_peer_reset() {
+    async fn http2_underlay_closes_reader_after_unknown_peer_reset() {
         let (client_io, server_io) = duplex(64 * 1024);
         let (mut client_conn, client_driver) = h2::client::Builder::new()
             .handshake::<_, bytes::Bytes>(client_io)
@@ -1659,6 +1664,9 @@ mod tests {
 
         let response = response.await.unwrap();
         let mut app = super::spawn_http2_io(client_send, response.into_body());
+        server_send.send_reset(h2::Reason::from(0xdead_beef));
+        // Repeating a reset for the already-closed stream must not turn the
+        // stream-local termination into an application read hang.
         server_send.send_reset(h2::Reason::CANCEL);
         let mut byte = [0_u8; 1];
         assert_eq!(
@@ -1668,6 +1676,31 @@ mod tests {
                 .unwrap(),
             0
         );
+    }
+
+    #[tokio::test]
+    async fn http2_rst_stream_rejects_zero_stream_and_non_four_byte_payload() {
+        // RFC 9113 §6.4 requires a nonzero stream ID and exactly four payload
+        // bytes. The h2 decoder owns these wire checks; assert malformed
+        // frames terminate the connection promptly rather than being accepted
+        // as stream resets.
+        for (stream_id, payload) in [
+            (0, vec![0; 4]),
+            (1, vec![0; 3]),
+            (1, vec![0; 5]),
+            (3, vec![0; 4]), // valid framing, but stream 3 is idle
+        ] {
+            let wire_frame = raw_frame(3, 0, stream_id, &payload);
+            let (mut server, _peer) = http2_server_after_raw_frames(&wire_frame).await;
+            let result = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+                .await
+                .expect("invalid RST_STREAM must be processed");
+            assert!(
+                result.is_none() || result.unwrap().is_err(),
+                "stream {stream_id}, len {}",
+                payload.len()
+            );
+        }
     }
 
     // h2 exposes HTTP/2 PING as a connection-level health check. Keep its

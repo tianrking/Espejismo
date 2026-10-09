@@ -2,35 +2,39 @@
 
 ## Findings and approach
 
-The HTTP/2 underlay adapts each h2 request stream to a Tokio duplex stream.
-`spawn_http2_io` currently treats an error from `RecvStream::data()` as the
-end of the application read side, while a failed `SendStream::send_data`
-stops the application-to-peer copy task. The existing round-trip test covers
-normal data but did not exercise stream cancellation. H2 RST_STREAM is scoped
-to one stream; it must not be mistaken for a connection failure or hang the
-adapter reader.
+The HTTP/2 underlay delegates wire parsing and stream state to the Rust `h2`
+crate. Existing adapter coverage checked a peer `CANCEL` reset, but did not
+cover malformed RST_STREAM framing, the unknown error-code boundary, or a
+repeated reset. Per RFC 9113 §6.4, RST_STREAM has a nonzero stream ID and an
+exactly four-byte error code; error-code values unknown to an implementation
+remain valid and should still terminate only that stream.
 
-Following the boundary-focused testing style used by the project's Yamux and
-H2 PING tests, this change adds an in-memory h2 client/server test that sends
-`RST_STREAM(CANCEL)` from the peer after a successful response. The adapter
-must then return EOF to its application reader within a bounded timeout. This
-uses Tokio `duplex`, so it needs no loopback socket. It does not change tunnel
-protocol semantics or the project's positioning.
+This follows the project's existing in-memory raw-frame test style for HTTP/2
+SETTINGS and PRIORITY. The runtime adapter now includes the h2 reset reason in
+its existing reader-stop diagnostic; it still maps stream termination to EOF
+for the byte-stream interface. No tunnel protocol or positioning changes.
 
 ## Changes and expected effect
 
-- Added `http2_underlay_closes_reader_after_peer_reset` in
-  `crates/espejismo-core/src/underlay.rs`.
-- Runtime behavior is unchanged; the test locks in the existing reset-to-EOF
-  behavior and guards against a stalled read task. Expected throughput change:
-  0%.
+- Added RST_STREAM decoder cases for stream zero, an idle stream, and payload
+  lengths 3 and 5.
+- Extended the peer-reset adapter test to send an unknown error code followed
+  by a repeated reset and assert bounded EOF.
+- Included `h2::Error::reason()` in the adapter reader-stop debug event.
+- Expected throughput change: 0%; the change is protocol diagnostics and test
+  coverage only.
 
-## Experiment
+## Validation
 
-- `cargo test -p espejismo-core --offline http2_underlay_closes_reader_after_peer_reset -- --nocapture`:
-  passed (1 targeted unit test).
-- `cargo test -p espejismo-core --offline`: passed (236 unit tests passed,
-  1 ignored; 1 config example integration test, 10 HTTP proxy integration
-  tests, and 1 doctest passed). The new RST_STREAM test exercised a successful
-  response followed by peer cancellation and verified bounded EOF delivery.
-- No throughput benchmark was run because this is a test-only runtime change.
+Validation passed:
+
+- `$HOME/.cargo/bin/cargo test --offline -p espejismo-core http2_rst_stream -- --nocapture`:
+  1 boundary test passed (zero/idle stream IDs and payload lengths 3 and 5).
+- `$HOME/.cargo/bin/cargo test --offline -p espejismo-core http2_underlay_closes_reader_after_unknown_peer_reset -- --nocapture`:
+  1 adapter test passed (unknown error code, repeated reset, bounded EOF).
+- `$HOME/.cargo/bin/cargo test --offline -p espejismo-core`: 297 unit tests
+  passed, 1 loopback test ignored, 1 config example test, 10 HTTP proxy tests,
+  and 1 doctest passed.
+
+The protocol tests use in-memory Tokio duplex transports; no loopback socket is
+required. No performance benchmark applies.
