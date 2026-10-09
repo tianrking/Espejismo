@@ -99,6 +99,9 @@ fn https_proxy_tls_config() -> Arc<ClientConfig> {
             // TLS key logging exposes traffic secrets and is intended only for
             // explicitly configured diagnostics. This proxy path never opts in.
             config.key_log = Arc::new(tokio_rustls::rustls::NoKeyLog);
+            // CONNECT changes proxy state and must never be replayed as TLS
+            // 1.3 early data. Keep 0-RTT disabled even if rustls defaults change.
+            config.enable_early_data = false;
             // HTTP CONNECT is used without an application protocol. Keep this
             // explicit so a future TLS config change cannot negotiate h2/HTTP.
             config.alpn_protocols.clear();
@@ -369,6 +372,7 @@ mod tests {
         // Simulate a client willing to send 0-RTT. The server's ticket must
         // still refuse early application data because CONNECT is stateful.
         client_config.enable_early_data = true;
+        assert!(client_config.enable_early_data);
         let client_config = Arc::new(client_config);
 
         async fn handshake(
