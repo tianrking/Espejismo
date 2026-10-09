@@ -1,10 +1,11 @@
 //! Thread-safe snapshots of tunnel lifecycle and lane health.
 
-use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
+
+const MAX_RECENT_ERRORS: usize = 8;
 
 #[derive(Clone, Debug, Serialize)]
 pub struct RuntimeStateSnapshot {
@@ -138,12 +139,12 @@ fn lock_runtime_state(state: &Mutex<RuntimeStateSnapshot>) -> MutexGuard<'_, Run
 }
 
 fn push_recent_error(errors: &mut Vec<String>, error: String) {
-    let mut queue: VecDeque<String> = errors.drain(..).collect();
-    queue.push_back(error);
-    while queue.len() > 8 {
-        queue.pop_front();
+    // Keep the snapshot's public Vec representation without rebuilding a queue
+    // on every error; the bounded shift is cheaper and retains existing semantics.
+    if errors.len() == MAX_RECENT_ERRORS {
+        errors.remove(0);
     }
-    *errors = queue.into();
+    errors.push(error);
 }
 
 fn unix_now_secs() -> u64 {
@@ -187,5 +188,77 @@ mod tests {
         let state = RuntimeState::default();
         state.add_tunnel_lane_bytes(99, 5, 9);
         assert!(state.snapshot().tunnel_lanes.is_empty());
+    }
+
+    #[test]
+    fn connection_and_failure_transitions_update_counters_consistently() {
+        let state = RuntimeState::default();
+        state.record_error("first");
+        state.record_error("second");
+        state.record_connect_success();
+
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.tunnel_state, "connected");
+        assert_eq!(snapshot.consecutive_failures, 0);
+        assert_eq!(snapshot.tunnel_reconnect_count, 1);
+        assert_eq!(snapshot.recent_errors, ["first", "second"]);
+    }
+
+    #[test]
+    fn recent_errors_keep_only_the_newest_eight_in_order() {
+        let state = RuntimeState::default();
+        for index in 0..10 {
+            state.record_error(format!("error-{index}"));
+        }
+
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.tunnel_state, "degraded");
+        assert_eq!(snapshot.consecutive_failures, 10);
+        assert_eq!(snapshot.recent_errors.len(), 8);
+        assert_eq!(snapshot.recent_errors.first().unwrap(), "error-2");
+        assert_eq!(snapshot.recent_errors.last().unwrap(), "error-9");
+    }
+
+    #[test]
+    fn concurrent_updates_are_not_lost() {
+        let state = RuntimeState::default();
+        let mut workers = Vec::new();
+        for _ in 0..8 {
+            let state = state.clone();
+            workers.push(std::thread::spawn(move || {
+                for _ in 0..250 {
+                    state.record_connect_success();
+                    state.record_error("parallel");
+                }
+            }));
+        }
+        for worker in workers {
+            worker.join().unwrap();
+        }
+
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.tunnel_reconnect_count, 2_000);
+        assert_eq!(snapshot.consecutive_failures, 1);
+        assert_eq!(snapshot.recent_errors.len(), 8);
+        assert!(snapshot.recent_errors.iter().all(|error| error == "parallel"));
+    }
+
+    #[test]
+    fn counters_saturate_instead_of_wrapping() {
+        let state = RuntimeState::default();
+        {
+            let mut snapshot = super::lock_runtime_state(&state.inner);
+            snapshot.tunnel_reconnect_count = u64::MAX;
+        }
+        state.record_connect_success();
+        {
+            let mut snapshot = super::lock_runtime_state(&state.inner);
+            snapshot.consecutive_failures = u64::MAX;
+        }
+        state.record_error("overflow boundary");
+
+        let snapshot = state.snapshot();
+        assert_eq!(snapshot.tunnel_reconnect_count, u64::MAX);
+        assert_eq!(snapshot.consecutive_failures, u64::MAX);
     }
 }
