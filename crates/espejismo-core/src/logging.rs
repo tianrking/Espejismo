@@ -135,6 +135,32 @@ fn safe_log_filter(level: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::safe_log_filter;
+    use crate::crypto::HandshakeConfig;
+    use crate::ingress::ProxyAuth;
+
+    // Debug output is commonly attached to tracing events. Keep the secret
+    // boundary checks beside logging so accidental changes to these Debug
+    // implementations are caught as a logging regression.
+    #[test]
+    fn secret_bearing_debug_values_do_not_expose_keys_or_tokens() {
+        let psk = "logging-test-private-psk";
+        let handshake = HandshakeConfig::new(psk.as_bytes().to_vec(), 30, 128, 0);
+        let auth = ProxyAuth {
+            username: "logging-test-private-user".into(),
+            password: "logging-test-private-token".into(),
+        };
+
+        let logged = format!("handshake={handshake:?} auth={auth:?}");
+
+        assert!(logged.contains("<redacted>"));
+        for secret in [
+            psk,
+            "logging-test-private-user",
+            "logging-test-private-token",
+        ] {
+            assert!(!logged.contains(secret), "secret appeared in {logged}");
+        }
+    }
 
     #[test]
     fn global_debug_only_enables_application_debug() {
