@@ -1,16 +1,16 @@
 use std::collections::VecDeque;
 use std::pin::Pin;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use espejismo_core::{
-    connect_handshake, connect_http2_underlay, connect_tcp_stream, connect_websocket_underlay,
-    spawn_frame_transport, split_authority, AdaptiveEligibility, FrameOptions, HandshakeConfig,
-    Metrics, PortHoppingConfig, RuntimeState, StreamPriority, TcpConfig, TransportConnector,
-    TransportTarget, TunnelLaneSnapshot, TunnelPoolConfig, UnderlayConfig, UnderlayMode,
+    AdaptiveEligibility, FrameOptions, HandshakeConfig, Metrics, PortHoppingConfig, RuntimeState,
+    StreamPriority, TcpConfig, TransportConnector, TransportTarget, TunnelLaneSnapshot,
+    TunnelPoolConfig, UnderlayConfig, UnderlayMode, connect_handshake, connect_http2_underlay,
+    connect_tcp_stream, connect_websocket_underlay, spawn_frame_transport, split_authority,
 };
 use futures::StreamExt;
 use rand::Rng;
@@ -20,7 +20,7 @@ use tokio::time::timeout;
 use tracing::debug;
 
 use crate::adaptive::AdaptiveThroughput;
-use crate::mux::{client_session, MuxControl, MuxRuntimeConfig, MuxStream};
+use crate::mux::{MuxControl, MuxRuntimeConfig, MuxStream, client_session};
 
 // DNS, TCP, and handshake share a fixed ceiling so pool setup cannot stall indefinitely.
 const LANE_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
@@ -307,7 +307,7 @@ impl TunnelManager {
             handshake: config.handshake,
             frames,
             adaptive: adaptive.clone(),
-            max_reconnect_attempts: config.pool.max_reconnect_attempts.max(1),
+            max_reconnect_attempts: reconnect_attempt_limit(config.pool.max_reconnect_attempts),
             max_connection_age: Duration::from_secs(config.pool.max_connection_age_secs.max(1)),
             min_connections: config
                 .pool
@@ -418,7 +418,7 @@ impl TunnelManager {
         priority: StreamPriority,
     ) -> Result<MuxStream> {
         let started = Instant::now();
-        let max_attempts = self.max_reconnect_attempts.max(1);
+        let max_attempts = reconnect_attempt_limit(self.max_reconnect_attempts);
         let mut last_error = None;
         for attempt in 1..=max_attempts {
             if let Err(err) = self.ensure_lane_control(lane.clone()).await {
@@ -897,6 +897,10 @@ fn reconnect_backoff(failures: u32, jitter_percent: u64) -> Duration {
     Duration::from_millis((base_ms.saturating_mul(jitter_percent) / 100).min(16_000))
 }
 
+fn reconnect_attempt_limit(configured: u32) -> u32 {
+    configured.max(1)
+}
+
 async fn apply_reconnect_backoff(lane: &TunnelLane) {
     let failures = lane.health.lock().await.consecutive_failures;
     tokio::time::sleep(sample_reconnect_backoff(failures)).await;
@@ -940,10 +944,10 @@ mod tests {
     use std::time::{Duration, Instant};
 
     use super::{
-        connection_expired, idle_long_enough_at, lane_kinds, lane_score, reconnect_backoff,
-        record_lane_connected, record_lane_failure, sample_reconnect_backoff,
-        select_and_reserve_lane, should_prune_idle_lane, stream_open_failure,
-        update_recent_throughput, LaneHealth, LaneKind, TunnelLane,
+        LaneHealth, LaneKind, TunnelLane, connection_expired, idle_long_enough_at, lane_kinds,
+        lane_score, reconnect_attempt_limit, reconnect_backoff, record_lane_connected,
+        record_lane_failure, sample_reconnect_backoff, select_and_reserve_lane,
+        should_prune_idle_lane, stream_open_failure, update_recent_throughput,
     };
     use espejismo_core::{StreamPriority, TunnelPoolConfig};
     use std::sync::Arc;
@@ -1318,5 +1322,13 @@ mod tests {
         assert!(message.contains("lane 2"));
         assert!(message.contains("3 attempts"));
         assert!(message.contains("connection reset"));
+    }
+
+    #[test]
+    fn reconnect_attempt_limit_keeps_one_attempt_minimum_and_configured_boundary() {
+        assert_eq!(reconnect_attempt_limit(0), 1);
+        assert_eq!(reconnect_attempt_limit(1), 1);
+        assert_eq!(reconnect_attempt_limit(2), 2);
+        assert_eq!(reconnect_attempt_limit(u32::MAX), u32::MAX);
     }
 }
