@@ -33,3 +33,8 @@ Compatible JSON fields:
 does not replace binaries automatically; it only reports availability and the
 release URL so package managers, service managers, or deployment scripts can
 decide how to roll forward.
+
+Numeric dotted tags are compared by component, with trailing zero components
+treated as equivalent (`1.2` and `1.2.0`). Tags that are not entirely numeric
+use a string inequality fallback. This metadata check does not verify artifact
+signatures or perform installation and rollback.
