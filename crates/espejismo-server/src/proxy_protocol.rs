@@ -253,6 +253,33 @@ mod tests {
     }
 
     #[test]
+    fn rejects_every_truncated_v1_and_v2_prefix() {
+        let v1 = b"PROXY TCP4 192.0.2.1 198.51.100.2 1234 443\r\n";
+        for end in 0..v1.len() {
+            assert!(parse_v1(&v1[..end]).is_err(), "accepted v1 prefix of {end} bytes");
+        }
+
+        let v2 = v2_header(0x11, &[192, 0, 2, 1, 198, 51, 100, 2, 0, 80, 1, 187]);
+        for end in 0..v2.len() {
+            assert!(parse_v2(&v2[..end]).is_err(), "accepted v2 prefix of {end} bytes");
+        }
+    }
+
+    #[test]
+    fn rejects_invalid_v2_command_family_and_declared_oversize_block() {
+        let mut invalid_command = v2_header(0x11, &[0; 12]);
+        invalid_command[12] = 0x20; // Version 2 with LOCAL command is unsupported here.
+        assert_eq!(parse_v2(&invalid_command), Err("unsupported v2 version or command"));
+
+        let invalid_family = v2_header(0x99, &[0; 12]);
+        assert_eq!(parse_v2(&invalid_family), Err("unsupported v2 address family"));
+
+        let mut oversized = v2_header(0x11, &[0; 12]);
+        oversized[14..16].copy_from_slice(&u16::MAX.to_be_bytes());
+        assert_eq!(parse_v2(&oversized), Err("incomplete v2 address block or TLVs"));
+    }
+
+    #[test]
     fn validates_v2_tlv_framing_and_preserves_following_payload() {
         let mut valid = v2_header(0x11, &[192, 0, 2, 1, 198, 51, 100, 2, 0, 80, 1, 187]);
         valid.extend_from_slice(&[0xea, 0, 2, 0xaa, 0xbb]);
