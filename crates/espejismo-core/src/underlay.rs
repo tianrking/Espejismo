@@ -241,6 +241,12 @@ where
                         break;
                     }
                 }
+                Ok(Some(WsFrame::Close(payload))) => {
+                    let _ =
+                        write_ws_frame(&mut *ping_writer.lock().await, role, 0x8, &payload).await;
+                    let _ = app_writer.shutdown().await;
+                    break;
+                }
                 Ok(Some(WsFrame::Pong)) => {}
                 Ok(None) => {
                     let _ = app_writer.shutdown().await;
@@ -370,6 +376,7 @@ enum WsFrame {
     Data(Vec<u8>),
     Ping(Vec<u8>),
     Pong,
+    Close(Vec<u8>),
 }
 
 async fn read_ws_frame<R>(
@@ -452,7 +459,7 @@ where
                 std::str::from_utf8(&payload[2..])
                     .context("websocket close reason is not UTF-8")?;
             }
-            Ok(None)
+            Ok(Some(WsFrame::Close(payload)))
         }
         0x9 => Ok(Some(WsFrame::Ping(payload))),
         0xa => Ok(Some(WsFrame::Pong)),
@@ -785,6 +792,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn websocket_peer_close_is_acknowledged_and_disconnects_app_stream() {
+        let (mut peer, server_wire) = duplex(1024);
+        let mut app = super::spawn_websocket_io(server_wire, super::WebSocketRole::Client, 1024);
+        // An empty server CLOSE is unmasked; the client must return a masked CLOSE.
+        peer.write_all(&[0x88, 0x00]).await.unwrap();
+        let close = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            super::read_ws_frame(&mut peer, super::WebSocketRole::Server, 1024),
+        )
+        .await
+        .expect("close response should arrive")
+        .unwrap()
+        .unwrap();
+        assert!(matches!(close, super::WsFrame::Close(payload) if payload.is_empty()));
+        let mut byte = [0; 1];
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), app.read(&mut byte))
+                .await
+                .expect("app side should disconnect")
+                .unwrap(),
+            0
+        );
+    }
+
+    #[tokio::test]
     async fn websocket_close_frame_boundaries_validate_payload() {
         for payload in [Vec::new(), [0x03, 0xe8].into(), {
             let mut payload = vec![0x03, 0xe8]; // Normal closure (1000).
@@ -795,12 +827,13 @@ mod tests {
             wire_bytes.extend_from_slice(&payload);
             let (mut wire, mut peer) = duplex(256);
             peer.write_all(&wire_bytes).await.unwrap();
-            assert!(
+            assert!(matches!(
                 super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
                     .await
                     .unwrap()
-                    .is_none()
-            );
+                    .unwrap(),
+                super::WsFrame::Close(_)
+            ));
         }
 
         // A close frame cannot carry half a status code, an invalid code, or
