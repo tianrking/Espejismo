@@ -898,6 +898,54 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_required_fields_inside_user_entries() {
+        // Most top-level fields intentionally default when omitted. User
+        // entries are different: identity and PSK are required schema fields.
+        for (config, expected) in [
+            ("[[remote.users]]\npsk = 'secret'\n", "name"),
+            ("[[remote.users]]\nname = 'alice'\n", "psk"),
+        ] {
+            let err = parse_config(config).unwrap_err().to_string();
+            assert!(err.contains("missing field"), "{err}");
+            assert!(err.contains(expected), "expected {expected:?}, got {err}");
+        }
+    }
+
+    #[test]
+    fn rejects_wrong_types_across_config_schema_shapes() {
+        for (config, field, expected_type) in [
+            ("[local.tun]\nenabled = 1\n", "enabled", "bool"),
+            ("[remote]\nusers = 'alice'\n", "users", "sequence"),
+            ("[shared.tcp]\nnodelay = 'yes'\n", "nodelay", "bool"),
+            ("[local.tun]\nmtu = 70000\n", "mtu", "u16"),
+        ] {
+            let err = parse_config(config).unwrap_err().to_string();
+            assert!(err.contains(field), "expected field {field:?}, got {err}");
+            assert!(
+                err.to_ascii_lowercase()
+                    .contains(&expected_type.to_ascii_lowercase()),
+                "expected type {expected_type:?}, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_semantically_invalid_values_at_exact_boundaries() {
+        for (config, expected) in [
+            ("[shared]\nclock_skew_secs = 0\n", "clock_skew_secs"),
+            ("[local.tun]\nprefix = 33\n", "prefix must be in 0..=32"),
+            (
+                "[remote]\nhandshake_timeout_ms = 0\n",
+                "handshake_timeout_ms",
+            ),
+        ] {
+            let err = parse_config(config).unwrap_err().to_string();
+            assert!(err.contains(expected), "expected {expected:?}, got {err}");
+        }
+        parse_config("[local.tun]\nprefix = 32\n").expect("prefix upper bound is valid");
+    }
+
+    #[test]
     fn rejects_unknown_nested_config_fields() {
         let err = parse_config("[local.tun]\nenabeld = true\n")
             .unwrap_err()

@@ -36,6 +36,9 @@ Configuration sections and fields may be omitted; omitted values use the
 documented defaults. Supplied values are type-checked, and invalid TOML reports
 its source location. Unknown fields are rejected with a suggestion when a close
 field name exists, so typos do not silently fall back to defaults.
+Inside `remote.users`, `name` and `psk` are required for every entry; omitting
+either rejects the config. Fields at the top level and other sections may be
+omitted according to their defaults.
 
 ```bash
 espejismo-remote --config espejismo.toml
