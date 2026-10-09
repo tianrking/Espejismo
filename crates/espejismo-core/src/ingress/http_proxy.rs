@@ -230,8 +230,8 @@ fn rewrite_absolute_request(method: &str, path: &str, version: &str, lines: &[&s
         {
             continue;
         }
-        // Forwarded identity headers remain opaque client input. This proxy
-        // neither trusts them for access control nor synthesizes replacements.
+        // Forwarding metadata such as Via remains opaque client input. This
+        // proxy neither parses its chain nor synthesizes or normalizes entries.
         // Keep Expect: 100-continue intact. The upstream server owns the
         // interim response; the bidirectional proxy path relays it to the client.
         rewritten.push_str(line);
@@ -251,7 +251,10 @@ fn find_header_end(data: &[u8], search_from: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{accept_http_proxy, parse_content_length, validate_transfer_encoding};
+    use super::{
+        accept_http_proxy, parse_content_length, validate_transfer_encoding,
+        HTTP_PROXY_MAX_HEADER_SIZE,
+    };
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
 
     #[test]
@@ -333,6 +336,50 @@ mod tests {
                 .count(),
             2
         );
+        writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn via_header_is_opaque_at_the_header_size_boundary() {
+        let (mut client, mut proxy) = duplex(HTTP_PROXY_MAX_HEADER_SIZE + 64);
+        let prefix = b"GET http://example.test/ HTTP/1.1\r\nVia: 1.1 edge, 2.0 [2001:db8::1]:8080\r\nX-Note: ";
+        let suffix = b"\r\n\r\n";
+        let padding_len = HTTP_PROXY_MAX_HEADER_SIZE - prefix.len() - suffix.len();
+        let mut request = Vec::with_capacity(HTTP_PROXY_MAX_HEADER_SIZE + 8);
+        request.extend_from_slice(prefix);
+        request.resize(request.len() + padding_len, b'a');
+        request.extend_from_slice(suffix);
+        request.extend_from_slice(b"body");
+        let writer = tokio::spawn(async move {
+            client.write_all(&request).await.unwrap();
+        });
+
+        let target = accept_http_proxy(&mut proxy).await.unwrap();
+        assert_eq!(target.prebuffer_body_bytes, 0);
+        assert!(target
+            .prebuffer
+            .windows(b"Via: 1.1 edge, 2.0 [2001:db8::1]:8080\r\n".len())
+            .any(|window| window == b"Via: 1.1 edge, 2.0 [2001:db8::1]:8080\r\n"));
+        assert!(target.prebuffer.ends_with(b"\r\n\r\n"));
+        let mut body = [0; 4];
+        proxy.read_exact(&mut body).await.unwrap();
+        assert_eq!(&body, b"body");
+        writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn via_header_over_limit_is_rejected() {
+        let (mut client, mut proxy) = duplex(HTTP_PROXY_MAX_HEADER_SIZE + 64);
+        let prefix = b"GET http://example.test/ HTTP/1.1\r\nVia: ";
+        let mut request = Vec::with_capacity(HTTP_PROXY_MAX_HEADER_SIZE + 1);
+        request.extend_from_slice(prefix);
+        request.resize(HTTP_PROXY_MAX_HEADER_SIZE - 3, b'a');
+        request.extend_from_slice(b"\r\n\r\n");
+        let writer = tokio::spawn(async move {
+            client.write_all(&request).await.unwrap();
+        });
+
+        assert!(accept_http_proxy(&mut proxy).await.is_err());
         writer.await.unwrap();
     }
 
