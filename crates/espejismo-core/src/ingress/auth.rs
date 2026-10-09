@@ -28,6 +28,10 @@ impl ProxyAuth {
             "local.auth.username must be at most 255 bytes"
         );
         ensure!(
+            !self.password.is_empty(),
+            "local.auth.password must not be empty"
+        );
+        ensure!(
             self.password.len() <= u8::MAX as usize,
             "local.auth.password must be at most 255 bytes"
         );
@@ -90,5 +94,19 @@ mod debug_tests {
         assert!(auth.matches(b"user", b""));
         assert!(!auth.matches(b"user", b"x"));
         assert!(!auth.matches(b"user", b"\0"));
+    }
+
+    #[test]
+    fn validation_enforces_rfc1929_nonempty_credential_fields() {
+        let mut auth = auth();
+        assert!(auth.validate().is_ok());
+
+        auth.password.clear();
+        let error = auth.validate().unwrap_err().to_string();
+        assert!(error.contains("local.auth.password must not be empty"));
+
+        auth.password = "pass".into();
+        auth.username.clear();
+        assert!(auth.validate().is_err());
     }
 }

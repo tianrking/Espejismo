@@ -626,6 +626,13 @@ mod tests {
         assert!(matches!(result.unwrap(), SocksRequest::Connect(_)));
         assert_eq!(&response[..4], &[5, 2, 1, 0]);
 
+        let wrong_user = vec![
+            5, 1, 2, 1, 4, b'U', b's', b'e', b'r', 4, b'p', b'a', b's', b's',
+        ];
+        let (result, response) = exchange(wrong_user, Some(auth())).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 2, 1, 1]);
+
         let bad = vec![
             5, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4, b'n', b'o', b'p', b'e',
         ];
