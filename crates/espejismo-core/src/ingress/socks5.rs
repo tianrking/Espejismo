@@ -337,6 +337,9 @@ pub fn build_udp_packet(target: &SocksTarget, payload: &[u8]) -> Result<Vec<u8>>
         output.extend_from_slice(&ip.octets());
     } else {
         let host = target.host.as_bytes();
+        if host.is_empty() || host.contains(&0) {
+            bail!("invalid SOCKS UDP domain name");
+        }
         if host.len() > u8::MAX as usize {
             bail!("SOCKS UDP domain name too long");
         }
@@ -421,6 +424,7 @@ mod tests {
         SocksRequest, SocksTarget, SocksUdpReassembler,
     };
     use crate::ingress::ProxyAuth;
+    use std::net::Ipv6Addr;
     use std::time::{Duration, Instant};
 
     fn auth() -> ProxyAuth {
@@ -466,6 +470,40 @@ mod tests {
         assert!(matches!(result.unwrap(), SocksRequest::Connect(target)
             if target.host == "remote.test.invalid" && target.port == 443));
         assert_eq!(&response[2..4], &[5, 0]);
+    }
+
+    #[tokio::test]
+    async fn connect_ipv6_literals_preserve_address_and_port_boundaries() {
+        for (octets, port, expected_host) in [
+            ([0_u8; 16], 0, "::"),
+            (
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                u16::MAX,
+                "::1",
+            ),
+            (
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 192, 0, 2, 1],
+                443,
+                "::ffff:192.0.2.1",
+            ),
+        ] {
+            let mut request = vec![5, 1, 0, 5, 1, 0, 4];
+            request.extend_from_slice(&octets);
+            request.extend_from_slice(&port.to_be_bytes());
+            let (result, response) = exchange(request, None).await;
+            let target = match result.unwrap() {
+                SocksRequest::Connect(target) => target,
+                SocksRequest::UdpAssociate => panic!("expected CONNECT"),
+            };
+            assert_eq!(
+                target.host.parse::<std::net::Ipv6Addr>().unwrap().octets(),
+                octets
+            );
+            assert_eq!(target.host, expected_host);
+            assert_eq!(target.port, port);
+            assert_eq!(target.authority(), format!("[{expected_host}]:{port}"));
+            assert_eq!(&response[2..4], &[5, 0]);
+        }
     }
 
     #[tokio::test]
@@ -702,6 +740,48 @@ mod tests {
         assert_eq!(decoded.target.host, "2001:db8::1");
         assert_eq!(decoded.target.port, 53);
         assert_eq!(decoded.payload, b"dns");
+    }
+
+    #[test]
+    fn udp_ipv4_mapped_ipv6_stays_ipv6_and_roundtrips() {
+        let target = SocksTarget {
+            host: "::ffff:192.0.2.1".to_string(),
+            port: u16::MAX,
+        };
+        let encoded = build_udp_packet(&target, b"v6").unwrap();
+        assert_eq!(encoded[3], 0x04, "mapped address retains IPv6 ATYP");
+        assert_eq!(&encoded[14..16], &[0xff, 0xff]);
+        let decoded = parse_udp_packet(&encoded).unwrap();
+        assert_eq!(
+            decoded.target.host.parse::<Ipv6Addr>().unwrap(),
+            target.host.parse::<Ipv6Addr>().unwrap()
+        );
+        assert_eq!(decoded.target.port, u16::MAX);
+        assert_eq!(decoded.payload, b"v6");
+    }
+
+    #[test]
+    fn udp_builder_rejects_empty_and_nul_domain_fallbacks() {
+        for host in ["", "bad\0name"] {
+            let target = SocksTarget {
+                host: host.to_string(),
+                port: 53,
+            };
+            assert!(
+                build_udp_packet(&target, b"query").is_err(),
+                "host={host:?}"
+            );
+        }
+        let max_domain = SocksTarget {
+            host: "a".repeat(u8::MAX as usize),
+            port: 53,
+        };
+        assert_eq!(build_udp_packet(&max_domain, b"").unwrap()[4], u8::MAX);
+        let too_long = SocksTarget {
+            host: "a".repeat(u8::MAX as usize + 1),
+            port: 53,
+        };
+        assert!(build_udp_packet(&too_long, b"").is_err());
     }
 
     #[test]
