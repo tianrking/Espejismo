@@ -948,6 +948,25 @@ mod tests {
         (connection, peer)
     }
 
+    // SETTINGS entries are six bytes (identifier plus value). Feed raw frames
+    // after the preface so the h2 decoder's protocol validation is exercised.
+    async fn http2_server_after_settings(
+        stream_id: u32,
+        flags: u8,
+        payload: &[u8],
+    ) -> (h2::server::Connection<DuplexStream, Bytes>, DuplexStream) {
+        let (mut peer, server_io) = duplex(1024);
+        let mut wire = HTTP2_PREFACE.to_vec();
+        wire.extend_from_slice(&raw_frame(4, 0, 0, &[]));
+        wire.extend_from_slice(&raw_frame(4, flags, stream_id, payload));
+        peer.write_all(&wire).await.unwrap();
+        let connection = h2::server::Builder::new()
+            .handshake::<_, Bytes>(server_io)
+            .await
+            .unwrap();
+        (connection, peer)
+    }
+
     fn raw_frame(frame_type: u8, flags: u8, stream_id: u32, payload: &[u8]) -> Vec<u8> {
         let mut frame = vec![
             (payload.len() >> 16) as u8,
@@ -959,6 +978,51 @@ mod tests {
         frame.extend_from_slice(&stream_id.to_be_bytes());
         frame.extend_from_slice(payload);
         frame
+    }
+
+    #[tokio::test]
+    async fn http2_settings_rejects_invalid_lengths_ids_and_values() {
+        // RFC 9113 requires a multiple of six bytes, stream zero, empty ACK,
+        // and bounded values for ENABLE_PUSH, INITIAL_WINDOW_SIZE and
+        // MAX_FRAME_SIZE. Keep malformed peers entirely in memory.
+        let invalid = [
+            (0, 0, vec![0; 5]),                    // truncated entry
+            (1, 0, vec![]),                        // SETTINGS on nonzero stream
+            (0, 1, vec![0; 6]),                    // ACK with payload
+            (0, 0, vec![0, 2, 0, 0, 0, 2]),       // ENABLE_PUSH > 1
+            (0, 0, vec![0, 4, 0x80, 0, 0, 0]),    // window > 2^31 - 1
+            (0, 0, vec![0, 5, 0, 0, 0, 1]),       // frame size below 16 KiB
+            (0, 0, vec![0, 5, 1, 0, 0, 0]),       // frame size above 2^24 - 1
+        ];
+        for (stream_id, flags, payload) in invalid {
+            let (mut server, _peer) =
+                http2_server_after_settings(stream_id, flags, &payload).await;
+            let result = tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                server.accept(),
+            )
+            .await
+            .expect("invalid SETTINGS should be processed");
+            assert!(result.is_none() || result.unwrap().is_err(), "{payload:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn http2_settings_accepts_boundaries_and_ignores_unknown_ids() {
+        // Lowest legal MAX_FRAME_SIZE, highest legal stream window, and an
+        // extension setting unknown to this implementation are valid.
+        let payload = [
+            0, 4, 0x7f, 0xff, 0xff, 0xff, // INITIAL_WINDOW_SIZE = 2^31 - 1
+            0, 5, 0, 0, 0x40, 0, // MAX_FRAME_SIZE = 16,384
+            0xff, 0xff, 0, 0, 0, 1, // unknown setting is ignored
+        ];
+        let (mut server, _peer) = http2_server_after_settings(0, 0, &payload).await;
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), server.accept())
+                .await
+                .is_err(),
+            "valid SETTINGS should leave the connection open"
+        );
     }
 
     // Exercise the h2 frame decoder with in-memory wire bytes; this pins the
