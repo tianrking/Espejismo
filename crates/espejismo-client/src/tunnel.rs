@@ -676,7 +676,7 @@ fn lane_kinds(pool: &TunnelPoolConfig) -> Vec<LaneKind> {
 }
 
 fn connection_expired(connected_at: Option<Instant>, max_age: Duration, now: Instant) -> bool {
-    connected_at.is_some_and(|at| now.duration_since(at) >= max_age)
+    connected_at.is_some_and(|at| now.saturating_duration_since(at) >= max_age)
 }
 
 fn record_lane_activity(health: &mut LaneHealth) {
@@ -996,6 +996,11 @@ mod tests {
             now
         ));
         assert!(connection_expired(Some(now - age), age, now));
+        assert!(!connection_expired(
+            Some(now + Duration::from_millis(1)),
+            age,
+            now
+        ));
     }
 
     #[test]
