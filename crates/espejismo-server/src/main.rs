@@ -975,6 +975,46 @@ mod connection_limit_tests {
             "capacity is reusable"
         );
     }
+
+    #[tokio::test]
+    async fn concurrent_connection_attempts_never_exceed_capacity() {
+        const CAPACITY: usize = 8;
+        const ATTEMPTS: usize = 64;
+
+        let limit = Arc::new(Semaphore::new(CAPACITY));
+        let barrier = Arc::new(tokio::sync::Barrier::new(ATTEMPTS));
+        let mut tasks = tokio::task::JoinSet::new();
+
+        for _ in 0..ATTEMPTS {
+            let limit = Arc::clone(&limit);
+            let barrier = Arc::clone(&barrier);
+            tasks.spawn(async move {
+                barrier.wait().await;
+                try_connection_permit(&limit)
+            });
+        }
+
+        let mut admitted = 0;
+        let mut rejected = 0;
+        let mut permits = Vec::new();
+        while let Some(result) = tasks.join_next().await {
+            match result.expect("connection attempt task completes") {
+                Some(permit) => {
+                    admitted += 1;
+                    permits.push(permit);
+                }
+                None => rejected += 1,
+            }
+        }
+
+        assert_eq!(admitted, CAPACITY, "only available slots are admitted");
+        assert_eq!(rejected, ATTEMPTS - CAPACITY, "overflow is rejected");
+        assert_eq!(limit.available_permits(), 0, "admitted permits are counted");
+
+        drop(permits);
+        assert_eq!(limit.available_permits(), CAPACITY);
+        assert!(try_connection_permit(&limit).is_some());
+    }
 }
 
 #[cfg(test)]
