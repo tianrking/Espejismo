@@ -230,6 +230,8 @@ fn rewrite_absolute_request(method: &str, path: &str, version: &str, lines: &[&s
         {
             continue;
         }
+        // Forwarded identity headers remain opaque client input. This proxy
+        // neither trusts them for access control nor synthesizes replacements.
         // Keep Expect: 100-continue intact. The upstream server owns the
         // interim response; the bidirectional proxy path relays it to the client.
         rewritten.push_str(line);
@@ -299,6 +301,38 @@ mod tests {
         assert!(target
             .prebuffer
             .starts_with(b"GET /files/256m.bin?mirror=hk HTTP/1.1\r\nHost: example.test\r\n"));
+        writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn forwarded_headers_preserve_chains_duplicates_and_case() {
+        let (mut client, mut proxy) = duplex(4096);
+        let writer = tokio::spawn(async move {
+            client
+                .write_all(
+                    b"GET http://example.test/ HTTP/1.1\r\n\
+                      x-forwarded-for: 192.0.2.1, 198.51.100.2\r\n\
+                      X-Forwarded-For: 203.0.113.4\r\n\
+                      X-Forwarded-Proto:\tHTTPS \r\n\
+                      X-Forwarded-Host: edge.example.test:8443\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let target = accept_http_proxy(&mut proxy).await.unwrap();
+        let headers = std::str::from_utf8(&target.prebuffer).unwrap();
+        assert!(headers.contains("x-forwarded-for: 192.0.2.1, 198.51.100.2\r\n"));
+        assert!(headers.contains("X-Forwarded-For: 203.0.113.4\r\n"));
+        assert!(headers.contains("X-Forwarded-Proto:\tHTTPS \r\n"));
+        assert!(headers.contains("X-Forwarded-Host: edge.example.test:8443\r\n"));
+        assert_eq!(
+            headers
+                .lines()
+                .filter(|line| line.to_ascii_lowercase().starts_with("x-forwarded-for:"))
+                .count(),
+            2
+        );
         writer.await.unwrap();
     }
 
