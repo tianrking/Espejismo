@@ -1,33 +1,36 @@
-# HTTP/2 PRIORITY frame boundary tests
+# HTTP/2 PRIORITY boundary tests
 
-## Findings and plan
+## Findings and approach
 
-The HTTP/2 adapter delegates frame parsing to the `h2` crate and does not
-interpret HTTP/2 stream weights as tunnel scheduling priorities. The upstream
-decoder requires a five-byte PRIORITY payload, rejects stream ID zero at
-connection scope, and treats a stream depending on itself as a stream error.
-These rules follow RFC 9113 §5.3 and §5.3.1. The repository's reference notes
-identify Xray-core's underlay abstraction as a useful architectural comparison;
-here the adapter keeps HTTP/2 semantics delegated to `h2` rather than adding a
-second priority scheduler.
+`espejismo-core` uses the `h2` crate for HTTP/2 framing and connection state;
+the adapter does not maintain a separate priority tree. Existing in-memory
+tests covered the five-byte payload length, stream zero, and self-dependency,
+but did not pin the legal weight endpoints or the exclusive dependency bit.
+The `h2` frame decoder is the relevant implementation boundary here, while its
+public server API does not expose the resulting tree for assertions.
 
-## Changes and expected effect
+Following the small, state-machine-oriented framing tests used in mature
+protocol implementations (and the repository's reference guidance in
+`docs/research/REFERENCES.md`), the added regression sends legal wire PRIORITY
+frames through the actual `h2` server decoder and then a valid request. It
+covers weight 1 and 256, root and exclusive dependency encodings, and confirms
+that subsequent request processing still succeeds. This intentionally tests
+wire acceptance and connection usability; it does not claim to inspect
+internal scheduling-tree state. All bytes travel over Tokio's in-memory
+`duplex`, so no loopback socket or positioning change is involved.
 
-- Added in-memory raw-frame regression tests for PRIORITY payload lengths 0,
-  4, 5, and 6; stream ID zero; and self-dependency.
-- The exact five-byte payload stays accepted, malformed payload lengths and
-  stream zero terminate/reject the connection, and self-dependency leaves the
-  connection alive as a stream-level error.
-- No production behavior or scheduling changed. Expected performance gain is
-  zero; this pins protocol boundary behavior and protects future `h2` upgrades.
+## Expected impact
 
-## Validation
+This is correctness coverage only; there is no runtime or throughput change,
+so no performance gain is claimed. It should catch regressions in legal
+PRIORITY boundary decoding and connection handling.
 
-`$HOME/.cargo/bin/cargo test -p espejismo-core --offline` — passed: 241 unit
-tests, 1 config-example integration test, 10 HTTP proxy integration tests, and
-1 doc test (253 passed); 1 pre-existing loopback-bind test remained ignored.
-The four new tests cover valid exact length, both neighboring invalid lengths
-plus zero length, stream ID zero, and self-dependency's stream-level handling.
-All fixtures use Tokio's in-memory `duplex` transport, so no loopback bind is
-needed. No throughput comparison applies because this test-only correctness
-change does not modify runtime behavior.
+## Verification
+
+- `$HOME/.cargo/bin/cargo test -p espejismo-core http2_priority --offline`:
+  5 passed, including the new legal dependency/weight boundary sequence.
+- `$HOME/.cargo/bin/cargo test -p espejismo-core --offline`: 284 unit tests,
+  1 ignored loopback test, 11 integration tests, and 1 doctest passed; no
+  failures. The ignored test is the existing loopback-bind listener test.
+- No performance benchmark was run because this is a test-only correctness
+  change and does not alter runtime behavior.

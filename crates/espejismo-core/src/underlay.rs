@@ -964,6 +964,32 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn http2_priority_dependency_and_weight_boundaries_keep_connection_usable() {
+        // RFC 9113 encodes weight as value - 1, so the wire range 0..=255
+        // represents weights 1..=256. The high dependency bit is exclusive.
+        // The adapter delegates this tree bookkeeping to h2; verify these
+        // legal wire variants are accepted before a subsequent request.
+        let priorities = [
+            [0, 0, 0, 0, 0],      // root dependency, weight 1
+            [0x80, 0, 0, 3, 255], // exclusive dependency 3, weight 256
+        ];
+        let mut frames = Vec::new();
+        for payload in priorities {
+            frames.extend_from_slice(&raw_frame(2, 0, 1, &payload));
+        }
+        let block = [0x82, 0x86, 0x84, 0x01, 0x01, b'x'];
+        frames.extend_from_slice(&raw_frame(1, 5, 1, &block));
+        let (mut server, _peer) = http2_server_after_raw_frames(&frames).await;
+        let accepted = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+            .await
+            .expect("request after valid PRIORITY frames should be processed")
+            .expect("connection should remain open")
+            .expect("request headers should decode");
+        assert_eq!(accepted.0.method(), http::Method::GET);
+        assert_eq!(accepted.0.uri().path(), "/");
+    }
+
     // A split HPACK block must continue on the same stream and finish with
     // END_HEADERS; the h2 crate owns these wire-level framing rules.
     #[tokio::test]
