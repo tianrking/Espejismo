@@ -397,6 +397,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn https_proxy_tls12_sessions_resume_with_shared_config() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_rustls::rustls::{version, ClientConfig, HandshakeKind, ServerConfig};
+        use tokio_rustls::{TlsAcceptor, TlsConnector};
+
+        let cert = CertificateDer::from(
+            include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+        );
+        let key = PrivateKeyDer::try_from(
+            include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+        )
+        .unwrap();
+        let server = Arc::new(
+            ServerConfig::builder_with_protocol_versions(&[&version::TLS12])
+                .with_no_client_auth()
+                .with_single_cert(vec![cert], key)
+                .unwrap(),
+        );
+        let client = Arc::new(
+            ClientConfig::builder_with_protocol_versions(&[&version::TLS12])
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(AlpnTestVerifier))
+                .with_no_client_auth(),
+        );
+
+        async fn handshake(
+            client: Arc<ClientConfig>,
+            server: Arc<ServerConfig>,
+        ) -> HandshakeKind {
+            let (client_io, server_io) = duplex(16 * 1024);
+            let server_task = tokio::spawn(async move {
+                let mut tls = TlsAcceptor::from(server).accept(server_io).await.unwrap();
+                tls.write_all(b"ready").await.unwrap();
+                tls.flush().await.unwrap();
+            });
+            let name = ServerName::try_from("localhost").unwrap();
+            let mut tls = TlsConnector::from(client)
+                .connect(name, client_io)
+                .await
+                .unwrap();
+            let mut ready = [0; 5];
+            tls.read_exact(&mut ready).await.unwrap();
+            assert_eq!(&ready, b"ready");
+            let kind = tls.get_ref().1.handshake_kind().unwrap();
+            server_task.await.unwrap();
+            kind
+        }
+
+        assert_eq!(
+            handshake(client.clone(), server.clone()).await,
+            HandshakeKind::Full
+        );
+        assert_eq!(
+            handshake(client, server).await,
+            HandshakeKind::Resumed
+        );
+    }
+
+    #[tokio::test]
     async fn https_proxy_session_cache_is_partitioned_by_server_name() {
         use tokio::io::AsyncWriteExt;
         use tokio_rustls::TlsConnector;
