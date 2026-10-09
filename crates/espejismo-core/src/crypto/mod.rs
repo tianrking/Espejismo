@@ -191,9 +191,9 @@ impl SessionKeys {
     }
 
     pub(crate) fn update_tx(&mut self) -> Result<()> {
-        self.tx_generation = self.tx_generation.saturating_add(1);
-        let (key, len_mask) =
-            update_secret(&self.tx_key, self.tx_update_label, self.tx_generation)?;
+        let generation = next_key_generation(self.tx_generation)?;
+        let (key, len_mask) = update_secret(&self.tx_key, self.tx_update_label, generation)?;
+        self.tx_generation = generation;
         self.tx_key = key;
         self.tx_len_mask = len_mask;
         self.tx = XChaCha20Poly1305::new((&self.tx_key).into());
@@ -201,14 +201,20 @@ impl SessionKeys {
     }
 
     pub(crate) fn update_rx(&mut self) -> Result<()> {
-        self.rx_generation = self.rx_generation.saturating_add(1);
-        let (key, len_mask) =
-            update_secret(&self.rx_key, self.rx_update_label, self.rx_generation)?;
+        let generation = next_key_generation(self.rx_generation)?;
+        let (key, len_mask) = update_secret(&self.rx_key, self.rx_update_label, generation)?;
+        self.rx_generation = generation;
         self.rx_key = key;
         self.rx_len_mask = len_mask;
         self.rx = XChaCha20Poly1305::new((&self.rx_key).into());
         Ok(())
     }
+}
+
+fn next_key_generation(current: u64) -> Result<u64> {
+    current
+        .checked_add(1)
+        .context("traffic key generation exhausted")
 }
 
 impl Drop for SessionKeys {
@@ -1320,6 +1326,13 @@ mod tests {
         HandshakeUser, HandshakeWindow, SERVER_HELLO_LEN, STEALTH_HANDSHAKE_NONCE_LEN,
         VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
     };
+
+    #[test]
+    fn traffic_key_generation_stops_before_reusing_the_last_epoch() {
+        assert_eq!(super::next_key_generation(0).unwrap(), 1);
+        assert_eq!(super::next_key_generation(u64::MAX - 1).unwrap(), u64::MAX);
+        assert!(super::next_key_generation(u64::MAX).is_err());
+    }
 
     #[test]
     fn protocol_version_accepts_only_the_current_exact_value() {

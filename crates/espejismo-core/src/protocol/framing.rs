@@ -1013,4 +1013,78 @@ mod tests {
         assert_eq!(before.payload, b"before");
         assert_eq!(after.payload, b"after");
     }
+
+    #[test]
+    fn key_update_boundary_waits_for_a_nonzero_frame_count() {
+        let options = FrameOptions {
+            key_update_frames: 2,
+            ..FrameOptions::default()
+        };
+        assert!(!super::should_key_update(&options, 0, FrameType::Data));
+        assert!(!super::should_key_update(&options, 1, FrameType::Data));
+        assert!(super::should_key_update(&options, 2, FrameType::Data));
+        assert!(!super::should_key_update(&options, 2, FrameType::Padding));
+        assert!(!super::should_key_update(&options, 2, FrameType::KeyUpdate));
+        let disabled = FrameOptions {
+            key_update_frames: 0,
+            ..options
+        };
+        assert!(!super::should_key_update(&disabled, 2, FrameType::Data));
+    }
+
+    #[tokio::test]
+    async fn concurrent_sends_remain_ordered_across_repeated_key_updates() {
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let cfg = HandshakeConfig::new(b"concurrent-rotation-secret-long".to_vec(), 30, 128, 0);
+        let (mut client, mut server) = duplex(32 * 1024);
+        let client_cfg = cfg.clone();
+        let server_cfg = cfg;
+        let client_task = tokio::spawn(async move {
+            let keys = connect_handshake(&mut client, &client_cfg).await?;
+            anyhow::Ok((client, keys))
+        });
+        let server_task = tokio::spawn(async move {
+            let keys = accept_handshake(&mut server, &server_cfg).await?;
+            anyhow::Ok((server, keys))
+        });
+        let (client, client_keys) = client_task.await.unwrap().unwrap();
+        let (server, server_keys) = server_task.await.unwrap().unwrap();
+        let options = FrameOptions {
+            key_update_frames: 2,
+            max_padding: 0,
+            padding_chance_percent: 0,
+            ..FrameOptions::default()
+        };
+        let writer = Arc::new(Mutex::new(FrameWriter::new(
+            client,
+            client_keys,
+            options.clone(),
+        )));
+        let mut reader = FrameReader::new(server, server_keys, options);
+        let mut tasks = Vec::new();
+        for n in 0_u8..12 {
+            let writer = Arc::clone(&writer);
+            tasks.push(tokio::spawn(async move {
+                writer
+                    .lock()
+                    .await
+                    .send(Frame {
+                        ty: FrameType::Data,
+                        payload: vec![n],
+                    })
+                    .await
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap().unwrap();
+        }
+        let mut received = Vec::new();
+        for _ in 0..12 {
+            received.push(reader.recv().await.unwrap().payload[0]);
+        }
+        received.sort_unstable();
+        assert_eq!(received, (0_u8..12).collect::<Vec<_>>());
+    }
 }
