@@ -197,7 +197,9 @@ and runs the configured logical stream mux over it. Each accepted SOCKS5 or HTTP
 proxy connection opens a logical stream on a health-scored lane and sends an
 internal command preface. HTTP CONNECT is accepted directly; absolute-form
 `http://` requests are rewritten to origin-form before entering the tunnel.
-SOCKS5 UDP ASSOCIATE datagrams are relayed as UDP command streams. Optional
+SOCKS5 UDP ASSOCIATE datagrams are relayed as UDP command streams. Its UDP
+receive loop uses the configured idle timeout per receive; expiration ends the
+association handler and drops its socket and fragment reassembly state. Optional
 native TUN ingress creates a local virtual network interface and uses a
 userspace netstack to convert captured TCP flows and UDP datagrams into the same
 internal tunnel commands. The remote side does not need a separate TUN-specific
