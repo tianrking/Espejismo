@@ -624,6 +624,20 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn https_proxy_rejects_invalid_tls_server_name_before_handshake() {
+        // A proxy endpoint host is also the TLS identity. Reject malformed
+        // names before emitting a ClientHello so no ambiguous identity is used.
+        let (client, mut peer) = duplex(4096);
+        let result =
+            connect_tls_to_proxy_with_timeout(client, "proxy host", Duration::from_secs(2)).await;
+
+        let error = result.expect_err("a TLS server name containing whitespace is invalid");
+        assert!(format!("{error:#}").contains("invalid HTTPS proxy TLS server name"));
+        let mut received = [0_u8; 1];
+        assert_eq!(peer.read(&mut received).await.unwrap(), 0);
+    }
+
     #[test]
     fn builds_http_connect_request_with_basic_auth() {
         let proxy = EgressProxy {
