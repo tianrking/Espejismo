@@ -414,8 +414,10 @@ retain unbounded connections.
 
 When `reject_delay_ms = 0`, invalid sockets are moved into a global bounded
 silent tarpit pool. The pool has a hard capacity and time-to-live with oldest
-entry eviction, so file descriptor and memory usage remain bounded. The tarpit
-does not send drip bytes to unknown peers.
+entry eviction, so file descriptor and memory usage remain bounded. Expiry is
+swept at the configured hold interval (capped at five seconds, with a one
+millisecond minimum), so short holds do not inherit a fixed five-second delay.
+The tarpit does not send drip bytes to unknown peers.
 
 If HTTP fallback is enabled, HTTP-looking probes can be forwarded to a configured
 upstream. Without an upstream, the built-in fallback returns a small HTTP 200
