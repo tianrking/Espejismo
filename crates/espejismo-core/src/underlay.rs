@@ -422,6 +422,7 @@ where
         len <= max_frame_bytes as u64,
         "websocket frame exceeds configured limit"
     );
+    let payload_len = usize::try_from(len).context("websocket frame length does not fit usize")?;
     if opcode >= 0x8 {
         ensure!(len <= 125, "websocket control frame exceeds 125 bytes");
     }
@@ -434,7 +435,7 @@ where
     if masked {
         reader.read_exact(&mut mask).await?;
     }
-    let mut payload = vec![0_u8; len as usize];
+    let mut payload = vec![0_u8; payload_len];
     if !payload.is_empty() {
         reader.read_exact(&mut payload).await?;
     }
@@ -776,6 +777,50 @@ mod tests {
                 .unwrap_err();
             assert!(error.to_string().contains(expected_error));
         }
+
+        // A valid RFC 6455 message could place control frames between data
+        // fragments. This adapter does not reassemble messages, so reject the
+        // opening fragment before consuming the interleaved PING/continuation.
+        let (mut wire, mut peer) = duplex(32);
+        peer.write_all(&[0x02, 0x01, b'a', 0x89, 0x00, 0x80, 0x01, b'b'])
+            .await
+            .unwrap();
+        let error = super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
+            .await
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("fragmented frames are unsupported")
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_data_frame_size_limit_accepts_limit_and_rejects_one_over() {
+        let payload = vec![0x5a; 125];
+        let (mut wire, mut peer) = duplex(256);
+        let writer = tokio::spawn(async move {
+            super::write_ws_frame(&mut peer, super::WebSocketRole::Server, 0x2, &payload)
+                .await
+                .unwrap();
+        });
+        match super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 125)
+            .await
+            .unwrap()
+            .unwrap()
+        {
+            super::WsFrame::Data(actual) => assert_eq!(actual.len(), 125),
+            _ => panic!("expected binary data frame"),
+        }
+        writer.await.unwrap();
+
+        // The declared length is rejected before the payload is read or allocated.
+        let (mut wire, mut peer) = duplex(16);
+        peer.write_all(&[0x82, 126, 0, 126]).await.unwrap();
+        let error = super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 125)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("exceeds configured limit"));
     }
 
     #[tokio::test]
