@@ -393,6 +393,11 @@ mod tests {
         assert!(response.contains("\r\nLast-Modified: "));
         assert!(response.contains("\r\nETag: "));
         assert!(response.contains("\r\nContent-Length: 15\r\n"));
+        // HSTS is only honored when received over HTTPS. This built-in
+        // fallback is plain HTTP, so it must not advertise an HSTS policy.
+        assert!(!response.lines().any(|line| line
+            .split_once(':')
+            .is_some_and(|(name, _)| { name.eq_ignore_ascii_case("Strict-Transport-Security") })));
     }
 
     #[tokio::test]
