@@ -44,6 +44,16 @@ impl DnsCache {
     }
 
     fn insert(&mut self, authority: String, addrs: Vec<SocketAddr>, now: Instant) {
+        self.insert_with_ttl(authority, addrs, now, DNS_CACHE_TTL);
+    }
+
+    fn insert_with_ttl(
+        &mut self,
+        authority: String,
+        addrs: Vec<SocketAddr>,
+        now: Instant,
+        ttl: Duration,
+    ) {
         // Drop stale entries before making a capacity decision. This keeps an
         // expired entry from influencing which live result gets evicted.
         self.entries.retain(|_, (_, expires)| now < *expires);
@@ -57,7 +67,11 @@ impl DnsCache {
                 self.entries.remove(&oldest);
             }
         }
-        self.entries.insert(authority, (addrs, now + DNS_CACHE_TTL));
+        // Keep the process cache's established maximum lifetime even if a
+        // caller supplies an unusually large TTL. `Duration::MAX` must not
+        // overflow `Instant` arithmetic or extend cached DNS data indefinitely.
+        let expires = now + ttl.min(DNS_CACHE_TTL);
+        self.entries.insert(authority, (addrs, expires));
     }
 }
 
@@ -162,6 +176,33 @@ mod tests {
         );
         assert_eq!(cache.get("cache.example:443", start + DNS_CACHE_TTL), None);
         assert!(cache.entries.is_empty());
+    }
+
+    #[test]
+    fn dns_cache_zero_ttl_expires_at_insertion_time() {
+        let now = Instant::now();
+        let mut cache = DnsCache::default();
+        let addr = "192.0.2.10:443".parse().unwrap();
+
+        cache.insert_with_ttl("zero.example:443".into(), vec![addr], now, Duration::ZERO);
+
+        assert_eq!(cache.get("zero.example:443", now), None);
+        assert!(cache.entries.is_empty());
+    }
+
+    #[test]
+    fn dns_cache_caps_oversized_ttl_without_instant_overflow() {
+        let now = Instant::now();
+        let mut cache = DnsCache::default();
+        let addr = "192.0.2.10:443".parse().unwrap();
+
+        cache.insert_with_ttl("huge.example:443".into(), vec![addr], now, Duration::MAX);
+
+        assert_eq!(cache.get("huge.example:443", now), Some(vec![addr]));
+        assert_eq!(
+            cache.get("huge.example:443", now + DNS_CACHE_TTL),
+            None
+        );
     }
 
     #[test]
