@@ -111,12 +111,8 @@ async fn connect_egress_tcp_inner(authority: &str, egress: &EgressPolicy) -> Res
     connect_first_allowed(
         espejismo_core::resolve_socket_addrs(authority).await?,
         egress,
-        |addr| async move {
-            timeout(EGRESS_CONNECT_TIMEOUT, TcpStream::connect(addr))
-                .await
-                .map_err(|_| anyhow::anyhow!("connection to {addr} timed out"))?
-                .map_err(Into::into)
-        },
+        EGRESS_CONNECT_TIMEOUT,
+        |addr| async move { TcpStream::connect(addr).await.map_err(Into::into) },
     )
     .await
     .map(|stream| Box::new(stream) as EgressStream)
@@ -128,6 +124,7 @@ async fn connect_egress_tcp_inner(authority: &str, egress: &EgressPolicy) -> Res
 async fn connect_first_allowed<T, F, Fut>(
     addrs: Vec<std::net::SocketAddr>,
     egress: &EgressPolicy,
+    attempt_timeout: Duration,
     mut connect: F,
 ) -> Result<T>
 where
@@ -140,9 +137,10 @@ where
             last_error = Some(err);
             continue;
         }
-        match connect(addr).await {
-            Ok(stream) => return Ok(stream),
-            Err(err) => last_error = Some(err),
+        match timeout(attempt_timeout, connect(addr)).await {
+            Err(_) => last_error = Some(anyhow::anyhow!("connection to {addr} timed out")),
+            Ok(Ok(stream)) => return Ok(stream),
+            Ok(Err(err)) => last_error = Some(err),
         }
     }
     Err(last_error.unwrap_or_else(|| anyhow::anyhow!("no resolved egress address")))
@@ -219,22 +217,28 @@ mod tests {
 
     use super::{connect_egress_tcp_inner, connect_first_allowed};
     use espejismo_core::EgressPolicy;
+    use std::time::Duration;
 
     #[tokio::test]
     async fn egress_connect_failure_advances_to_next_resolved_address() {
         let first: SocketAddr = "192.0.2.10:443".parse().unwrap();
         let second: SocketAddr = "192.0.2.11:443".parse().unwrap();
         let mut attempted = Vec::new();
-        let result = connect_first_allowed(vec![first, second], &EgressPolicy::default(), |addr| {
-            attempted.push(addr);
-            async move {
-                if addr == first {
-                    Err(anyhow::anyhow!("simulated unreachable egress"))
-                } else {
-                    Ok(addr)
+        let result = connect_first_allowed(
+            vec![first, second],
+            &EgressPolicy::default(),
+            Duration::from_secs(1),
+            |addr| {
+                attempted.push(addr);
+                async move {
+                    if addr == first {
+                        Err(anyhow::anyhow!("simulated unreachable egress"))
+                    } else {
+                        Ok(addr)
+                    }
                 }
-            }
-        })
+            },
+        )
         .await
         .unwrap();
 
@@ -251,14 +255,69 @@ mod tests {
             deny_private_ips: true,
             ..EgressPolicy::default()
         };
-        let result = connect_first_allowed(vec![denied, allowed], &policy, |addr| {
-            attempted.push(addr);
-            std::future::ready(Ok(addr))
-        })
+        let result = connect_first_allowed(
+            vec![denied, allowed],
+            &policy,
+            Duration::from_secs(1),
+            |addr| {
+                attempted.push(addr);
+                std::future::ready(Ok(addr))
+            },
+        )
         .await
         .unwrap();
         assert_eq!(result, allowed);
         assert_eq!(attempted, vec![allowed]);
+    }
+
+    #[tokio::test]
+    async fn timed_out_address_advances_and_later_address_can_succeed() {
+        let first: SocketAddr = "192.0.2.20:443".parse().unwrap();
+        let second: SocketAddr = "192.0.2.21:443".parse().unwrap();
+        let mut attempted = Vec::new();
+        let result = connect_first_allowed(
+            vec![first, second],
+            &EgressPolicy::default(),
+            Duration::from_millis(5),
+            |addr| {
+                attempted.push(addr);
+                async move {
+                    if addr == first {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                    Ok(addr)
+                }
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(result, second);
+        assert_eq!(attempted, vec![first, second]);
+    }
+
+    #[tokio::test]
+    async fn exhausted_addresses_report_last_failure_and_empty_list_is_explicit() {
+        let first: SocketAddr = "192.0.2.30:443".parse().unwrap();
+        let second: SocketAddr = "192.0.2.31:443".parse().unwrap();
+        let error = connect_first_allowed(
+            vec![first, second],
+            &EgressPolicy::default(),
+            Duration::from_secs(1),
+            |addr| async move { Err::<(), _>(anyhow::anyhow!("failed at {addr}")) },
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains(&second.to_string()));
+
+        let error = connect_first_allowed::<(), _, _>(
+            Vec::new(),
+            &EgressPolicy::default(),
+            Duration::from_secs(1),
+            |_| std::future::ready(Ok(())),
+        )
+        .await
+        .unwrap_err();
+        assert!(error.to_string().contains("no resolved egress address"));
     }
 
     async fn socks5_hop(listener: TcpListener) {
