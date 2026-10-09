@@ -42,7 +42,10 @@ The WebSocket adapter answers control PING frames with a PONG carrying the same
 payload (including an empty payload), accepts PONG frames, and rejects
 fragmented data frames, standalone continuation frames, reserved bits,
 non-minimal payload-length encodings, and control payloads longer than 125
-bytes.
+bytes. It does not negotiate WebSocket extensions such as `permessage-deflate`;
+extension response headers and compressed frames are rejected. This avoids
+implicit compressor window or context takeover state around the encrypted
+tunnel stream.
 
 When `[shared.port_hopping].enabled = true`, the client deterministically
 selects a configured remote port from the current time window before opening a

@@ -597,9 +597,14 @@ fn websocket_response_matches(headers: &HttpHeaders) -> bool {
     let mut parts = headers.request_or_status.split_whitespace();
     let valid_status =
         parts.next() == Some("HTTP/1.1") && parts.next() == Some("101") && parts.next().is_some();
+    // This adapter does not implement WebSocket extensions. In particular,
+    // accepting permessage-deflate here would make the peer interpret RSV1
+    // frames differently from our byte-stream parser (and require compressor
+    // state/window limits we do not negotiate).
     valid_status
         && header_contains(&headers.fields, "upgrade", "websocket")
         && header_contains(&headers.fields, "connection", "upgrade")
+        && !headers.fields.contains_key("sec-websocket-extensions")
 }
 
 fn valid_websocket_key(key: &str) -> bool {
@@ -1279,6 +1284,31 @@ mod tests {
         )
         .unwrap();
         assert!(!super::websocket_response_matches(&missing_upgrade));
+
+        // Any extension response is unsolicited: the client does not offer
+        // extensions, including permessage-deflate window/context options.
+        for extension in [
+            "permessage-deflate",
+            "permessage-deflate; server_max_window_bits=8",
+            "permessage-deflate; client_no_context_takeover; server_no_context_takeover",
+        ] {
+            let response = super::parse_http_headers(&format!(
+                "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Extensions: {extension}\r\n\r\n"
+            ))
+            .unwrap();
+            assert!(!super::websocket_response_matches(&response), "{extension}");
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_rejects_compressed_rsv1_frame() {
+        // RSV1 marks a permessage-deflate payload. With no negotiated
+        // extension, compressed frames must fail before reaching tunnel bytes.
+        let (mut wire, mut peer) = duplex(32);
+        peer.write_all(&[0xc2, 0x00]).await.unwrap();
+        assert!(super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
+            .await
+            .is_err());
     }
 
     #[test]
