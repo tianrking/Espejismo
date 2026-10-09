@@ -99,6 +99,9 @@ fn https_proxy_tls_config() -> Arc<ClientConfig> {
             // TLS key logging exposes traffic secrets and is intended only for
             // explicitly configured diagnostics. This proxy path never opts in.
             config.key_log = Arc::new(tokio_rustls::rustls::NoKeyLog);
+            // HTTP CONNECT is used without an application protocol. Keep this
+            // explicit so a future TLS config change cannot negotiate h2/HTTP.
+            config.alpn_protocols.clear();
             Arc::new(config)
         })
         .clone()
@@ -179,7 +182,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn https_proxy_tls_succeeds_when_server_advertises_alpn() {
+    async fn https_proxy_tls_never_negotiates_server_advertised_alpn() {
         use tokio_rustls::TlsConnector;
         use tokio_rustls::rustls::ClientConfig;
 
@@ -190,12 +193,10 @@ mod tests {
             include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
         )
         .unwrap();
-        let mut server_config = ServerConfig::builder()
+        let server_config = ServerConfig::builder()
             .with_no_client_auth()
             .with_single_cert(vec![cert.clone()], key)
             .unwrap();
-        server_config.alpn_protocols = vec![b"h2".to_vec()];
-
         let client_config = Arc::new(
             ClientConfig::builder()
                 .dangerous()
@@ -204,37 +205,46 @@ mod tests {
         );
         assert!(client_config.alpn_protocols.is_empty());
 
-        let (client, server) = tokio::io::duplex(4096);
-        let server = tokio::spawn(async move {
-            TlsAcceptor::from(Arc::new(server_config))
-                .accept(server)
+        for advertised in [
+            vec![],
+            vec![b"h2".to_vec()],
+            vec![b"http/1.1".to_vec()],
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        ] {
+            let mut config = server_config.clone();
+            config.alpn_protocols = advertised.clone();
+            let (client, server) = tokio::io::duplex(4096);
+            let server = tokio::spawn(async move {
+                TlsAcceptor::from(Arc::new(config))
+                    .accept(server)
+                    .await
+                    .unwrap()
+                    .get_ref()
+                    .1
+                    .alpn_protocol()
+                    .map(ToOwned::to_owned)
+            });
+            let server_name = ServerName::try_from("localhost").unwrap();
+            let client = TlsConnector::from(client_config.clone())
+                .connect(server_name, client)
                 .await
-                .unwrap()
-                .get_ref()
-                .1
-                .alpn_protocol()
-                .map(ToOwned::to_owned)
-        });
-        let server_name = ServerName::try_from("localhost").unwrap();
-        let client = TlsConnector::from(client_config)
-            .connect(server_name, client)
-            .await
-            .expect("TLS should succeed when the client offers no ALPN");
+                .expect("TLS should succeed when the client offers no ALPN");
 
-        assert_eq!(client.get_ref().1.alpn_protocol(), None);
-        assert!(
-            super::https_proxy_tls_provider()
-                .cipher_suites
-                .iter()
-                .any(|suite| Some(suite.suite())
-                    == client
-                        .get_ref()
-                        .1
-                        .negotiated_cipher_suite()
-                        .map(|s| s.suite())),
-            "negotiated suite must be in the configured HTTPS proxy suite set"
-        );
-        assert_eq!(server.await.unwrap(), None);
+            assert_eq!(client.get_ref().1.alpn_protocol(), None, "server ALPN: {advertised:?}");
+            assert!(
+                super::https_proxy_tls_provider()
+                    .cipher_suites
+                    .iter()
+                    .any(|suite| Some(suite.suite())
+                        == client
+                            .get_ref()
+                            .1
+                            .negotiated_cipher_suite()
+                            .map(|s| s.suite())),
+                "negotiated suite must be in the configured HTTPS proxy suite set"
+            );
+            assert_eq!(server.await.unwrap(), None, "server ALPN: {advertised:?}");
+        }
     }
 
     #[tokio::test]
