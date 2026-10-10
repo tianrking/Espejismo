@@ -2100,6 +2100,45 @@ mod tests {
         assert_eq!(received_reply, expected_reply);
     }
 
+    // Keep connection credit above the payload size so only the stream window
+    // can block the sender. This isolates stream-level WINDOW_UPDATE recovery
+    // from the connection-level exhaustion covered by the test above.
+    #[tokio::test]
+    async fn http2_underlay_recovers_from_stream_window_exhaustion() {
+        let options = super::Http2UnderlayOptions {
+            initial_stream_window_bytes: 65_535,
+            initial_connection_window_bytes: 256 * 1024,
+            max_frame_bytes: 16_384,
+        };
+        let (client_io, server_io) = duplex(64 * 1024);
+        let server_task = tokio::spawn(async move {
+            super::accept_http2_underlay(server_io, "/stream-flow", options)
+                .await
+                .unwrap()
+        });
+        let client = connect_http2_underlay(client_io, "example.com", "/stream-flow", options)
+            .await
+            .unwrap();
+        let mut server = server_task.await.unwrap();
+        let (_, mut client_write) = tokio::io::split(client);
+
+        let payload: Vec<u8> = (0..192 * 1024).map(|n| (n % 239) as u8).collect();
+        let expected = payload.clone();
+        let writer = async {
+            client_write.write_all(&payload).await.unwrap();
+            client_write.shutdown().await.unwrap();
+        };
+        let mut received = Vec::new();
+        let reader = server.read_to_end(&mut received);
+        let ((), read_result) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            tokio::join!(writer, reader)
+        })
+        .await
+        .expect("stream flow-control update timed out");
+        read_result.unwrap();
+        assert_eq!(received, expected);
+    }
+
     // A peer RST_STREAM must terminate the adapter's application read side.
     // Use in-memory transport so this protocol edge case also runs in the sandbox.
     #[tokio::test]
