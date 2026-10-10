@@ -13,7 +13,7 @@ use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::sync::Semaphore;
 use tokio::time::{sleep, timeout};
-use tracing::{debug, info};
+use tracing::{debug, info, trace, warn};
 
 use crate::fallback::{fallback_or_reject, route_http_fallback, should_route_to_http_fallback};
 use crate::limits::UserLimitRegistry;
@@ -22,7 +22,9 @@ use crate::relay::{connect_egress_tcp, limited_copy_bidirectional, relay_udp_dat
 use crate::tarpit;
 use crate::RemoteRuntime;
 
+// Bound task occupancy while waiting for a saturated global stream limit.
 const STREAM_PERMIT_TIMEOUT: Duration = Duration::from_secs(15);
+// Tunnel requests are small protocol headers; fail stalled peers promptly.
 const REQUEST_READ_TIMEOUT: Duration = Duration::from_secs(15);
 
 pub(crate) async fn handle_peer(
@@ -78,6 +80,7 @@ pub(crate) async fn handle_peer(
         Ok(Err(err)) => {
             metrics.inc_handshake_failure();
             metrics.dec_active_physical();
+            warn!(error = %err, "peer authentication failed");
             runtime
                 .runtime_state
                 .record_error(format!("handshake rejected: {err}"));
@@ -93,6 +96,7 @@ pub(crate) async fn handle_peer(
         Err(err) => {
             metrics.inc_handshake_failure();
             metrics.dec_active_physical();
+            warn!(error = %err, "peer authentication timed out");
             runtime
                 .runtime_state
                 .record_error(format!("handshake timeout: {err}"));
@@ -144,6 +148,7 @@ where
         Ok(Err(err)) => {
             metrics.inc_handshake_failure();
             metrics.dec_active_physical();
+            warn!(error = %err, "peer authentication failed");
             runtime
                 .runtime_state
                 .record_error(format!("websocket handshake rejected: {err}"));
@@ -152,6 +157,7 @@ where
         Err(err) => {
             metrics.inc_handshake_failure();
             metrics.dec_active_physical();
+            warn!(error = %err, "peer authentication timed out");
             runtime
                 .runtime_state
                 .record_error(format!("websocket handshake timeout: {err}"));
@@ -277,12 +283,28 @@ async fn should_accept_http2(
     settings: &crate::RemoteSettings,
 ) -> Result<bool> {
     let mut buf = vec![0_u8; espejismo_core::HTTP2_PREFACE.len()];
-    let n = match timeout(settings.fallback_http.probe_timeout, stream.peek(&mut buf)).await {
-        Ok(Ok(n)) => n,
-        Ok(Err(err)) => return Err(err.into()),
-        Err(_) => return Ok(false),
+    let probe = async {
+        loop {
+            let n = stream.peek(&mut buf).await?;
+            if n == 0 {
+                return Ok::<bool, std::io::Error>(false);
+            }
+            let available = &buf[..n];
+            if !espejismo_core::HTTP2_PREFACE.starts_with(available) {
+                return Ok::<bool, std::io::Error>(false);
+            }
+            if http2_preface_matches(available) {
+                return Ok::<bool, std::io::Error>(true);
+            }
+            // TCP may expose only part of the connection preface in a peek.
+            // Keep the bytes queued and wait briefly for the rest.
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
     };
-    Ok(http2_preface_matches(&buf[..n]))
+    match timeout(settings.fallback_http.probe_timeout, probe).await {
+        Ok(result) => result.map_err(Into::into),
+        Err(_) => Ok(false),
+    }
 }
 
 async fn handle_mux_stream(
@@ -311,7 +333,7 @@ async fn handle_mux_stream(
     if let Err(err) = &result {
         let reason = classify_stream_failure(err);
         metrics.inc_stream_failed_reason(reason);
-        if reason == "egress_denied" {
+        if is_egress_denial(err) {
             metrics.inc_egress_denied();
         }
         traffic.observe(TrafficEvent {
@@ -393,7 +415,9 @@ async fn handle_mux_stream_inner(
             limits
                 .account_and_throttle(user, payload.len() as u64)
                 .await?;
-            debug!(target = %authority, priority = ?priority, "mux UDP relay opened");
+            // This is emitted once per datagram, so keep routine relay success
+            // below debug to avoid turning verbose logging into traffic-volume logging.
+            trace!(target = %authority, priority = ?priority, "mux UDP relay opened");
             let response = relay_udp_datagram(&authority, &payload, &egress, idle).await?;
             limits
                 .account_and_throttle(user, response.len() as u64)
@@ -431,20 +455,96 @@ fn throughput_bps(bytes: u64, elapsed: Duration) -> u64 {
         / nanos) as u64
 }
 
+/// Stable, low-cardinality classes for stream failure metrics and traffic events.
+/// User/request failures include policy and quota rejections; transport failures
+/// include timeouts and I/O errors. Unrecognized failures are internal until
+/// their source can be classified explicitly.
 fn classify_stream_failure(err: &anyhow::Error) -> &'static str {
     let text = err.to_string();
-    if text.contains("egress policy")
+    if is_egress_denial(err) || text.contains("quota") {
+        "user_error"
+    } else if text.contains("timed out")
+        || err
+            .chain()
+            .any(|cause| cause.downcast_ref::<std::io::Error>().is_some())
+    {
+        "network_error"
+    } else {
+        "internal_error"
+    }
+}
+
+fn is_egress_denial(err: &anyhow::Error) -> bool {
+    let text = err.to_string();
+    text.contains("egress policy")
         || text.contains("egress host")
         || text.contains("egress port")
         || text.contains("egress IP")
         || text.contains("no allowed UDP egress")
-    {
-        "egress_denied"
-    } else if text.contains("timed out") {
-        "timeout"
-    } else if text.contains("quota") {
-        "quota"
-    } else {
-        "other"
+}
+
+#[cfg(test)]
+mod error_classification_tests {
+    use super::{classify_stream_failure, is_egress_denial};
+    use anyhow::Context;
+
+    #[test]
+    fn every_egress_denial_marker_is_recognized() {
+        for message in [
+            "egress policy rejected destination",
+            "egress host is not allowed",
+            "egress port is not allowed",
+            "egress IP is not allowed",
+            "no allowed UDP egress",
+        ] {
+            let err = anyhow::anyhow!(message);
+            assert!(is_egress_denial(&err), "not recognized: {message}");
+            assert_eq!(classify_stream_failure(&err), "user_error");
+        }
+    }
+
+    #[test]
+    fn only_policy_markers_increment_the_egress_classification() {
+        for message in ["quota exceeded", "timed out", "unexpected failure"] {
+            assert!(!is_egress_denial(&anyhow::anyhow!(message)));
+        }
+    }
+
+    #[test]
+    fn stream_failures_have_stable_operational_classes() {
+        assert_eq!(
+            classify_stream_failure(&anyhow::anyhow!("egress host denied by policy")),
+            "user_error"
+        );
+        assert_eq!(
+            classify_stream_failure(&anyhow::anyhow!("user quota exceeded")),
+            "user_error"
+        );
+        assert_eq!(
+            classify_stream_failure(&anyhow::anyhow!("tunnel request read timed out")),
+            "network_error"
+        );
+        assert_eq!(
+            classify_stream_failure(&anyhow::anyhow!(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "peer reset"
+            ))),
+            "network_error"
+        );
+        assert_eq!(
+            classify_stream_failure(
+                &Err::<(), _>(std::io::Error::new(
+                    std::io::ErrorKind::ConnectionRefused,
+                    "refused",
+                ))
+                .context("connecting to upstream")
+                .unwrap_err()
+            ),
+            "network_error"
+        );
+        assert_eq!(
+            classify_stream_failure(&anyhow::anyhow!("unexpected state transition")),
+            "internal_error"
+        );
     }
 }

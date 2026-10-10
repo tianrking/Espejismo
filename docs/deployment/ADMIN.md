@@ -11,7 +11,8 @@ token = "change-me-admin-token"
 
 Endpoints:
 
-- `GET /healthz`: health probe.
+- `GET /healthz`: unauthenticated liveness probe returning only `ok`; it does
+  not report tunnel readiness or runtime details.
 - `GET /status`: JSON status snapshot.
 - `GET /connections`: metrics plus runtime tunnel state for troubleshooting.
 - `GET /metrics`: Prometheus-style text metrics.
@@ -19,6 +20,70 @@ Endpoints:
 - `POST /apply`: apply a TOML config supplied as the request body.
 
 Authentication:
+
+`GET /healthz` is always unauthenticated, so a load balancer can probe the
+process without an admin credential. When `admin.token` is configured, every
+other route requires that token in either the `Authorization: Bearer` header
+or the `X-Espejismo-Admin-Token` header. If no token is configured, the server
+does not authenticate requests; configuration validation requires a token for
+non-loopback admin listeners. Keep an unauthenticated listener bound to
+loopback. With a token configured, missing or invalid credentials receive
+HTTP 401 before request bodies are read or administrative actions are run.
+This applies uniformly to `/status`, `/connections`, `/metrics`, `/reload`,
+and `/apply`; the authorization tests exercise each route with absent, invalid,
+bearer, and legacy-header credentials. The admin endpoint does not enable
+browser cross-origin access: `Origin` headers do not affect authorization, and
+`OPTIONS` preflights receive no `Access-Control-*` response headers. Use a
+trusted management client rather than exposing this API to browser origins.
+The endpoint handles at most 32 client connections at once; additional
+connections receive HTTP 503. Reload and apply actions have a 30-second limit
+and return HTTP 504 if the action does not finish in time. Header and body
+reads each retain their separate 15-second limits.
+
+For probe behavior and container/orchestrator examples, see
+[Health Checks](HEALTHCHECK.md).
+
+## Configuration reload
+
+Configuration is not watched automatically. The remote binary reloads its
+original config source on Unix when it receives `SIGHUP`; the local binary does
+not handle `SIGHUP`. Either binary can also use the authenticated admin endpoint
+to request an update:
+
+- `POST /reload` rereads the original `--config` file or `--config-base64`
+  value. It is unavailable if the process was started without either source.
+- `POST /apply` parses the TOML request body as a candidate config. It does not
+  replace the source used by a later `/reload`.
+
+Both actions apply the startup CLI overrides again, so an overridden value in
+the config file or `/apply` body does not supersede the command line. The
+client also reapplies its startup profile import. The candidate is parsed and
+built before runtime settings are replaced; on failure, the current settings
+remain active. A successful response means the in-memory settings were
+accepted, not that every process resource was recreated. The response's
+`restart_required_for` field names primary restart cases; use the table below
+for the full set of startup-captured settings. `/status` exposes the last
+successful apply timestamp.
+
+| Process | Updated by reload/apply | Restart required for |
+| --- | --- | --- |
+| Remote | `remote.users` (including each user's `name`, `psk`, `quota.*`, and `bandwidth.*`); `remote.egress.*`; `remote.fallback_http.*`; `remote.handshake_timeout_ms`, `remote.reject_delay_ms`, `remote.cold_start_delay_ms`; `shared.psk`, `shared.clock_skew_secs`, `shared.puzzle_bits`, `shared.handshake_window.*`, `shared.max_padding`, `shared.jitter_ms`, `shared.padding_chance_percent`, `shared.backpressure_*`, `shared.key_update_frames`, `shared.tcp.heartbeat_secs`, `shared.obfuscation.*`, `shared.stealth.*`, `shared.stealth_shaper.*`, `shared.pacing.*`, `shared.underlay.*`, `shared.mux.*`, `shared.max_streams`, and `shared.idle_timeout_secs`. These are the values assembled into `RemoteSettings` and used by new tunnels/streams. | `remote.listen`; `admin.listen` and `admin.token`; `logging.*`; `remote.replay_window_secs`, `remote.max_handshake_padding`, `remote.tarpit_*`; `shared.tcp` socket options (except `heartbeat_secs`); `shared.port_hopping.*`, `shared.tunnel_buffer`, `shared.max_physical_connections`. These are captured by the running listener/process, admin service, or logging subscriber. |
+| Local | `local.server`, `local.auth`; `local.handshake_padding`, `local.http_bulk_threshold_bytes`; `local.tunnel_pool.*`; `shared.psk`, `shared.clock_skew_secs`, `shared.puzzle_bits`, `shared.handshake_window.*`, `shared.max_padding`, `shared.jitter_ms`, `shared.padding_chance_percent`, `shared.backpressure_*`, `shared.key_update_frames`, `shared.tcp.*`, `shared.pacing.*`, `shared.obfuscation.*`, `shared.stealth.*`, `shared.stealth_shaper.*`, `shared.underlay.*`, `shared.mux.*`, `shared.tunnel_buffer`, and `shared.idle_timeout_secs`. Reload/apply replaces the tunnel manager, so the new runtime settings are used for subsequent tunnel work. | `local.socks5_listen`, `local.http_listen`, `local.tun.*`, `admin.listen` and `admin.token`, and `logging.*`. These belong to already-created listeners, active TUN setup, admin service, or logging subscriber. |
+
+The wildcard notation above includes every child key in that TOML table. A listed
+setting is accepted into runtime state; it does not reconfigure an established
+physical tunnel or logical stream. In particular, local TCP and mux settings
+apply as new tunnels are created, while streams already using a tunnel keep
+their existing resources. Startup CLI overrides (and the local startup profile
+import) continue to take precedence over config values during reload/apply.
+
+For either process, newly created tunnels and newly opened logical streams use
+the updated runtime settings. Established streams keep their existing
+resources and settings until they close; an update does not renegotiate an
+active stream. Settings supplied only through a changed config source take
+effect after the next successful reload/apply. A restart is needed for the
+process-owned settings above. See [Configuration](CONFIG.md) for each field's
+meaning and [Runbook](RUNBOOK.md) for upgrade/restart procedure.
 
 ```bash
 curl -H 'Authorization: Bearer change-me-admin-token' http://127.0.0.1:9090/status
@@ -32,6 +97,11 @@ Metrics include active physical connections, active logical streams, accepted
 connections, handshake success/failure counters, stream counters, byte totals,
 egress deny counters, stream failure reason counters, session rotation counters,
 frame key-update counters, and local tunnel lane counters.
+See [Prometheus Metrics](METRICS.md) for the complete metric catalog, types,
+label definitions, units, scope, and example queries. For Prometheus scrape
+configuration and starter alert rules, see [Monitoring And Alerting](MONITORING-ALERTS.md).
+The scrape guide uses Prometheus' `bearer_token_file`, which sends the
+`Authorization: Bearer` header accepted by this endpoint.
 
 `/status` and `/connections` also include runtime state: tunnel state,
 reconnect count, consecutive failures, recent errors, egress policy version,
@@ -51,18 +121,6 @@ espejismo_tunnel_lane_bytes_client_to_remote{role="local",lane_id="0",lane_kind=
 espejismo_tunnel_lane_bytes_remote_to_client{role="local",lane_id="0",lane_kind="bulk",state="connected"} 2048
 espejismo_tunnel_lane_last_open_latency_ms{role="local",lane_id="0",lane_kind="bulk",state="connected"} 158
 ```
-
-Runtime apply updates new tunnels and newly opened logical streams. A restart is
-still required for process-owned resources such as listener sockets,
-`admin.listen`, TUN device ownership, and log file handles.
-
-Remote runtime-managed settings include users, quotas, bandwidth limits, egress
-policy, fallback behavior, handshake timing, frame shaping, and stream limits.
-Local runtime-managed settings include `local.server`, local proxy auth,
-TCP/pacing/obfuscation knobs, mux mode, and `local.tunnel_pool`; applying those
-settings rebuilds the tunnel pool without restarting the local process.
-Existing established streams keep their current resources until they naturally
-close.
 
 Keep admin listeners bound to loopback unless they sit behind a trusted local
 firewall or service manager.

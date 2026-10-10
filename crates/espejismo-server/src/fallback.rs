@@ -38,7 +38,9 @@ pub(crate) async fn should_route_to_http_fallback(
     if !fallback.enabled {
         return Ok(false);
     }
-    let mut buf = [0_u8; 16];
+    // The HTTP/2 prior-knowledge preface is 24 bytes. Read the complete
+    // preface before classifying it so a spoofed 16-byte prefix is not enough.
+    let mut buf = [0_u8; 24];
     let n = match timeout(fallback.probe_timeout, stream.peek(&mut buf)).await {
         Ok(Ok(n)) => n,
         Ok(Err(err)) => return Err(err.into()),
@@ -65,18 +67,21 @@ pub(crate) async fn route_http_fallback(
 }
 
 async fn reject_or_quarantine(
-    stream: TcpStream,
+    mut stream: TcpStream,
     reject_delay: Duration,
     tarpit: &tarpit::TarpitManager,
 ) {
     if reject_delay.is_zero() {
         tarpit.quarantine(stream).await;
     } else {
-        quiet_reject(stream, reject_delay).await;
+        quiet_reject(&mut stream, reject_delay).await;
     }
 }
 
-async fn quiet_reject(mut stream: TcpStream, delay: Duration) {
+async fn quiet_reject<S>(stream: &mut S, delay: Duration)
+where
+    S: tokio::io::AsyncWrite + Unpin,
+{
     if !delay.is_zero() {
         sleep(delay).await;
     }
@@ -84,7 +89,21 @@ async fn quiet_reject(mut stream: TcpStream, delay: Duration) {
 }
 
 fn looks_like_http_probe(prefix: &[u8]) -> bool {
-    let methods: [&[u8]; 10] = [
+    // Keep this classifier deliberately narrow: TLS-looking and arbitrary
+    // binary prefixes must continue to authenticated tunnel handling, never
+    // trigger protocol downgrade into the optional HTTP fallback.
+    matches!(classify_inbound_prefix(prefix), InboundRoute::HttpFallback)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InboundRoute {
+    HttpFallback,
+    AuthenticatedTunnel,
+}
+
+fn classify_inbound_prefix(prefix: &[u8]) -> InboundRoute {
+    const HTTP2_PREFACE: &[u8] = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+    let methods: [&[u8]; 9] = [
         b"GET ",
         b"POST ",
         b"HEAD ",
@@ -94,9 +113,15 @@ fn looks_like_http_probe(prefix: &[u8]) -> bool {
         b"OPTIONS ",
         b"CONNECT ",
         b"TRACE ",
-        b"PRI * HTTP/2.0",
     ];
-    methods.iter().any(|m| prefix.starts_with(m))
+    if prefix == HTTP2_PREFACE || methods.iter().any(|m| prefix.starts_with(m)) {
+        InboundRoute::HttpFallback
+    } else {
+        // SNI does not select upstreams in this server. Every non-HTTP prefix,
+        // including ClientHellos with absent, wildcard-like, or distinct SNI,
+        // remains on the authenticated tunnel path.
+        InboundRoute::AuthenticatedTunnel
+    }
 }
 
 async fn write_builtin_fallback_response(
@@ -200,22 +225,197 @@ fn unix_secs(time: SystemTime) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{build_builtin_fallback_response, looks_like_http_probe, FallbackHttpRuntime};
-    use tokio::time::Duration;
+    use super::{
+        build_builtin_fallback_response, classify_inbound_prefix, looks_like_http_probe,
+        quiet_reject, FallbackHttpRuntime, InboundRoute,
+    };
+    use std::time::Duration;
+    use tokio::time::Instant;
 
     #[test]
     fn detects_common_http_methods() {
-        assert!(looks_like_http_probe(b"GET / HTTP/1.1\r\n"));
-        assert!(looks_like_http_probe(b"POST /submit HTTP/1.1\r\n"));
-        assert!(looks_like_http_probe(
-            b"CONNECT example.com:443 HTTP/1.1\r\n"
-        ));
+        for request in [
+            b"GET / HTTP/1.1\r\n".as_slice(),
+            b"POST /submit HTTP/1.1\r\n",
+            b"HEAD / HTTP/1.1\r\n",
+            b"PUT /resource HTTP/1.1\r\n",
+            b"PATCH /resource HTTP/1.1\r\n",
+            b"DELETE /resource HTTP/1.1\r\n",
+            b"OPTIONS * HTTP/1.1\r\n",
+            b"CONNECT example.com:443 HTTP/1.1\r\n",
+            b"TRACE / HTTP/1.1\r\n",
+            b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n",
+        ] {
+            assert!(looks_like_http_probe(request), "request {request:?}");
+        }
+    }
+
+    #[test]
+    fn rejects_incomplete_or_near_match_http_methods() {
+        // A method must be complete, uppercase, and followed by a space before
+        // the first peek can select the HTTP fallback.
+        for prefix in [
+            b"G".as_slice(),
+            b"GE",
+            b"GET",
+            b"get / HTTP/1.1\r\n",
+            b"GETX / HTTP/1.1\r\n",
+            b"CONNECTX host:443 HTTP/1.1\r\n",
+        ] {
+            assert!(
+                !looks_like_http_probe(prefix),
+                "prefix {prefix:?} must not select HTTP fallback"
+            );
+        }
+    }
+
+    #[test]
+    fn requires_complete_http2_preface_to_select_fallback() {
+        let preface = b"PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+        assert!(looks_like_http_probe(preface));
+        for end in 0..preface.len() {
+            assert!(
+                !looks_like_http_probe(&preface[..end]),
+                "truncated HTTP/2 preface at {end} bytes must not select fallback"
+            );
+        }
+        for spoof in [
+            b"PRI * HTTP/2.0".as_slice(),
+            b"PRI * HTTP/2.0\r\n\r\nXX\r\n\r\n",
+            b"PRI * HTTP/2.0\r\n\r\nSM\r\n\rX",
+        ] {
+            assert!(
+                !looks_like_http_probe(spoof),
+                "spoofed HTTP/2 preface {spoof:?} must not select fallback"
+            );
+        }
     }
 
     #[test]
     fn ignores_non_http_prefixes() {
         assert!(!looks_like_http_probe(b"\x16\x03\x01\x02\x00"));
         assert!(!looks_like_http_probe(b"\x8f\xf2\x00\x11"));
+    }
+
+    #[test]
+    fn tls_record_prefixes_never_select_http_fallback() {
+        // Cover TLS handshake, alert, and application-data records, including
+        // every partial record-header length seen while a peer is sending.
+        for content_type in [0x14, 0x15, 0x16, 0x17] {
+            let record = [content_type, 0x03, 0x03, 0x00, 0x10, 0x01, 0x02];
+            for end in 0..=record.len() {
+                assert!(
+                    !looks_like_http_probe(&record[..end]),
+                    "TLS content type {content_type:#x} prefix length {end} must not select HTTP fallback"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tls_client_hello_with_sni_is_not_routed_as_http() {
+        // A minimal TLS record containing a ClientHello with the SNI extension
+        // for example.com. The fallback probe only recognizes HTTP methods;
+        // TLS remains on the tunnel authentication path regardless of SNI.
+        let client_hello_with_sni = [
+            0x16, 0x03, 0x01, 0x00, 0x45, // TLS handshake record
+            0x01, 0x00, 0x00, 0x41, // ClientHello
+            0x03, 0x03, // legacy_version
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // random
+            0x00, // session id length
+            0x00, 0x02, 0x13, 0x01, // cipher suites
+            0x01, 0x00, // compression methods
+            0x00, 0x16, // extensions length
+            0x00, 0x00, 0x00, 0x12, // server_name extension
+            0x00, 0x10, 0x00, 0x00, 0x0b, b'e', b'x', b'a', b'm', b'p', b'l', b'e', b'.', b'c',
+            b'o', b'm',
+        ];
+
+        assert!(!looks_like_http_probe(&client_hello_with_sni));
+        for end in 1..client_hello_with_sni.len() {
+            assert!(
+                !looks_like_http_probe(&client_hello_with_sni[..end]),
+                "truncated ClientHello prefix of length {end} must not match HTTP"
+            );
+        }
+    }
+
+    #[test]
+    fn sni_values_never_select_a_fallback_backend() {
+        // SNI-based backend routing is intentionally not implemented. Keep
+        // absent SNI, wildcard-shaped input, and multiple hostnames on the
+        // same authenticated-tunnel route rather than selecting a backend.
+        for (label, hello) in [
+            ("missing SNI", b"\x16\x03\x01\x00\x05hello".as_slice()),
+            ("wildcard-like SNI", b"\x16\x03\x01*.example.test"),
+            ("first backend name", b"\x16\x03\x01one.example.test"),
+            ("second backend name", b"\x16\x03\x01two.example.test"),
+        ] {
+            assert_eq!(
+                classify_inbound_prefix(hello),
+                InboundRoute::AuthenticatedTunnel,
+                "{label} must not select an HTTP fallback backend"
+            );
+        }
+        assert_eq!(
+            classify_inbound_prefix(b"GET / HTTP/1.1\r\n"),
+            InboundRoute::HttpFallback,
+            "HTTP fallback remains limited to recognized HTTP prefixes"
+        );
+    }
+
+    #[test]
+    fn empty_oversized_and_malformed_sni_client_hellos_are_not_http() {
+        // The fallback classifier must not interpret any TLS-shaped input as
+        // HTTP, even when the SNI extension is empty, malformed, or advertises
+        // lengths larger than the bytes received. This test intentionally
+        // exercises routing classification, not TLS parser validity.
+        let empty_sni_list = [
+            0x16, 0x03, 0x01, 0x00, 0x08, // TLS record
+            0x01, 0x00, 0x00, 0x04, // minimal ClientHello body
+            0x00, 0x00, 0x00, 0x00, // SNI extension with empty server-name list
+        ];
+        let dangling_extension = [
+            0x16, 0x03, 0x01, 0x00, 0x2a, // record
+            0x01, 0x00, 0x00, 0x26, // ClientHello
+            0x03, 0x03, // legacy_version
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, // random
+            0x00, 0x00, 0x02, 0x13, 0x01, 0x01, 0x00, // sid, cipher, compression
+            0x00, 0x01, // extensions length
+            0x00, // malformed dangling extension byte
+        ];
+        let oversized_sni = [
+            0x16, 0x03, 0x01, 0xff, 0xff, // oversized TLS record length
+            0x01, 0xff, 0xff, 0xff, // oversized handshake length
+            0x03, 0x03, 0x00, 0x00, 0x00, 0x00, // truncated hello
+        ];
+        let malformed_sni = [
+            0x16, 0x03, 0x01, 0x00, 0x10, // record
+            0x01, 0x00, 0x00, 0x0c, // short ClientHello
+            0x03, 0x03, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x13, 0x01, 0x01, 0x00, 0x00,
+            0x20, // extensions claim more bytes than present
+            0x00, 0x00, 0x00, 0x1c, 0x00, 0x1a, 0x00, 0x00, 0x17, b'e', b'x',
+        ];
+
+        for (label, input) in [
+            ("empty SNI list", empty_sni_list.as_slice()),
+            ("dangling SNI extension", dangling_extension.as_slice()),
+            ("oversized SNI record", oversized_sni.as_slice()),
+            ("malformed SNI extension", malformed_sni.as_slice()),
+        ] {
+            assert!(
+                !looks_like_http_probe(input),
+                "{label} ClientHello must not select HTTP fallback"
+            );
+            for end in 0..=input.len() {
+                assert!(
+                    !looks_like_http_probe(&input[..end]),
+                    "{label} ClientHello prefix of length {end} must not select HTTP fallback"
+                );
+            }
+        }
     }
 
     #[test]
@@ -235,5 +435,23 @@ mod tests {
         assert!(response.contains("\r\nLast-Modified: "));
         assert!(response.contains("\r\nETag: "));
         assert!(response.contains("\r\nContent-Length: 15\r\n"));
+        // HSTS is only honored when received over HTTPS. This built-in
+        // fallback is plain HTTP, so it must not advertise an HSTS policy.
+        assert!(!response.lines().any(|line| line
+            .split_once(':')
+            .is_some_and(|(name, _)| { name.eq_ignore_ascii_case("Strict-Transport-Security") })));
+    }
+
+    #[tokio::test]
+    async fn failed_authentication_rejection_waits_for_configured_delay() {
+        let (mut server, _client) = tokio::io::duplex(64);
+        let delay = Duration::from_millis(80);
+        let started = Instant::now();
+        quiet_reject(&mut server, delay).await;
+
+        assert!(started.elapsed() >= delay);
+        tokio::io::AsyncWriteExt::shutdown(&mut server)
+            .await
+            .unwrap();
     }
 }

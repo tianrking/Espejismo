@@ -1,5 +1,29 @@
 # Changelog
 
+For entry and release-maintenance rules, see
+[docs/development/CHANGELOG.md](docs/development/CHANGELOG.md).
+
+## Unreleased
+
+### Added
+
+- Added task-focused deployment guides for configuration, proxy ingress and
+  egress, DNS, authentication, TLS, traffic shaping, TUN, and network behavior,
+  with indexes, examples, FAQs, and troubleshooting guidance.
+- Added operator guidance for health checks, resource planning, upgrades and
+  rollback, backups, high availability, shutdown and restart behavior, logging,
+  metrics, dashboards, alerts, and incident response.
+- Expanded contributor and maintainer references for development, testing,
+  profiling, benchmarks, project history, versioning, deprecation, and release
+  preparation.
+- Added navigable references for CLI options, environment variables, exit codes,
+  errors, PID files, QoS, and transport behavior, plus project positioning,
+  architecture, benchmark, known-issues, and issue-template documentation.
+- Added an adaptive throughput helper that applies the auto-throughput profile
+  (BDP-sized buffers and a mux window up to 16 MiB) when measured RTT is at
+  least 100 ms.
+
+
 ## v0.1.5
 
 `v0.1.5` is a lane-classification and live-observability patch release for the

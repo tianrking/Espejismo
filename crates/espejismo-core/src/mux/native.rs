@@ -46,6 +46,7 @@ impl Default for NativeMuxConfig {
             initial_window_bytes: 1024 * 1024,
             stream_buffer_frames: 128,
             send_queue_frames: 64,
+            // Match shared.mux defaults; normal runtime construction overrides these values.
             session_idle_timeout: Duration::from_secs(300),
             drain_timeout: Duration::from_secs(30),
         }
@@ -60,6 +61,14 @@ pub struct NativeControl {
 pub struct NativeSession {
     accept_rx: mpsc::Receiver<Result<NativeStream, io::Error>>,
     task: JoinHandle<()>,
+}
+
+struct AbortOnDrop(JoinHandle<()>);
+
+impl Drop for AbortOnDrop {
+    fn drop(&mut self) {
+        self.0.abort();
+    }
 }
 
 pub struct NativeStream {
@@ -193,7 +202,7 @@ where
         command_tx,
         command_rx,
         accept_tx,
-        first_stream_id,
+        u64::from(first_stream_id),
         config,
     ));
     (control, NativeSession { accept_rx, task })
@@ -411,7 +420,7 @@ async fn run_session<T>(
     command_tx: mpsc::Sender<Command>,
     mut command_rx: mpsc::Receiver<Command>,
     accept_tx: mpsc::Sender<Result<NativeStream, io::Error>>,
-    mut next_stream_id: u32,
+    mut next_stream_id: u64,
     config: NativeMuxConfig,
 ) where
     T: AsyncRead + AsyncWrite + Unpin + Send + 'static,
@@ -433,7 +442,7 @@ async fn run_session<T>(
     let (mut read_half, mut write_half) = tokio::io::split(transport);
     let (frame_tx, mut frame_rx) =
         mpsc::channel::<Result<Option<(u8, u32, Vec<u8>)>>>(COMMAND_CHANNEL_EXTRA_FRAMES);
-    tokio::spawn(async move {
+    let reader_task = AbortOnDrop(tokio::spawn(async move {
         loop {
             match read_frame(&mut read_half).await {
                 Ok(Some(frame)) => {
@@ -451,7 +460,7 @@ async fn run_session<T>(
                 }
             }
         }
-    });
+    }));
 
     loop {
         if flush_pending(&mut write_half, &mut streams, &mut pending)
@@ -537,6 +546,19 @@ async fn run_session<T>(
             }
         }
     }
+
+    // A stream handle can outlive the session task. Wake writers before the
+    // stream table is dropped so they observe a closed stream instead of
+    // waiting forever for window credit that can no longer arrive.
+    for stream in streams.values() {
+        if let Ok(mut flow) = stream.flow.lock() {
+            flow.close();
+        }
+    }
+    // The reader may be waiting for another frame on a transport that remains
+    // alive after the session has failed. Stop it explicitly so the read half
+    // and its task are reclaimed with the session.
+    reader_task.0.abort();
 }
 
 fn should_stop(draining_since: Option<Instant>, drain_timeout: Duration, no_streams: bool) -> bool {
@@ -558,7 +580,7 @@ enum FrameEffect {
 struct CommandContext<'a> {
     command_tx: &'a mpsc::Sender<Command>,
     streams: &'a mut HashMap<u32, StreamEntry>,
-    next_stream_id: &'a mut u32,
+    next_stream_id: &'a mut u64,
     config: &'a NativeMuxConfig,
     pending: &'a mut PendingFrames,
     pending_pings: &'a mut HashMap<u64, (Instant, oneshot::Sender<Duration>)>,
@@ -576,8 +598,7 @@ async fn handle_command(command: Command, ctx: CommandContext<'_>) -> Result<Com
                 let _ = reply.send(Err(anyhow::anyhow!("native mux max streams reached")));
                 return Ok(CommandEffect::Continue);
             }
-            let stream_id = *ctx.next_stream_id;
-            let Some(next_stream_id) = ctx.next_stream_id.checked_add(2) else {
+            let Some(stream_id) = allocate_stream_id(ctx.next_stream_id) else {
                 let _ = reply.send(Err(anyhow::anyhow!("native mux stream id exhausted")));
                 return Ok(CommandEffect::StartDrain);
             };
@@ -585,7 +606,6 @@ async fn handle_command(command: Command, ctx: CommandContext<'_>) -> Result<Com
                 let _ = reply.send(Err(anyhow::anyhow!("native mux stream id collision")));
                 return Ok(CommandEffect::StartDrain);
             }
-            *ctx.next_stream_id = next_stream_id;
             let (stream, entry) = new_stream(
                 stream_id,
                 priority,
@@ -639,6 +659,13 @@ async fn handle_command(command: Command, ctx: CommandContext<'_>) -> Result<Com
         }
     }
     Ok(CommandEffect::Continue)
+}
+
+// Keep the cursor wider than the wire ID so the final parity-matching ID is usable.
+fn allocate_stream_id(next_stream_id: &mut u64) -> Option<u32> {
+    let stream_id = u32::try_from(*next_stream_id).ok()?;
+    *next_stream_id += 2;
+    Some(stream_id)
 }
 
 struct FrameContext<'a> {
@@ -720,7 +747,13 @@ async fn handle_frame(
             if payload.len() != 8 {
                 bail!("native mux malformed ping");
             }
-            let nonce = u64::from_be_bytes(payload[..8].try_into().expect("payload len checked"));
+            let nonce = u64::from_be_bytes(
+                payload
+                    .get(..8)
+                    .ok_or_else(|| anyhow::anyhow!("native mux malformed ping"))?
+                    .try_into()
+                    .map_err(|_| anyhow::anyhow!("native mux malformed ping"))?,
+            );
             if let Some((started, reply)) = ctx.pending_pings.remove(&nonce) {
                 let _ = reply.send(started.elapsed());
             } else {
@@ -803,6 +836,9 @@ fn new_stream(
     stream_buffer_frames: usize,
     send_queue_frames: usize,
 ) -> (NativeStream, StreamEntry) {
+    // The receive channel is also bounded, but the advertised byte window is
+    // the tighter payload bound: a peer cannot send more than this many bytes
+    // per stream until the application consumes data and returns credit.
     let (tx, rx) = mpsc::channel(stream_buffer_frames);
     let flow = Arc::new(Mutex::new(FlowState::new(
         initial_window_bytes,

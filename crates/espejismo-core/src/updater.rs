@@ -1,3 +1,5 @@
+//! Release metadata lookup helpers for optional startup update checks.
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
@@ -56,7 +58,17 @@ fn is_newer_version(current: &str, latest: &str) -> bool {
         parse_numeric_version(&current),
         parse_numeric_version(&latest),
     ) {
-        (Some(current), Some(latest)) => latest > current,
+        (Some(mut current), Some(mut latest)) => {
+            // Tags often omit trailing zero components (1.2 and 1.2.0 are
+            // the same release). Ignore those before comparing components.
+            while current.last() == Some(&0) {
+                current.pop();
+            }
+            while latest.last() == Some(&0) {
+                latest.pop();
+            }
+            latest > current
+        }
         _ => latest != current,
     }
 }
@@ -94,6 +106,45 @@ mod tests {
         assert!(is_newer_version("1.9.0", "1.10.0"));
         assert!(!is_newer_version("1.10.0", "1.9.9"));
         assert!(!is_newer_version("v1.0.0", "1.0.0"));
+    }
+
+    #[test]
+    fn compares_version_component_boundaries() {
+        assert!(!is_newer_version("1.2", "1.2.0"));
+        assert!(!is_newer_version("1.2.0.0", "1.2"));
+        assert!(is_newer_version("1.2.0", "1.2.1"));
+        assert!(is_newer_version("1.2.9", "1.3"));
+        assert!(!is_newer_version("1.2.0", "1.2.0"));
+        assert!(!is_newer_version("v1.2.0", " V1.2.0 "));
+    }
+
+    #[test]
+    fn malformed_numeric_component_falls_back_to_tag_comparison() {
+        assert!(is_newer_version("1.2.0", "1.2.x"));
+        assert!(!is_newer_version("1.2.x", "1.2.x"));
+        assert!(is_newer_version("1.2.18446744073709551616", "1.2.0"));
+    }
+
+    #[test]
+    fn parses_documented_release_field_aliases() {
+        for key in ["tag_name", "latest_version", "version"] {
+            let json =
+                format!("{{\"{key}\":\"v2.0.0\",\"html_url\":\"https://example.test/release\"}}");
+            let response: ReleaseResponse = serde_json::from_str(&json).unwrap();
+            let info = update_info_from_release("1.9.9", response);
+            assert!(info.update_available, "field {key}");
+            assert_eq!(info.latest_version, "v2.0.0");
+            assert_eq!(
+                info.release_url.as_deref(),
+                Some("https://example.test/release")
+            );
+        }
+    }
+
+    #[test]
+    fn missing_optional_release_url_is_accepted() {
+        let response: ReleaseResponse = serde_json::from_str(r#"{"version":"1.0.0"}"#).unwrap();
+        assert_eq!(response.html_url, None);
     }
 
     #[test]

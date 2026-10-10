@@ -1,19 +1,18 @@
+//! TCP listener and outbound connection helpers with configured socket options.
+
 use std::io;
 use std::net::SocketAddr;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use socket2::{Domain, Protocol, SockAddr, SockRef, Socket, TcpKeepalive, Type};
-use tokio::net::{lookup_host, TcpListener, TcpSocket, TcpStream};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
 
 use crate::config::TcpConfig;
 
 pub async fn connect_tcp_stream(authority: &str, options: &TcpConfig) -> Result<TcpStream> {
     let mut last_error = None;
-    for addr in lookup_host(authority)
-        .await
-        .with_context(|| format!("resolve {authority}"))?
-    {
+    for addr in crate::dns::resolve_socket_addrs(authority).await? {
         match connect_tcp_addr(addr, options).await {
             Ok(stream) => return Ok(stream),
             Err(err) => last_error = Some(err),
@@ -43,6 +42,14 @@ async fn connect_tcp_addr(addr: SocketAddr, options: &TcpConfig) -> Result<TcpSt
 }
 
 pub fn bind_tcp_listener(addr: SocketAddr, options: &TcpConfig) -> Result<TcpListener> {
+    bind_tcp_listener_with_backlog(addr, options, 1024)
+}
+
+fn bind_tcp_listener_with_backlog(
+    addr: SocketAddr,
+    options: &TcpConfig,
+    backlog: i32,
+) -> Result<TcpListener> {
     let socket = Socket::new(Domain::for_address(addr), Type::STREAM, Some(Protocol::TCP))
         .with_context(|| format!("create listener socket {addr}"))?;
     socket
@@ -53,7 +60,8 @@ pub fn bind_tcp_listener(addr: SocketAddr, options: &TcpConfig) -> Result<TcpLis
         .bind(&SockAddr::from(addr))
         .with_context(|| format!("bind {addr}"))?;
     socket
-        .listen(1024)
+        // The OS may cap or reinterpret this hint; it is not an exact queue size.
+        .listen(backlog)
         .with_context(|| format!("listen {addr}"))?;
     socket
         .set_nonblocking(true)
@@ -62,17 +70,101 @@ pub fn bind_tcp_listener(addr: SocketAddr, options: &TcpConfig) -> Result<TcpLis
     TcpListener::from_std(std_listener).with_context(|| format!("install tokio listener {addr}"))
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{Duration, timeout};
+
+    #[test]
+    fn socket_buffer_size_checks_platform_integer_boundary() {
+        assert_eq!(socket_buffer_size(0).unwrap(), 0);
+        assert_eq!(socket_buffer_size(u32::MAX as usize).unwrap(), u32::MAX);
+
+        if usize::BITS > u32::BITS {
+            let error = socket_buffer_size(u32::MAX as usize + 1).unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        }
+    }
+
+    #[test]
+    fn tcp_keepalive_seconds_boundaries_preserve_disable_and_duration() {
+        assert!(tcp_keepalive(0).is_none());
+
+        assert_eq!(tcp_keepalive(1), Some(Duration::from_secs(1)));
+
+        assert_eq!(tcp_keepalive(u64::MAX), Some(Duration::from_secs(u64::MAX)));
+    }
+
+    // Requires loopback TCP bind, unavailable in the Codex sandbox; the gate
+    // skips it there. Run outside the sandbox with
+    // `cargo test -p espejismo-core -- --ignored` to execute it.
+    #[tokio::test]
+    #[ignore = "requires loopback bind"]
+    async fn listener_recovers_after_accept_queue_is_drained() {
+        let listener = bind_tcp_listener_with_backlog(
+            "127.0.0.1:0".parse().unwrap(),
+            &TcpConfig::default(),
+            1,
+        )
+        .unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        // Hold clients open while the listener is deliberately not accepting. A
+        // small backlog lets the kernel queue fill; exact overflow behavior varies
+        // by OS, so bound each attempt and assert recovery after draining instead.
+        let mut clients = Vec::new();
+        for _ in 0..8 {
+            if let Ok(Ok(client)) =
+                timeout(Duration::from_millis(100), TcpStream::connect(addr)).await
+            {
+                clients.push(client);
+            }
+        }
+        assert!(
+            !clients.is_empty(),
+            "at least one connection should enter the queue"
+        );
+
+        let mut accepted = 0;
+        while let Ok(Ok((_stream, _peer))) =
+            timeout(Duration::from_millis(100), listener.accept()).await
+        {
+            accepted += 1;
+            if accepted == clients.len() {
+                break;
+            }
+        }
+        assert!(accepted > 0, "queued connections should remain acceptable");
+
+        let follow_up = timeout(Duration::from_secs(1), TcpStream::connect(addr))
+            .await
+            .expect("listener should accept new connection after queue drain")
+            .expect("follow-up connect should succeed");
+        let _accepted = timeout(Duration::from_secs(1), listener.accept())
+            .await
+            .expect("follow-up connection should be accepted")
+            .unwrap();
+        drop((clients, follow_up));
+    }
+}
+
 pub fn apply_tcp_options(stream: &TcpStream, options: &TcpConfig) -> Result<()> {
     stream.set_nodelay(options.nodelay)?;
     let sock = SockRef::from(stream);
     apply_sockref_buffer_options(&sock, options)?;
-    if options.keepalive_secs > 0 {
+    if let Some(keepalive_secs) = tcp_keepalive(options.keepalive_secs) {
         sock.set_keepalive(true)?;
-        let keepalive = TcpKeepalive::new().with_time(Duration::from_secs(options.keepalive_secs));
+        let keepalive = TcpKeepalive::new().with_time(keepalive_secs);
         sock.set_tcp_keepalive(&keepalive)?;
     }
     apply_platform_tcp_options(&sock, options)?;
     Ok(())
+}
+
+/// Map the configured TCP keepalive idle time to a socket2 option. Zero keeps
+/// the OS socket keepalive disabled; nonzero values are passed through in seconds.
+fn tcp_keepalive(keepalive_secs: u64) -> Option<Duration> {
+    (keepalive_secs > 0).then(|| Duration::from_secs(keepalive_secs))
 }
 
 fn apply_socket_buffer_options(socket: &Socket, options: &TcpConfig) -> io::Result<()> {
@@ -91,12 +183,21 @@ fn apply_tcp_socket_options(socket: &TcpSocket, options: &TcpConfig) -> io::Resu
         socket.set_keepalive(true)?;
     }
     if options.send_buffer_bytes > 0 {
-        socket.set_send_buffer_size(options.send_buffer_bytes as u32)?;
+        socket.set_send_buffer_size(socket_buffer_size(options.send_buffer_bytes)?)?;
     }
     if options.recv_buffer_bytes > 0 {
-        socket.set_recv_buffer_size(options.recv_buffer_bytes as u32)?;
+        socket.set_recv_buffer_size(socket_buffer_size(options.recv_buffer_bytes)?)?;
     }
     Ok(())
+}
+
+fn socket_buffer_size(bytes: usize) -> io::Result<u32> {
+    u32::try_from(bytes).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "TCP socket buffer size exceeds the platform API limit",
+        )
+    })
 }
 
 fn apply_sockref_buffer_options(socket: &SockRef<'_>, options: &TcpConfig) -> io::Result<()> {

@@ -1,8 +1,12 @@
 # Update Checks
 
 Both binaries can check release metadata and print a human-readable update
-notice. In `v0.0.6`, this is an explicit check command rather than an automatic
-self-replacing updater.
+notice. This is an explicit check command; it does not replace binaries or
+restart services.
+
+Before replacing either binary, review the [client/server version compatibility
+policy](VERSION-COMPATIBILITY.md). Binary release numbers do not by themselves
+promise wire-protocol compatibility.
 
 ```bash
 espejismo-local --check-update
@@ -29,3 +33,8 @@ Compatible JSON fields:
 does not replace binaries automatically; it only reports availability and the
 release URL so package managers, service managers, or deployment scripts can
 decide how to roll forward.
+
+Numeric dotted tags are compared by component, with trailing zero components
+treated as equivalent (`1.2` and `1.2.0`). Tags that are not entirely numeric
+use a string inequality fallback. This metadata check does not verify artifact
+signatures or perform installation and rollback.

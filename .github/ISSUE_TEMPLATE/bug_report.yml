@@ -1,0 +1,60 @@
+name: Bug report
+description: Report a reproducible problem with Espejismo
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >-
+        Search existing issues first. For suspected security vulnerabilities,
+        do not file a public issue; follow the private process in
+        [SECURITY.md](https://github.com/tianrking/Espejismo/blob/main/SECURITY.md).
+        Review the [support guide](https://github.com/tianrking/Espejismo/blob/main/docs/SUPPORT.md)
+        and redact secrets, hostnames, IP addresses, and private paths.
+  - type: input
+    id: version
+    attributes:
+      label: Espejismo version
+      description: Client and server versions, or the release tag
+      placeholder: "Client 0.1.x; server 0.1.x"
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: Environment
+      description: Client/server OS and architecture; describe the network path with redacted labels
+      placeholder: "Linux x86_64 on both ends; <client-host> -> <server-host>"
+    validations:
+      required: true
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What happened, and what did you expect to happen?
+      placeholder: Describe the observed and expected behavior.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include a minimal sequence that reproduces the issue.
+      placeholder: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant configuration and command
+      description: Include only relevant settings. Remove PSKs, passwords, tokens, private endpoints, and paths.
+      render: toml
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Sanitized diagnostics
+      description: Relevant log lines, exact error text, checks run, frequency, and any workaround. Remove sensitive values.
+      render: text

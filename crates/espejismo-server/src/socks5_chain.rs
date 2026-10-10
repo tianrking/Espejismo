@@ -61,6 +61,7 @@ pub(crate) async fn relay_udp_via_socks5_proxy(
     let request = encode_socks5_udp_datagram(&host, port, payload)?;
     socket.send(&request).await?;
     let mut response = vec![0_u8; 65_535];
+    // A SOCKS5 UDP response is one datagram transaction, capped independently of stream idle.
     let n = timeout(
         idle.min(Duration::from_secs(10)),
         socket.recv(&mut response),
@@ -235,6 +236,7 @@ async fn read_socks5_reply_addr(stream: &mut TcpStream) -> Result<SocketAddr> {
 
 pub(crate) fn encode_socks5_udp_datagram(host: &str, port: u16, payload: &[u8]) -> Result<Vec<u8>> {
     let host_bytes = host.as_bytes();
+    anyhow::ensure!(!host_bytes.is_empty(), "SOCKS5 UDP target host is empty");
     anyhow::ensure!(
         host_bytes.len() <= u8::MAX as usize,
         "SOCKS5 UDP target host too long"
@@ -258,7 +260,9 @@ pub(crate) fn decode_socks5_udp_datagram(input: &[u8]) -> Result<Vec<u8>> {
         0x01 => offset += 4,
         0x03 => {
             anyhow::ensure!(input.len() > offset, "SOCKS5 UDP domain length missing");
-            offset += 1 + input[offset] as usize;
+            let domain_len = input[offset] as usize;
+            anyhow::ensure!(domain_len > 0, "SOCKS5 UDP domain is empty");
+            offset += 1 + domain_len;
         }
         0x04 => offset += 16,
         atyp => anyhow::bail!("SOCKS5 UDP response has unsupported address type {atyp}"),
@@ -285,8 +289,44 @@ mod tests {
     #[test]
     fn socks5_udp_datagram_rejects_fragmented_packets() {
         let mut encoded = encode_socks5_udp_datagram("example.com", 443, b"payload").unwrap();
-        encoded[2] = 1;
-        assert!(decode_socks5_udp_datagram(&encoded).is_err());
+        for frag in 1..=u8::MAX {
+            encoded[2] = frag;
+            assert!(
+                decode_socks5_udp_datagram(&encoded).is_err(),
+                "FRAG={frag:#04x}"
+            );
+        }
+        assert!(decode_socks5_udp_datagram(&[0, 0, 0x80, 0x01]).is_err());
+    }
+
+    #[test]
+    fn socks5_udp_datagram_rejects_truncated_address_headers() {
+        let cases: &[(&str, &[u8])] = &[
+            ("ipv4", &[0, 0, 0, 1, 127, 0, 0, 1, 0, 53]),
+            (
+                "ipv6",
+                &[
+                    0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 53,
+                ],
+            ),
+            ("domain", &[0, 0, 0, 3, 1, b'a', 0, 53]),
+        ];
+        for (name, packet) in cases {
+            for end in 0..packet.len() {
+                assert!(
+                    decode_socks5_udp_datagram(&packet[..end]).is_err(),
+                    "{name} len={end}"
+                );
+            }
+            assert!(decode_socks5_udp_datagram(packet).unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn socks5_udp_datagram_rejects_empty_domain_addresses() {
+        let packet = [0, 0, 0, 3, 0, 0, 53];
+        assert!(decode_socks5_udp_datagram(&packet).is_err());
+        assert!(encode_socks5_udp_datagram("", 53, b"query").is_err());
     }
 
     #[tokio::test]

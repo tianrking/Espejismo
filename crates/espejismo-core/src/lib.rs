@@ -1,7 +1,22 @@
+//! Shared protocol and configuration primitives for Espejismo.
+//!
+//! Parse and serialize the maintained deployment configuration without
+//! opening sockets or contacting a service:
+//!
+//! ```
+//! let source = include_str!("../../../configs/examples/espejismo.toml");
+//! let config = espejismo_core::parse_config(source)?;
+//! let serialized = espejismo_core::config_to_toml(&config)?;
+//! let reparsed = espejismo_core::parse_config(&serialized)?;
+//! assert_eq!(reparsed.local.server, config.local.server);
+//! # Ok::<(), anyhow::Error>(())
+//! ```
+
 pub mod admin;
 pub mod cli_support;
 pub mod config;
 pub mod crypto;
+pub mod dns;
 pub mod egress;
 pub mod extension;
 pub mod ingress;
@@ -19,16 +34,18 @@ pub mod updater;
 pub use admin::{spawn_admin_server, AdminAction, AdminState};
 pub use cli_support::{apply_log_overrides, print_update_check, report_config_check, LogOverrides};
 pub use config::{
-    apply_named_profile, config_to_toml, encode_config_base64, load_config, load_config_base64,
-    parse_config, AdminConfig, ConfigInput, EgressConfig, EspejismoConfig, FrameOptionOverrides,
-    HandshakeWindowConfig, Http2UnderlayConfig, LogConfig, LogFormat, MuxConfig, MuxMode,
-    ObfuscationConfig, PacingConfig, PortHoppingConfig, ProbeDefenseMode, TcpConfig,
-    TunnelPoolConfig, UnderlayConfig, UnderlayMode, WebSocketUnderlayConfig,
+    adaptive_throughput_floor, apply_adaptive_throughput, apply_named_profile, config_to_toml,
+    encode_config_base64, load_config, load_config_base64, parse_config, AdaptiveEligibility,
+    AdaptiveThroughputFloor, AdminConfig, ConfigInput, EgressConfig, EspejismoConfig,
+    FrameOptionOverrides, HandshakeWindowConfig, Http2UnderlayConfig, LogConfig, LogFormat,
+    MuxConfig, MuxMode, ObfuscationConfig, PacingConfig, PortHoppingConfig, ProbeDefenseMode,
+    TcpConfig, TunnelPoolConfig, UnderlayConfig, UnderlayMode, WebSocketUnderlayConfig,
 };
 pub use crypto::{
     accept_handshake, accept_handshake_with_replay, accept_handshake_with_users, connect_handshake,
     parse_psk, AuthenticatedSession, HandshakeConfig, HandshakeUser, HandshakeWindow, SessionKeys,
 };
+pub use dns::{resolve_socket_addrs, DNS_RESOLUTION_TIMEOUT};
 pub use egress::{split_authority, EgressPolicy, EgressProxy, EgressProxyKind};
 pub use extension::{
     AuthDecision, AuthRequest, Authenticator, CommandAuthenticator, EgressRequest,
@@ -49,7 +66,7 @@ pub use protocol::replay::ReplayCache;
 pub use protocol::request::{
     read_tunnel_request, write_tcp_connect, write_tcp_connect_with_priority, write_udp_datagram,
     write_udp_datagram_with_priority, StreamPriority, TunnelRequest, CMD_TCP_CONNECT,
-    CMD_UDP_DATAGRAM,
+    CMD_UDP_DATAGRAM, MAX_UDP_PAYLOAD_LEN,
 };
 pub use protocol::udp::{
     DeliveredDatagram, UdpCongestionController, UdpPacket, UdpPacketKind, UdpReliability,

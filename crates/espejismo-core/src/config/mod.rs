@@ -1,3 +1,8 @@
+//! Deployment configuration loading, validation, and serialization.
+//!
+//! This module accepts file or base64 input and applies bounded defaults while
+//! preserving explicit operator choices for adaptive tuning.
+
 use std::fs;
 use std::path::Path;
 
@@ -22,9 +27,35 @@ pub fn load_config(input: ConfigInput) -> Result<EspejismoConfig> {
 
 pub fn load_config_file(path: impl AsRef<Path>) -> Result<EspejismoConfig> {
     let path = path.as_ref();
+    warn_if_config_permissions_are_broad(path);
     let content = fs::read_to_string(path).with_context(|| format!("read {}", path.display()))?;
     parse_config(&content).with_context(|| format!("parse {}", path.display()))
 }
+
+/// Warn when a Unix config file grants any access to group or other users.
+/// Permission metadata failures are left to the regular file read path.
+#[cfg(unix)]
+fn warn_if_config_permissions_are_broad(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+
+    if let Ok(metadata) = fs::metadata(path) {
+        let mode = metadata.permissions().mode() & 0o777;
+        if config_permissions_are_broad(mode) {
+            eprintln!(
+                "warning: config file {} has broad permissions ({mode:04o}); restrict access to protect secrets (for example, chmod 600)",
+                path.display()
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+fn config_permissions_are_broad(mode: u32) -> bool {
+    mode & 0o077 != 0
+}
+
+#[cfg(not(unix))]
+fn warn_if_config_permissions_are_broad(_path: &Path) {}
 
 pub fn load_config_base64(encoded: &str) -> Result<EspejismoConfig> {
     let bytes = base64::engine::general_purpose::STANDARD
@@ -35,13 +66,27 @@ pub fn load_config_base64(encoded: &str) -> Result<EspejismoConfig> {
 }
 
 pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
-    let config: EspejismoConfig = toml::from_str(content)?;
+    let config: EspejismoConfig = toml::from_str(content).map_err(|error| {
+        let message = error.to_string();
+        if let Some(diagnostic) = unknown_field_diagnostic(&message) {
+            anyhow::anyhow!(diagnostic)
+        } else {
+            anyhow::anyhow!(error)
+        }
+    })?;
+    // RFC 9113 limits both stream and connection flow-control windows to
+    // 2^31-1. h2 asserts this bound when configuring stream windows, so reject
+    // invalid operator input here instead of panicking during transport setup.
+    const HTTP2_MAX_WINDOW_BYTES: u32 = (1 << 31) - 1;
     let validate_stealth_frame_size = |frame_size: usize, field: &str| -> Result<()> {
-        anyhow::ensure!(frame_size <= 64 * 1024, "{field} must be <= 65536");
+        anyhow::ensure!(
+            frame_size <= 64 * 1024,
+            "{field} must be in 141..=65536 bytes; for example, frame_size = 4096"
+        );
         let min_stealth_frame = 24 + 32 + 84 + 16 + 1;
         anyhow::ensure!(
             frame_size >= min_stealth_frame,
-            "{field} must leave room for handshake, AEAD tag, and at least one payload byte"
+            "{field} must be in 141..=65536 bytes to fit the handshake, AEAD tag, and payload; for example, frame_size = 4096"
         );
         Ok(())
     };
@@ -50,9 +95,12 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     }
     anyhow::ensure!(
         config.local.tun.prefix <= 32,
-        "local.tun.prefix must be <= 32"
+        "local.tun.prefix must be in 0..=32; for example, prefix = 24"
     );
-    anyhow::ensure!(config.local.tun.mtu >= 576, "local.tun.mtu must be >= 576");
+    anyhow::ensure!(
+        config.local.tun.mtu >= 576,
+        "local.tun.mtu must be >= 576; for example, mtu = 1500"
+    );
     anyhow::ensure!(
         config.local.tun.udp_timeout_secs > 0,
         "local.tun.udp_timeout_secs must be greater than 0"
@@ -83,11 +131,11 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
         );
         anyhow::ensure!(
             config.shared.handshake_window.previous_windows <= 4,
-            "shared.handshake_window.previous_windows must be <= 4"
+            "shared.handshake_window.previous_windows must be in 0..=4; for example, previous_windows = 1"
         );
         anyhow::ensure!(
             config.shared.handshake_window.future_windows <= 2,
-            "shared.handshake_window.future_windows must be <= 2"
+            "shared.handshake_window.future_windows must be in 0..=2; for example, future_windows = 0"
         );
         anyhow::ensure!(
             u16::from(config.shared.handshake_window.previous_windows)
@@ -114,7 +162,7 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     );
     anyhow::ensure!(
         config.shared.max_streams <= 65_535,
-        "shared.max_streams must be <= 65535"
+        "shared.max_streams must be in 1..=65535; for example, max_streams = 256"
     );
     anyhow::ensure!(
         config.shared.max_physical_connections > 0,
@@ -122,7 +170,7 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     );
     anyhow::ensure!(
         config.shared.max_physical_connections <= 65_535,
-        "shared.max_physical_connections must be <= 65535"
+        "shared.max_physical_connections must be in 1..=65535; for example, max_physical_connections = 8"
     );
     anyhow::ensure!(
         config.shared.key_update_frames > 0,
@@ -164,7 +212,7 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     );
     anyhow::ensure!(
         config.shared.obfuscation.min_chunk <= config.shared.obfuscation.max_chunk,
-        "shared.obfuscation.min_chunk must be <= max_chunk"
+        "shared.obfuscation.min_chunk must be in 1..=max_chunk; for example, min_chunk = 1024 and max_chunk = 16384"
     );
     anyhow::ensure!(
         config.local.tunnel_pool.max_connections > 0,
@@ -174,13 +222,18 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
         config.local.tunnel_pool.min_connections <= config.local.tunnel_pool.max_connections,
         "local.tunnel_pool.min_connections must be <= max_connections"
     );
+    let configured_lanes = config
+        .local
+        .tunnel_pool
+        .interactive_lanes
+        .checked_add(config.local.tunnel_pool.bulk_lanes)
+        .ok_or_else(|| anyhow::anyhow!("local.tunnel_pool lane count overflows usize"))?;
     anyhow::ensure!(
-        config.local.tunnel_pool.interactive_lanes + config.local.tunnel_pool.bulk_lanes > 0,
+        configured_lanes > 0,
         "local.tunnel_pool must configure at least one lane"
     );
     anyhow::ensure!(
-        config.local.tunnel_pool.interactive_lanes + config.local.tunnel_pool.bulk_lanes
-            <= config.local.tunnel_pool.max_connections,
+        configured_lanes <= config.local.tunnel_pool.max_connections,
         "local.tunnel_pool interactive_lanes + bulk_lanes must be <= max_connections"
     );
     anyhow::ensure!(
@@ -296,6 +349,14 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
             "shared.underlay.http2.initial_stream_window_bytes must be >= 65535"
         );
         anyhow::ensure!(
+            config.shared.underlay.http2.initial_stream_window_bytes <= HTTP2_MAX_WINDOW_BYTES,
+            "shared.underlay.http2.initial_stream_window_bytes must be <= 2147483647"
+        );
+        anyhow::ensure!(
+            config.shared.underlay.http2.initial_connection_window_bytes <= HTTP2_MAX_WINDOW_BYTES,
+            "shared.underlay.http2.initial_connection_window_bytes must be <= 2147483647"
+        );
+        anyhow::ensure!(
             config.shared
                 .underlay
                 .http2
@@ -305,7 +366,7 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
         );
         anyhow::ensure!(
             (16_384..=16_777_215).contains(&config.shared.underlay.http2.max_frame_bytes),
-            "shared.underlay.http2.max_frame_bytes must be between 16384 and 16777215"
+            "shared.underlay.http2.max_frame_bytes must be in 16384..=16777215; for example, max_frame_bytes = 16384"
         );
     }
     if config.shared.port_hopping.enabled {
@@ -333,6 +394,101 @@ pub fn parse_config(content: &str) -> Result<EspejismoConfig> {
     let egress_policy: crate::egress::EgressPolicy = config.remote.egress.clone().into();
     egress_policy.upstream_proxy()?;
     Ok(config)
+}
+
+/// Return the sorted configuration paths whose serialized values differ.
+/// Values are deliberately omitted so callers can report changes without
+/// exposing PSKs, admin tokens, or other configured secrets.
+pub fn changed_config_paths(
+    before: &EspejismoConfig,
+    after: &EspejismoConfig,
+) -> Result<Vec<String>> {
+    let before = serde_json::to_value(before)?;
+    let after = serde_json::to_value(after)?;
+    let mut paths = Vec::new();
+    collect_changed_paths(&before, &after, "", &mut paths);
+    Ok(paths)
+}
+
+fn collect_changed_paths(
+    before: &serde_json::Value,
+    after: &serde_json::Value,
+    prefix: &str,
+    paths: &mut Vec<String>,
+) {
+    if let (Some(before), Some(after)) = (before.as_object(), after.as_object()) {
+        let keys: std::collections::BTreeSet<_> = before.keys().chain(after.keys()).collect();
+        for key in keys {
+            let path = if prefix.is_empty() {
+                key.to_string()
+            } else {
+                format!("{prefix}.{key}")
+            };
+            match (before.get(key), after.get(key)) {
+                (Some(before), Some(after)) => {
+                    collect_changed_paths(before, after, &path, paths);
+                }
+                _ => paths.push(path),
+            }
+        }
+    } else if before != after {
+        paths.push(prefix.to_string());
+    }
+}
+
+fn unknown_field_diagnostic(message: &str) -> Option<String> {
+    let marker = "unknown field `";
+    let start = message.find(marker)? + marker.len();
+    let tail = &message[start..];
+    let end = tail.find('`')?;
+    let field = &tail[..end];
+    let expected_marker = "expected ";
+    let expected_start = message.find(expected_marker)? + expected_marker.len();
+    let expected_text = message[expected_start..].split(['\n', '.']).next()?;
+    let mut expected = Vec::new();
+    let mut remaining = expected_text;
+    while let Some(open) = remaining.find('`') {
+        remaining = &remaining[open + 1..];
+        let Some(close) = remaining.find('`') else {
+            break;
+        };
+        expected.push(&remaining[..close]);
+        remaining = &remaining[close + 1..];
+    }
+    if expected.is_empty() {
+        expected.extend(
+            expected_text
+                .split(", or ")
+                .flat_map(|part| part.split(", "))
+                .map(str::trim),
+        );
+    }
+    let suggestion = expected
+        .into_iter()
+        .map(|candidate| (edit_distance(field, candidate), candidate))
+        .filter(|(distance, _)| *distance <= 3 && *distance < field.len().max(1) / 2 + 1)
+        .min_by_key(|(distance, _)| *distance)
+        .map(|(_, candidate)| format!("; did you mean `{candidate}`?"))
+        .unwrap_or_default();
+    Some(format!(
+        "unknown config field `{field}`{suggestion}; check whether this option was renamed or removed in this release"
+    ))
+}
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    let mut row = (0..=right.len()).collect::<Vec<_>>();
+    for (i, a) in left.bytes().enumerate() {
+        let mut diagonal = row[0];
+        row[0] = i + 1;
+        for (j, b) in right.bytes().enumerate() {
+            let above = row[j + 1];
+            row[j + 1] = (row[j + 1] + 1)
+                .min(row[j] + 1)
+                .min(diagonal + usize::from(a != b));
+            diagonal = above;
+        }
+    }
+    row[right.len()]
 }
 
 pub fn apply_named_profile(config: &mut EspejismoConfig, name: &str) -> Result<()> {
@@ -455,6 +611,113 @@ pub fn apply_named_profile(config: &mut EspejismoConfig, name: &str) -> Result<(
     Ok(())
 }
 
+/// BDP-derived minimums for the throughput-critical tunables on high-RTT
+/// paths. Computed from a measured RTT; the caller decides which fields are
+/// eligible (not explicitly configured) before applying.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdaptiveThroughputFloor {
+    /// Minimum frame-transport buffer bytes.
+    pub tunnel_buffer: usize,
+    /// Minimum mux stream window bytes.
+    pub mux_window_bytes: usize,
+    /// Minimum TCP socket buffer bytes (0 = leave to the OS).
+    pub tcp_buffer_bytes: usize,
+}
+
+/// Estimate bandwidth-delay product using a fixed 1 Gbit/s target rate.
+/// RTT alone cannot determine path bandwidth; the result is clamped to 1 MiB
+/// through 64 MiB to bound memory growth.
+pub fn adaptive_throughput_floor(rtt: std::time::Duration) -> AdaptiveThroughputFloor {
+    let bdp_bytes = (1_000_000_000u128 * rtt.as_nanos() / 8_000_000_000u128)
+        .clamp(1024 * 1024, 64 * 1024 * 1024) as usize;
+    AdaptiveThroughputFloor {
+        tunnel_buffer: bdp_bytes.saturating_mul(2).min(32 * 1024 * 1024),
+        mux_window_bytes: bdp_bytes,
+        tcp_buffer_bytes: 4 * 1024 * 1024,
+    }
+}
+
+/// Which throughput tunables the adaptive logic may raise. A tunable is
+/// eligible only while it still holds its default value, i.e. the operator
+/// did not explicitly configure it (via config file, profile, or CLI).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdaptiveEligibility {
+    pub tunnel_buffer: bool,
+    pub mux_window: bool,
+    pub tcp_buffers: bool,
+}
+
+impl AdaptiveEligibility {
+    /// Derive eligibility from the effective tunables. Used by the client at
+    /// startup, where only the decomposed values are available.
+    pub fn from_tunables(
+        tunnel_buffer: usize,
+        mux_window_bytes: usize,
+        tcp_send_buffer_bytes: usize,
+        tcp_recv_buffer_bytes: usize,
+    ) -> Self {
+        Self {
+            tunnel_buffer: tunnel_buffer == defaults::default_tunnel_buffer(),
+            mux_window: mux_window_bytes == defaults::default_native_mux_initial_window_bytes(),
+            // TCP socket buffers default to 0, meaning "leave to the OS".
+            tcp_buffers: tcp_send_buffer_bytes == 0 && tcp_recv_buffer_bytes == 0,
+        }
+    }
+
+    /// Derive eligibility from a full config.
+    pub fn from_config(config: &EspejismoConfig) -> Self {
+        Self::from_tunables(
+            config.shared.tunnel_buffer,
+            config.shared.mux.native_initial_window_bytes,
+            config.shared.tcp.send_buffer_bytes,
+            config.shared.tcp.recv_buffer_bytes,
+        )
+    }
+}
+
+/// Raise throughput tunables to BDP-derived minimums for a measured
+/// round-trip time.
+///
+/// Only the bounded buffer/window floors are adjusted; unlike the
+/// `auto-throughput` named profile this does not touch obfuscation, pacing,
+/// or pool sizing. Values are only ever raised, never lowered, and fields
+/// the operator explicitly configured are left alone. RTT below 100 ms is
+/// treated as a low-latency path and changes nothing.
+pub fn apply_adaptive_throughput(
+    config: &mut EspejismoConfig,
+    rtt: std::time::Duration,
+) -> Result<()> {
+    if rtt < std::time::Duration::from_millis(100) {
+        return Ok(());
+    }
+
+    let floor = adaptive_throughput_floor(rtt);
+    let eligible = AdaptiveEligibility::from_config(config);
+    if eligible.tunnel_buffer {
+        config.shared.tunnel_buffer = config.shared.tunnel_buffer.max(floor.tunnel_buffer);
+    }
+    if eligible.mux_window {
+        config.shared.mux.native_initial_window_bytes = config
+            .shared
+            .mux
+            .native_initial_window_bytes
+            .max(floor.mux_window_bytes);
+    }
+    if eligible.tcp_buffers {
+        config.shared.tcp.send_buffer_bytes = config
+            .shared
+            .tcp
+            .send_buffer_bytes
+            .max(floor.tcp_buffer_bytes);
+        config.shared.tcp.recv_buffer_bytes = config
+            .shared
+            .tcp
+            .recv_buffer_bytes
+            .max(floor.tcp_buffer_bytes);
+    }
+    Ok(())
+}
+
 pub fn example_config() -> String {
     let config = EspejismoConfig {
         shared: SharedConfig {
@@ -486,10 +749,225 @@ pub fn encode_config_base64(toml: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::path::PathBuf;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::defaults;
     use super::{
-        apply_named_profile, config_to_toml, encode_config_base64, example_config,
-        load_config_base64, parse_config,
+        adaptive_throughput_floor, apply_adaptive_throughput, apply_named_profile,
+        changed_config_paths, config_to_toml, encode_config_base64, example_config,
+        load_config_base64, parse_config, EspejismoConfig, RemoteUserBandwidthConfig,
+        RemoteUserConfig, RemoteUserQuotaConfig,
     };
+
+    #[test]
+    fn config_diff_reports_sorted_paths_without_secret_values() {
+        let before = EspejismoConfig::default();
+        let mut after = before.clone();
+        after.shared.max_streams += 2;
+        after.remote.users.push(RemoteUserConfig {
+            name: "alice".to_string(),
+            psk: "private-user-key".to_string(),
+            quota: RemoteUserQuotaConfig {
+                bytes: None,
+                window_secs: 3600,
+            },
+            bandwidth: RemoteUserBandwidthConfig::default(),
+        });
+        after.admin.token = Some("private-admin-token".to_string());
+        after.shared.psk = Some("private-shared-key".to_string());
+
+        let paths = changed_config_paths(&before, &after).unwrap();
+        assert_eq!(
+            paths,
+            [
+                "admin.token",
+                "remote.users",
+                "shared.max_streams",
+                "shared.psk"
+            ]
+        );
+        let rendered = format!("{paths:?}");
+        assert!(!rendered.contains("private"));
+        assert!(changed_config_paths(&after, &after).unwrap().is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn loads_config_with_restricted_permissions() {
+        static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "espejismo-config-permissions-{}-{}.toml",
+            std::process::id(),
+            NEXT_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        fs::write(&path, "").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(super::load_config_file(&path).is_ok());
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn config_file_permission_check_is_safe_for_missing_path() {
+        let path = PathBuf::from("missing-espejismo-config.toml");
+        super::warn_if_config_permissions_are_broad(&path);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn flags_group_or_other_access_but_accepts_private_modes() {
+        assert!(!super::config_permissions_are_broad(0o600));
+        assert!(!super::config_permissions_are_broad(0o400));
+        assert!(super::config_permissions_are_broad(0o640));
+        assert!(super::config_permissions_are_broad(0o604));
+    }
+
+    #[test]
+    fn rejects_unknown_config_fields_with_a_suggestion() {
+        let err = parse_config("[shared]\nmax_stream = 12\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown config field `max_stream`"), "{err}");
+        assert!(err.contains("did you mean `max_streams`?"), "{err}");
+    }
+
+    #[test]
+    fn validates_tunnel_pool_limits_at_boundaries() {
+        parse_config(
+            "[local.tunnel_pool]\nmin_connections = 1\nmax_connections = 1\ninteractive_lanes = 1\nbulk_lanes = 0\n",
+        )
+        .expect("one lane at the exact pool limit is valid");
+
+        for (config, expected) in [
+            (
+                "[local.tunnel_pool]\nmin_connections = 0\nmax_connections = 0\ninteractive_lanes = 1\nbulk_lanes = 0\n",
+                "max_connections must be greater than 0",
+            ),
+            (
+                "[local.tunnel_pool]\nmin_connections = 2\nmax_connections = 1\ninteractive_lanes = 1\nbulk_lanes = 0\n",
+                "min_connections must be <= max_connections",
+            ),
+            (
+                "[local.tunnel_pool]\nmin_connections = 1\nmax_connections = 2\ninteractive_lanes = 1\nbulk_lanes = 2\n",
+                "interactive_lanes + bulk_lanes must be <= max_connections",
+            ),
+            (
+                "[local.tunnel_pool]\nmin_connections = 1\nmax_connections = 2\ninteractive_lanes = 0\nbulk_lanes = 0\n",
+                "must configure at least one lane",
+            ),
+        ] {
+            let err = parse_config(config).unwrap_err().to_string();
+            assert!(err.contains(expected), "expected {expected:?}, got {err}");
+        }
+    }
+
+    #[test]
+    fn reports_location_for_malformed_toml() {
+        let err = parse_config("[shared\nmax_streams = 12\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.to_ascii_lowercase().contains("toml"), "{err}");
+        assert!(err.contains("line 1"), "{err}");
+        assert!(err.contains("column"), "{err}");
+    }
+
+    #[test]
+    fn omitted_sections_and_fields_use_documented_defaults() {
+        let config = parse_config("[local]\nserver = '127.0.0.1:6690'\n").unwrap();
+        let defaults = EspejismoConfig::default();
+        assert_eq!(config.shared.max_streams, defaults.shared.max_streams);
+        assert_eq!(
+            config.shared.clock_skew_secs,
+            defaults.shared.clock_skew_secs
+        );
+        assert_eq!(config.remote.listen, defaults.remote.listen);
+        assert_eq!(config.local.socks5_listen, defaults.local.socks5_listen);
+    }
+
+    #[test]
+    fn invalid_value_type_identifies_field_and_expected_type() {
+        let err = parse_config("[shared]\nmax_streams = 'many'\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("max_streams"), "{err}");
+        assert!(err.contains("expected u32"), "{err}");
+        assert!(err.contains("line 2"), "{err}");
+    }
+
+    #[test]
+    fn rejects_missing_required_fields_inside_user_entries() {
+        // Most top-level fields intentionally default when omitted. User
+        // entries are different: identity and PSK are required schema fields.
+        for (config, expected) in [
+            ("[[remote.users]]\npsk = 'secret'\n", "name"),
+            ("[[remote.users]]\nname = 'alice'\n", "psk"),
+        ] {
+            let err = parse_config(config).unwrap_err().to_string();
+            assert!(err.contains("missing field"), "{err}");
+            assert!(err.contains(expected), "expected {expected:?}, got {err}");
+        }
+    }
+
+    #[test]
+    fn rejects_wrong_types_across_config_schema_shapes() {
+        for (config, field, expected_type) in [
+            ("[local.tun]\nenabled = 1\n", "enabled", "bool"),
+            ("[remote]\nusers = 'alice'\n", "users", "sequence"),
+            ("[shared.tcp]\nnodelay = 'yes'\n", "nodelay", "bool"),
+            ("[local.tun]\nmtu = 70000\n", "mtu", "u16"),
+        ] {
+            let err = parse_config(config).unwrap_err().to_string();
+            assert!(err.contains(field), "expected field {field:?}, got {err}");
+            assert!(
+                err.to_ascii_lowercase()
+                    .contains(&expected_type.to_ascii_lowercase()),
+                "expected type {expected_type:?}, got {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn rejects_semantically_invalid_values_at_exact_boundaries() {
+        for (config, expected) in [
+            ("[shared]\nclock_skew_secs = 0\n", "clock_skew_secs"),
+            ("[local.tun]\nprefix = 33\n", "prefix must be in 0..=32"),
+            (
+                "[remote]\nhandshake_timeout_ms = 0\n",
+                "handshake_timeout_ms",
+            ),
+        ] {
+            let err = parse_config(config).unwrap_err().to_string();
+            assert!(err.contains(expected), "expected {expected:?}, got {err}");
+        }
+        parse_config("[local.tun]\nprefix = 32\n").expect("prefix upper bound is valid");
+    }
+
+    #[test]
+    fn rejects_unknown_nested_config_fields() {
+        let err = parse_config("[local.tun]\nenabeld = true\n")
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown config field `enabeld`"), "{err}");
+        assert!(err.contains("did you mean `enabled`?"), "{err}");
+    }
+
+    #[test]
+    fn unknown_fields_explain_how_to_handle_removed_options() {
+        let err = parse_config("[shared]\nretired_option = true\n")
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("unknown config field `retired_option`"),
+            "{err}"
+        );
+        assert!(
+            err.contains("check whether this option was renamed or removed in this release"),
+            "{err}"
+        );
+    }
 
     #[test]
     fn example_config_roundtrips_through_toml_and_base64() {
@@ -507,6 +985,39 @@ mod tests {
     }
 
     #[test]
+    fn frame_options_are_consistent_runtime_snapshots() {
+        let mut config = EspejismoConfig::default();
+        config.shared.max_padding = 73;
+        config.shared.stealth.frame_size_candidates = vec![1024, 2048];
+        config.shared.stealth_shaper.enabled = true;
+        config.shared.pacing.max_bytes_per_sec = 900_000;
+        let overrides = super::FrameOptionOverrides {
+            max_padding: Some(91),
+            ..Default::default()
+        };
+
+        let snapshot = config.shared.frame_options(&overrides);
+        config.shared.max_padding = 120;
+        config.shared.stealth.frame_size_candidates.push(4096);
+        config.shared.stealth_shaper.enabled = false;
+        config.shared.pacing.max_bytes_per_sec = 0;
+
+        assert_eq!(snapshot.max_padding, 91);
+        assert_eq!(snapshot.stealth_frame_size_candidates, vec![1024, 2048]);
+        assert!(snapshot.stealth_shaper_enabled);
+        assert_eq!(snapshot.pacing_max_bytes_per_sec, 900_000);
+
+        let refreshed = config.shared.frame_options(&Default::default());
+        assert_eq!(refreshed.max_padding, 120);
+        assert_eq!(
+            refreshed.stealth_frame_size_candidates,
+            vec![1024, 2048, 4096]
+        );
+        assert!(!refreshed.stealth_shaper_enabled);
+        assert_eq!(refreshed.pacing_max_bytes_per_sec, 0);
+    }
+
+    #[test]
     fn rejects_invalid_tun_prefix_and_mtu() {
         let bad_prefix = r#"
             [local.tun]
@@ -516,9 +1027,19 @@ mod tests {
 
         let bad_mtu = r#"
             [local.tun]
-            mtu = 500
+            mtu = 575
         "#;
-        assert!(parse_config(bad_mtu).is_err());
+        let err = parse_config(bad_mtu).unwrap_err().to_string();
+        assert!(err.contains("local.tun.mtu"), "{err}");
+        assert!(err.contains("576"), "{err}");
+        assert!(err.contains("mtu = 1500"), "{err}");
+
+        // 576 is the configured lower boundary. MTU is represented as u16,
+        // so preserve the full accepted range without narrowing conversions.
+        parse_config("[local.tun]\nmtu = 576\nprefix = 32\n").unwrap();
+        let upper_boundary = parse_config("[local.tun]\nmtu = 65535\nprefix = 32\n")
+            .expect("the u16 MTU upper boundary should parse");
+        assert_eq!(upper_boundary.local.tun.mtu, u16::MAX);
     }
 
     #[test]
@@ -642,6 +1163,38 @@ mod tests {
     }
 
     #[test]
+    fn reports_ranges_and_examples_for_config_boundaries() {
+        for (invalid, field, range, example) in [
+            (
+                "[shared]\nmax_streams = 65536\n",
+                "shared.max_streams",
+                "1..=65535",
+                "max_streams = 256",
+            ),
+            (
+                "[shared.handshake_window]\nprevious_windows = 5\n",
+                "previous_windows",
+                "0..=4",
+                "previous_windows = 1",
+            ),
+            (
+                "[shared.obfuscation]\nmin_chunk = 16385\nmax_chunk = 16384\n",
+                "min_chunk",
+                "1..=max_chunk",
+                "min_chunk = 1024",
+            ),
+        ] {
+            let err = parse_config(invalid).unwrap_err().to_string();
+            assert!(err.contains(field), "{err}");
+            assert!(err.contains(range), "{err}");
+            assert!(err.contains(example), "{err}");
+        }
+
+        parse_config("[shared]\nmax_streams = 65535\n").unwrap();
+        parse_config("[shared.handshake_window]\nprevious_windows = 4\n").unwrap();
+    }
+
+    #[test]
     fn rejects_too_small_stealth_frame_for_payload() {
         let config = r#"
             [shared.obfuscation]
@@ -683,6 +1236,112 @@ mod tests {
 
         let err = apply_named_profile(&mut config, "unknown").unwrap_err();
         assert!(err.to_string().contains("unknown profile"));
+    }
+
+    #[test]
+    fn adaptive_throughput_scales_buffers_from_rtt() {
+        let mut config = EspejismoConfig::default();
+        apply_adaptive_throughput(&mut config, std::time::Duration::from_millis(250)).unwrap();
+        // BDP at 1 Gbit/s * 250 ms = 31_250_000 bytes.
+        assert_eq!(config.shared.mux.native_initial_window_bytes, 31_250_000);
+        assert_eq!(config.shared.tunnel_buffer, 32 * 1024 * 1024);
+        assert_eq!(config.shared.tcp.send_buffer_bytes, 4 * 1024 * 1024);
+        assert_eq!(config.shared.tcp.recv_buffer_bytes, 4 * 1024 * 1024);
+        // Narrowed: pool sizing and obfuscation are no longer touched.
+        assert_eq!(
+            config.local.tunnel_pool.bulk_lanes,
+            defaults::default_tunnel_pool_bulk_lanes()
+        );
+
+        let mut short_rtt = EspejismoConfig::default();
+        let before = short_rtt.clone();
+        apply_adaptive_throughput(&mut short_rtt, std::time::Duration::from_millis(50)).unwrap();
+        assert_eq!(short_rtt.shared.tunnel_buffer, before.shared.tunnel_buffer);
+        assert_eq!(
+            short_rtt.shared.mux.native_initial_window_bytes,
+            before.shared.mux.native_initial_window_bytes
+        );
+    }
+
+    #[test]
+    fn adaptive_throughput_respects_explicit_config() {
+        let mut config = EspejismoConfig::default();
+        // Operator explicitly tuned these; adaptive must leave them alone.
+        config.shared.tunnel_buffer = 2 * 1024 * 1024;
+        config.shared.mux.native_initial_window_bytes = 2 * 1024 * 1024;
+        config.shared.tcp.send_buffer_bytes = 512 * 1024;
+        config.shared.tcp.recv_buffer_bytes = 512 * 1024;
+        apply_adaptive_throughput(&mut config, std::time::Duration::from_millis(250)).unwrap();
+        assert_eq!(config.shared.tunnel_buffer, 2 * 1024 * 1024);
+        assert_eq!(
+            config.shared.mux.native_initial_window_bytes,
+            2 * 1024 * 1024
+        );
+        assert_eq!(config.shared.tcp.send_buffer_bytes, 512 * 1024);
+        assert_eq!(config.shared.tcp.recv_buffer_bytes, 512 * 1024);
+    }
+
+    #[test]
+    fn adaptive_throughput_floor_is_bounded() {
+        // Very high RTT clamps the floor instead of growing without bound.
+        let floor = adaptive_throughput_floor(std::time::Duration::from_secs(10));
+        assert_eq!(floor.mux_window_bytes, 64 * 1024 * 1024);
+        assert_eq!(floor.tunnel_buffer, 32 * 1024 * 1024);
+        // Very low RTT still yields the minimum floor: 1 ms at 1 Gbit/s is
+        // 125_000 bytes, below the 1 MiB clamp (caller gates on threshold).
+        let floor = adaptive_throughput_floor(std::time::Duration::from_millis(1));
+        assert_eq!(floor.mux_window_bytes, 1024 * 1024);
+
+        // The calculation accepts the full Duration range without overflow.
+        let floor = adaptive_throughput_floor(std::time::Duration::MAX);
+        assert_eq!(floor.mux_window_bytes, 64 * 1024 * 1024);
+        assert_eq!(floor.tunnel_buffer, 32 * 1024 * 1024);
+    }
+
+    #[test]
+    fn adaptive_throughput_rtt_gate_has_an_inclusive_boundary() {
+        let baseline = EspejismoConfig::default();
+        for rtt in [
+            std::time::Duration::from_millis(99),
+            std::time::Duration::from_micros(99_999),
+        ] {
+            let mut config = baseline.clone();
+            apply_adaptive_throughput(&mut config, rtt).unwrap();
+            assert_eq!(config.shared.tunnel_buffer, baseline.shared.tunnel_buffer);
+            assert_eq!(
+                config.shared.mux.native_initial_window_bytes,
+                baseline.shared.mux.native_initial_window_bytes,
+                "RTT {rtt:?} must remain below the gate"
+            );
+            assert_eq!(
+                config.shared.tcp.send_buffer_bytes,
+                baseline.shared.tcp.send_buffer_bytes
+            );
+            assert_eq!(
+                config.shared.tcp.recv_buffer_bytes,
+                baseline.shared.tcp.recv_buffer_bytes
+            );
+        }
+
+        let mut at_boundary = baseline.clone();
+        apply_adaptive_throughput(&mut at_boundary, std::time::Duration::from_millis(100)).unwrap();
+        assert_eq!(
+            at_boundary.shared.mux.native_initial_window_bytes,
+            12_500_000
+        );
+        assert_eq!(at_boundary.shared.tunnel_buffer, 25_000_000);
+    }
+
+    #[test]
+    fn adaptive_throughput_floor_maps_one_gigabit_rtt() {
+        assert_eq!(
+            adaptive_throughput_floor(std::time::Duration::from_millis(100)).mux_window_bytes,
+            12_500_000
+        );
+        assert_eq!(
+            adaptive_throughput_floor(std::time::Duration::from_millis(50)).mux_window_bytes,
+            6_250_000
+        );
     }
 
     #[test]
@@ -728,6 +1387,41 @@ mod tests {
         "#;
         let err = parse_config(config).unwrap_err().to_string();
         assert!(err.contains("http2.path"), "{err}");
+    }
+
+    #[test]
+    fn validates_http2_flow_control_window_boundaries() {
+        let valid = r#"
+            [shared.underlay]
+            mode = "http2"
+
+            [shared.underlay.http2]
+            initial_stream_window_bytes = 2147483647
+            initial_connection_window_bytes = 2147483647
+        "#;
+        assert!(parse_config(valid).is_ok());
+
+        for field in [
+            "initial_stream_window_bytes",
+            "initial_connection_window_bytes",
+        ] {
+            let invalid = format!(
+                "[shared.underlay]\nmode = \"http2\"\n\
+                 [shared.underlay.http2]\n{field} = 2147483648\n"
+            );
+            let err = parse_config(&invalid).unwrap_err().to_string();
+            assert!(err.contains(field), "{field}: {err}");
+        }
+
+        let minimum = r#"
+            [shared.underlay]
+            mode = "http2"
+
+            [shared.underlay.http2]
+            initial_stream_window_bytes = 65535
+            initial_connection_window_bytes = 65535
+        "#;
+        assert!(parse_config(minimum).is_ok());
     }
 
     #[test]

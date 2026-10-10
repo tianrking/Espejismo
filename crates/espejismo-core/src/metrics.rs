@@ -1,8 +1,17 @@
+//! Bounded-cardinality counters and snapshots for operational monitoring.
+
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Serialize;
+
+// Keep scrape label cardinality and the backing maps bounded even when callers
+// provide attacker-controlled user names or failure strings.
+const MAX_USER_METRIC_SERIES: usize = 128;
+const MAX_FAILURE_REASON_SERIES: usize = 32;
+const OTHER_USER: &str = "other";
+const OTHER_FAILURE_REASON: &str = "other";
 
 #[derive(Clone, Debug, Default)]
 pub struct Metrics {
@@ -107,7 +116,15 @@ impl Metrics {
     pub fn inc_stream_failed_reason(&self, reason: impl AsRef<str>) {
         self.inc_stream_failed();
         let mut reasons = lock_reason_metrics(&self.inner.stream_failure_reasons);
-        let key = sanitize_reason(reason.as_ref());
+        let sanitized = sanitize_reason(reason.as_ref());
+        let key = if reasons.contains_key(&sanitized)
+            || sanitized == OTHER_FAILURE_REASON
+            || reasons.len() < MAX_FAILURE_REASON_SERIES - 1
+        {
+            sanitized
+        } else {
+            OTHER_FAILURE_REASON.to_string()
+        };
         *reasons.entry(key).or_insert(0) += 1;
     }
 
@@ -123,6 +140,8 @@ impl Metrics {
         self.inner.key_updates.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Add payload byte totals in each direction. Per-user byte counters are
+    /// updated separately by [`Self::add_user_tunnel_bytes`].
     pub fn add_tunnel_bytes(&self, client_to_remote: u64, remote_to_client: u64) {
         self.inner
             .bytes_client_to_remote
@@ -294,10 +313,18 @@ impl Metrics {
 
     fn with_user(&self, user: &str, f: impl FnOnce(&mut UserMetricsSnapshot)) {
         let mut users = lock_user_metrics(&self.inner.users);
+        let key = if users.contains_key(user)
+            || user == OTHER_USER
+            || users.len() < MAX_USER_METRIC_SERIES - 1
+        {
+            user
+        } else {
+            OTHER_USER
+        };
         let entry = users
-            .entry(user.to_string())
+            .entry(key.to_string())
             .or_insert_with(|| UserMetricsSnapshot {
-                user: user.to_string(),
+                user: key.to_string(),
                 ..UserMetricsSnapshot::default()
             });
         f(entry);
@@ -324,7 +351,7 @@ fn metric(output: &mut String, role: &str, name: &str, value: u64) {
     output.push_str("espejismo_");
     output.push_str(name);
     output.push_str("{role=\"");
-    output.push_str(role);
+    push_label_value(output, role);
     output.push_str("\"} ");
     output.push_str(&value.to_string());
     output.push('\n');
@@ -334,9 +361,9 @@ fn user_metric(output: &mut String, role: &str, user: &str, name: &str, value: u
     output.push_str("espejismo_");
     output.push_str(name);
     output.push_str("{role=\"");
-    output.push_str(role);
+    push_label_value(output, role);
     output.push_str("\",user=\"");
-    output.push_str(&user.replace('"', "\\\""));
+    push_label_value(output, user);
     output.push_str("\"} ");
     output.push_str(&value.to_string());
     output.push('\n');
@@ -346,12 +373,26 @@ fn reason_metric(output: &mut String, role: &str, reason: &str, name: &str, valu
     output.push_str("espejismo_");
     output.push_str(name);
     output.push_str("{role=\"");
-    output.push_str(role);
+    push_label_value(output, role);
     output.push_str("\",reason=\"");
-    output.push_str(reason);
+    push_label_value(output, reason);
     output.push_str("\"} ");
     output.push_str(&value.to_string());
     output.push('\n');
+}
+
+// Prometheus text format requires backslash, quote, and line-feed escaping in
+// label values. Escape every label through the same path so unusual role names
+// and user supplied labels cannot split a sample into malformed exposition.
+fn push_label_value(output: &mut String, value: &str) {
+    for ch in value.chars() {
+        match ch {
+            '\\' => output.push_str("\\\\"),
+            '"' => output.push_str("\\\""),
+            '\n' => output.push_str("\\n"),
+            _ => output.push(ch),
+        }
+    }
 }
 
 fn sanitize_reason(reason: &str) -> String {
@@ -363,4 +404,146 @@ fn sanitize_reason(reason: &str) -> String {
         })
         .take(64)
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn prometheus_label_value_escapes_backslash_quote_and_newline() {
+        let mut escaped = String::new();
+        push_label_value(&mut escaped, "slash\\ quote\" line\nnext");
+        assert_eq!(escaped, "slash\\\\ quote\\\" line\\nnext");
+    }
+
+    #[test]
+    fn prometheus_metrics_escape_role_and_user_labels() {
+        let metrics = Metrics::default();
+        metrics.inc_user_handshake_success("alice\"\\\nremote");
+        let rendered = metrics.render_prometheus("local\"\\\nrole");
+        assert!(rendered.contains("role=\"local\\\"\\\\\\nrole\""));
+        assert!(rendered.contains("user=\"alice\\\"\\\\\\nremote\""));
+        assert!(!rendered.contains("\nremote\""));
+    }
+
+    #[test]
+    fn prometheus_reason_label_uses_sanitized_reason() {
+        let metrics = Metrics::default();
+        metrics.inc_stream_failed_reason("bad\"\\\nreason");
+
+        let rendered = metrics.render_prometheus("server");
+        assert!(rendered.contains(
+            "espejismo_stream_failure_reason_total{role=\"server\",reason=\"bad___reason\"} 1\n"
+        ));
+        assert!(!rendered.contains("reason=\"bad\""));
+    }
+
+    #[test]
+    fn user_metric_series_are_bounded_with_overflow_bucket() {
+        let metrics = Metrics::default();
+        for index in 0..(MAX_USER_METRIC_SERIES + 20) {
+            let user = format!("user-{index}");
+            metrics.inc_user_handshake_success(&user);
+            metrics.inc_user_stream_opened(&user);
+            metrics.add_user_tunnel_bytes(&user, index as u64 + 1, (index as u64 + 1) * 10);
+        }
+
+        let snapshot = metrics.snapshot("server");
+        assert_eq!(snapshot.users.len(), MAX_USER_METRIC_SERIES);
+        let overflow = snapshot
+            .users
+            .iter()
+            .find(|user| user.user == OTHER_USER)
+            .unwrap();
+        assert_eq!(overflow.handshake_success, 21);
+        assert_eq!(overflow.stream_opened, 21);
+        // The first 127 distinct users keep their own series; all later users
+        // share `other`, including both directional byte counters.
+        assert_eq!(overflow.bytes_client_to_remote, (128_u64..=148).sum::<u64>());
+        assert_eq!(
+            overflow.bytes_remote_to_client,
+            (128_u64..=148).map(|n| n * 10).sum::<u64>()
+        );
+
+        let rendered = metrics.render_prometheus("remote");
+        for metric_name in [
+            "user_handshake_success_total",
+            "user_stream_opened_total",
+            "user_bytes_client_to_remote_total",
+            "user_bytes_remote_to_client_total",
+        ] {
+            assert_eq!(
+                rendered
+                    .lines()
+                    .filter(|line| line.starts_with(&format!("espejismo_{metric_name}{{")))
+                    .count(),
+                MAX_USER_METRIC_SERIES,
+                "unexpected series count for {metric_name}"
+            );
+        }
+        assert!(rendered.contains(
+            "espejismo_user_bytes_client_to_remote_total{role=\"remote\",user=\"other\"} 2898\n"
+        ));
+        assert!(rendered.contains(
+            "espejismo_user_bytes_remote_to_client_total{role=\"remote\",user=\"other\"} 28980\n"
+        ));
+    }
+
+    #[test]
+    fn failure_reason_series_are_bounded_with_overflow_bucket() {
+        let metrics = Metrics::default();
+        for index in 0..(MAX_FAILURE_REASON_SERIES + 20) {
+            metrics.inc_stream_failed_reason(format!("reason-{index}"));
+        }
+
+        let snapshot = metrics.snapshot("server");
+        assert_eq!(
+            snapshot.stream_failure_reasons.len(),
+            MAX_FAILURE_REASON_SERIES
+        );
+        let overflow = snapshot
+            .stream_failure_reasons
+            .iter()
+            .find(|reason| reason.reason == OTHER_FAILURE_REASON)
+            .unwrap();
+        assert_eq!(overflow.count, 21);
+        assert_eq!(
+            snapshot.stream_failed,
+            (MAX_FAILURE_REASON_SERIES + 20) as u64
+        );
+    }
+
+    #[test]
+    fn byte_counters_accumulate_independently_and_match_user_totals() {
+        let metrics = Metrics::default();
+        metrics.add_tunnel_bytes(7, 13);
+        metrics.add_tunnel_bytes(5, 0);
+        metrics.add_user_tunnel_bytes("alice", 7, 13);
+        metrics.add_user_tunnel_bytes("alice", 5, 0);
+        metrics.add_user_tunnel_bytes("bob", 0, 9);
+
+        let snapshot = metrics.snapshot("server");
+        assert_eq!(snapshot.bytes_client_to_remote, 12);
+        assert_eq!(snapshot.bytes_remote_to_client, 13);
+        let alice = snapshot.users.iter().find(|user| user.user == "alice").unwrap();
+        assert_eq!(alice.bytes_client_to_remote, 12);
+        assert_eq!(alice.bytes_remote_to_client, 13);
+        let bob = snapshot.users.iter().find(|user| user.user == "bob").unwrap();
+        assert_eq!(bob.bytes_client_to_remote, 0);
+        assert_eq!(bob.bytes_remote_to_client, 9);
+    }
+
+    #[test]
+    fn cloned_metrics_share_counter_updates() {
+        let metrics = Metrics::default();
+        let clone = metrics.clone();
+        clone.inc_accepted();
+        clone.add_tunnel_bytes(3, 11);
+
+        let snapshot = metrics.snapshot("client");
+        assert_eq!(snapshot.accepted_connections, 1);
+        assert_eq!(snapshot.bytes_client_to_remote, 3);
+        assert_eq!(snapshot.bytes_remote_to_client, 11);
+    }
 }

@@ -1,14 +1,20 @@
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 
 use anyhow::{Context, Result};
 use base64::Engine;
 use espejismo_core::{EgressProxy, EgressProxyKind, TransportStream};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio_rustls::rustls::{ClientConfig, RootCertStore};
+use tokio::time::{Duration, timeout};
 use tokio_rustls::TlsConnector;
+use tokio_rustls::rustls::{ClientConfig, RootCertStore};
 
 const MAX_HTTP_CONNECT_RESPONSE: usize = 16 * 1024;
+const HTTPS_PROXY_TLS_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
+
+// Rustls keeps TLS session tickets in ClientConfig's resumption store. Reuse
+// one config so separate CONNECT tunnels to the same proxy can resume TLS.
+static HTTPS_PROXY_TLS_CONFIG: OnceLock<Arc<ClientConfig>> = OnceLock::new();
 
 pub(crate) async fn connect_via_http_proxy(
     proxy: &EgressProxy,
@@ -55,17 +61,60 @@ async fn connect_tls_to_proxy(
     stream: TcpStream,
     host: &str,
 ) -> Result<tokio_rustls::client::TlsStream<TcpStream>> {
-    let mut roots = RootCertStore::empty();
-    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-    let config = ClientConfig::builder()
-        .with_root_certificates(roots)
-        .with_no_client_auth();
+    connect_tls_to_proxy_with_timeout(stream, host, HTTPS_PROXY_TLS_HANDSHAKE_TIMEOUT).await
+}
+
+async fn connect_tls_to_proxy_with_timeout<S>(
+    stream: S,
+    host: &str,
+    handshake_timeout: Duration,
+) -> Result<tokio_rustls::client::TlsStream<S>>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let config = https_proxy_tls_config();
     let server_name = tokio_rustls::rustls::pki_types::ServerName::try_from(host.to_string())
         .with_context(|| format!("invalid HTTPS proxy TLS server name {host}"))?;
-    TlsConnector::from(Arc::new(config))
-        .connect(server_name, stream)
-        .await
-        .context("TLS handshake with HTTPS proxy")
+    timeout(
+        handshake_timeout,
+        TlsConnector::from(config).connect(server_name, stream),
+    )
+    .await
+    .context("TLS handshake with HTTPS proxy timed out")?
+    .context("TLS handshake with HTTPS proxy")
+}
+
+fn https_proxy_tls_config() -> Arc<ClientConfig> {
+    HTTPS_PROXY_TLS_CONFIG
+        .get_or_init(|| {
+            let mut roots = RootCertStore::empty();
+            roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+            // Pin HTTPS proxy TLS to the ring provider already selected by the
+            // workspace, while retaining rustls' safe TLS 1.2/1.3 defaults.
+            https_proxy_tls_config_with_roots(roots)
+        })
+        .clone()
+}
+
+fn https_proxy_tls_config_with_roots(roots: RootCertStore) -> Arc<ClientConfig> {
+    let mut config = ClientConfig::builder_with_provider(https_proxy_tls_provider())
+        .with_safe_default_protocol_versions()
+        .expect("ring supports the safe default TLS protocol versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    // TLS key logging exposes traffic secrets and is intended only for
+    // explicitly configured diagnostics. This proxy path never opts in.
+    config.key_log = Arc::new(tokio_rustls::rustls::NoKeyLog);
+    // CONNECT changes proxy state and must never be replayed as TLS 1.3 early
+    // data. Keep 0-RTT disabled even if rustls defaults change.
+    config.enable_early_data = false;
+    // HTTP CONNECT is used without an application protocol.
+    config.alpn_protocols.clear();
+    Arc::new(config)
+}
+
+fn https_proxy_tls_provider() -> Arc<tokio_rustls::rustls::crypto::CryptoProvider> {
+    Arc::new(tokio_rustls::rustls::crypto::ring::default_provider())
 }
 
 async fn read_connect_response<S>(stream: &mut S) -> Result<()>
@@ -103,9 +152,912 @@ where
 
 #[cfg(test)]
 mod tests {
-    use espejismo_core::{EgressProxy, EgressProxyKind};
+    use std::{sync::Arc, time::Duration};
 
-    use super::build_connect_request;
+    use espejismo_core::{EgressProxy, EgressProxyKind};
+    use tokio::{
+        io::{AsyncReadExt, duplex},
+        time::timeout,
+    };
+    use tokio_rustls::TlsAcceptor;
+    use tokio_rustls::rustls::{
+        DigitallySignedStruct, RootCertStore, ServerConfig, SignatureScheme,
+        client::danger::{HandshakeSignatureValid, ServerCertVerifier},
+        pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime},
+    };
+
+    use super::{
+        build_connect_request, connect_tls_to_proxy_with_timeout, https_proxy_tls_config,
+        https_proxy_tls_config_with_roots,
+    };
+
+    fn chain_test_client_config() -> Arc<tokio_rustls::rustls::ClientConfig> {
+        let root =
+            CertificateDer::from(include_bytes!("../tests/data/chain-test-root.der").to_vec());
+        let mut roots = RootCertStore::empty();
+        roots.add(root).unwrap();
+        https_proxy_tls_config_with_roots(roots)
+    }
+
+    async fn chain_test_handshake(leaf_name: &str, include_intermediate: bool) -> bool {
+        use tokio_rustls::TlsConnector;
+        let leaf = CertificateDer::from(match leaf_name {
+            "valid" => include_bytes!("../tests/data/chain-test-valid-leaf.der").to_vec(),
+            "expired" => include_bytes!("../tests/data/chain-test-expired-leaf.der").to_vec(),
+            _ => unreachable!(),
+        });
+        let key_bytes = match leaf_name {
+            "valid" => include_bytes!("../tests/data/chain-test-valid-leaf-key.der").to_vec(),
+            "expired" => include_bytes!("../tests/data/chain-test-expired-leaf-key.der").to_vec(),
+            _ => unreachable!(),
+        };
+        let key = PrivateKeyDer::try_from(key_bytes).unwrap();
+        let mut chain = vec![leaf];
+        if include_intermediate {
+            chain.push(CertificateDer::from(
+                include_bytes!("../tests/data/chain-test-intermediate.der").to_vec(),
+            ));
+        }
+        let server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .unwrap();
+        let (client_io, server_io) = duplex(16 * 1024);
+        let server_task = tokio::spawn(async move {
+            TlsAcceptor::from(Arc::new(server_config))
+                .accept(server_io)
+                .await
+        });
+        let result = TlsConnector::from(chain_test_client_config())
+            .connect(ServerName::try_from("localhost").unwrap(), client_io)
+            .await;
+        let accepted = result.is_ok();
+        if accepted {
+            // Drop the stream to let the peer finish without a loopback socket.
+            drop(result);
+        }
+        let _ = server_task.await;
+        accepted
+    }
+
+    #[tokio::test]
+    async fn https_proxy_accepts_leaf_through_trusted_intermediate() {
+        assert!(chain_test_handshake("valid", true).await);
+    }
+
+    #[tokio::test]
+    async fn https_proxy_rejects_chain_without_intermediate() {
+        assert!(!chain_test_handshake("valid", false).await);
+    }
+
+    #[tokio::test]
+    async fn https_proxy_rejects_expired_leaf_in_trusted_chain() {
+        assert!(!chain_test_handshake("expired", true).await);
+    }
+
+    #[test]
+    fn https_proxy_handshakes_share_rustls_session_cache() {
+        let first = https_proxy_tls_config();
+        let second = https_proxy_tls_config();
+        assert!(std::sync::Arc::ptr_eq(&first, &second));
+        assert!(
+            !first.enable_early_data,
+            "HTTPS proxy requests must wait for the authenticated TLS handshake"
+        );
+        assert!(
+            first.alpn_protocols.is_empty(),
+            "HTTPS proxy TLS must not negotiate an application protocol"
+        );
+        assert!(
+            !first.key_log.will_log("CLIENT_TRAFFIC_SECRET_0"),
+            "HTTPS proxy TLS secrets must not be written to a key log"
+        );
+    }
+
+    #[tokio::test]
+    async fn https_proxy_tls_version_floor_is_tls12() {
+        use tokio_rustls::rustls::version;
+
+        // Exercise the production client config against each supported boundary.
+        // rustls deliberately does not implement TLS 1.0/1.1, so those legacy
+        // ClientHello messages cannot be generated by this in-process test.
+        for (server_version, expected) in [
+            (
+                &version::TLS12,
+                tokio_rustls::rustls::ProtocolVersion::TLSv1_2,
+            ),
+            (
+                &version::TLS13,
+                tokio_rustls::rustls::ProtocolVersion::TLSv1_3,
+            ),
+        ] {
+            let server_config = ServerConfig::builder_with_protocol_versions(&[server_version])
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![
+                        CertificateDer::from(
+                            include_bytes!("../tests/data/chain-test-valid-leaf.der").to_vec(),
+                        ),
+                        CertificateDer::from(
+                            include_bytes!("../tests/data/chain-test-intermediate.der").to_vec(),
+                        ),
+                    ],
+                    PrivateKeyDer::try_from(
+                        include_bytes!("../tests/data/chain-test-valid-leaf-key.der").to_vec(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            let (client_io, server_io) = tokio::io::duplex(4096);
+            let server_task = tokio::spawn(async move {
+                TlsAcceptor::from(Arc::new(server_config))
+                    .accept(server_io)
+                    .await
+                    .map(|stream| stream.get_ref().1.protocol_version())
+            });
+
+            let mut roots = RootCertStore::empty();
+            roots
+                .add(CertificateDer::from(
+                    include_bytes!("../tests/data/chain-test-root.der").to_vec(),
+                ))
+                .unwrap();
+            let client_config = https_proxy_tls_config_with_roots(roots);
+            let result = tokio_rustls::TlsConnector::from(client_config)
+                .connect(ServerName::try_from("localhost").unwrap(), client_io)
+                .await;
+            let client = result.expect("production TLS config should connect at boundary");
+            assert_eq!(client.get_ref().1.protocol_version(), Some(expected));
+            assert_eq!(server_task.await.unwrap().unwrap(), Some(expected));
+        }
+    }
+
+    #[tokio::test]
+    async fn https_proxy_tls_never_negotiates_server_advertised_alpn() {
+        use tokio_rustls::TlsConnector;
+        use tokio_rustls::rustls::ClientConfig;
+
+        let cert = CertificateDer::from(
+            include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+        );
+        let key = PrivateKeyDer::try_from(
+            include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+        )
+        .unwrap();
+        let server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert.clone()], key)
+            .unwrap();
+        let client_config = Arc::new(
+            ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(AlpnTestVerifier))
+                .with_no_client_auth(),
+        );
+        assert!(client_config.alpn_protocols.is_empty());
+
+        for advertised in [
+            vec![],
+            vec![b"h2".to_vec()],
+            vec![b"http/1.1".to_vec()],
+            vec![b"h2".to_vec(), b"http/1.1".to_vec()],
+        ] {
+            let mut config = server_config.clone();
+            config.alpn_protocols = advertised.clone();
+            let (client, server) = tokio::io::duplex(4096);
+            let server = tokio::spawn(async move {
+                TlsAcceptor::from(Arc::new(config))
+                    .accept(server)
+                    .await
+                    .unwrap()
+                    .get_ref()
+                    .1
+                    .alpn_protocol()
+                    .map(ToOwned::to_owned)
+            });
+            let server_name = ServerName::try_from("localhost").unwrap();
+            let client = TlsConnector::from(client_config.clone())
+                .connect(server_name, client)
+                .await
+                .expect("TLS should succeed when the client offers no ALPN");
+
+            assert_eq!(
+                client.get_ref().1.alpn_protocol(),
+                None,
+                "server ALPN: {advertised:?}"
+            );
+            assert!(
+                super::https_proxy_tls_provider()
+                    .cipher_suites
+                    .iter()
+                    .any(|suite| Some(suite.suite())
+                        == client
+                            .get_ref()
+                            .1
+                            .negotiated_cipher_suite()
+                            .map(|s| s.suite())),
+                "negotiated suite must be in the configured HTTPS proxy suite set"
+            );
+            assert_eq!(server.await.unwrap(), None, "server ALPN: {advertised:?}");
+        }
+    }
+
+    #[tokio::test]
+    async fn tls_alpn_selects_server_preference_and_rejects_mismatch() {
+        use tokio_rustls::TlsConnector;
+        use tokio_rustls::rustls::ClientConfig;
+
+        let cert = CertificateDer::from(
+            include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+        );
+        let key = PrivateKeyDer::try_from(
+            include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+        )
+        .unwrap();
+        let base_server = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .unwrap();
+        let base_client = ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AlpnTestVerifier))
+            .with_no_client_auth();
+
+        // Rustls selects the first mutually supported protocol in server order.
+        let mut server_config = base_server.clone();
+        server_config.alpn_protocols = vec![b"http/1.1".to_vec(), b"h2".to_vec()];
+        let mut client_config = base_client.clone();
+        client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            TlsAcceptor::from(Arc::new(server_config))
+                .accept(server_io)
+                .await
+                .unwrap()
+                .get_ref()
+                .1
+                .alpn_protocol()
+                .map(ToOwned::to_owned)
+        });
+        let client = TlsConnector::from(Arc::new(client_config))
+            .connect(ServerName::try_from("localhost").unwrap(), client_io)
+            .await
+            .expect("overlapping ALPN lists should complete the handshake");
+        assert_eq!(client.get_ref().1.alpn_protocol(), Some(&b"http/1.1"[..]));
+        assert_eq!(server.await.unwrap(), Some(b"http/1.1".to_vec()));
+
+        // A non-empty client offer with no server match is a TLS negotiation error.
+        let mut server_config = base_server;
+        server_config.alpn_protocols = vec![b"h2".to_vec()];
+        let mut client_config = base_client;
+        client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            TlsAcceptor::from(Arc::new(server_config))
+                .accept(server_io)
+                .await
+                .is_ok()
+        });
+        let client = TlsConnector::from(Arc::new(client_config))
+            .connect(ServerName::try_from("localhost").unwrap(), client_io)
+            .await;
+        assert!(
+            client.is_err(),
+            "mismatched ALPN must fail the client handshake"
+        );
+        assert!(
+            !server.await.unwrap(),
+            "mismatched ALPN must fail the server handshake"
+        );
+    }
+
+    #[tokio::test]
+    async fn tls_cipher_suites_follow_server_order_and_reject_no_overlap() {
+        use tokio_rustls::TlsConnector;
+        use tokio_rustls::rustls::{ClientConfig, crypto::ring};
+
+        let aes128 = ring::cipher_suite::TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256;
+        let aes256 = ring::cipher_suite::TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384;
+        let tls12 = [&tokio_rustls::rustls::version::TLS12];
+        let client_provider = |suites: Vec<_>| {
+            let mut provider = ring::default_provider();
+            provider.cipher_suites = suites;
+            Arc::new(provider)
+        };
+        let make_client_config = |suites| {
+            ClientConfig::builder_with_provider(client_provider(suites))
+                .with_protocol_versions(&tls12)
+                .unwrap()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(AlpnTestVerifier))
+                .with_no_client_auth()
+        };
+        let make_server_config = |suites| {
+            let mut provider = ring::default_provider();
+            provider.cipher_suites = suites;
+            let mut config = ServerConfig::builder_with_provider(Arc::new(provider))
+                .with_protocol_versions(&tls12)
+                .unwrap()
+                .with_no_client_auth()
+                .with_single_cert(
+                    vec![CertificateDer::from(
+                        include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+                    )],
+                    PrivateKeyDer::try_from(
+                        include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+            config.ignore_client_order = true;
+            config
+        };
+
+        // Rustls uses server order when both peers support the same suites.
+        let server_config = make_server_config(vec![aes256, aes128]);
+        let client_config = make_client_config(vec![aes128, aes256]);
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            TlsAcceptor::from(Arc::new(server_config))
+                .accept(server_io)
+                .await
+                .unwrap()
+                .get_ref()
+                .1
+                .negotiated_cipher_suite()
+                .unwrap()
+                .suite()
+        });
+        let client = TlsConnector::from(Arc::new(client_config))
+            .connect(ServerName::try_from("localhost").unwrap(), client_io)
+            .await
+            .expect("overlapping cipher suite lists should complete");
+        assert_eq!(
+            client
+                .get_ref()
+                .1
+                .negotiated_cipher_suite()
+                .unwrap()
+                .suite(),
+            aes256.suite()
+        );
+        assert_eq!(server.await.unwrap(), aes256.suite());
+
+        let server_config = make_server_config(vec![aes128]);
+        let client_config = make_client_config(vec![aes256]);
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            TlsAcceptor::from(Arc::new(server_config))
+                .accept(server_io)
+                .await
+                .is_ok()
+        });
+        let client = TlsConnector::from(Arc::new(client_config))
+            .connect(ServerName::try_from("localhost").unwrap(), client_io)
+            .await;
+        assert!(
+            client.is_err(),
+            "no common cipher suite must fail the handshake"
+        );
+        assert!(!server.await.unwrap(), "server must reject no common suite");
+    }
+
+    #[test]
+    fn https_proxy_cipher_suites_exclude_weak_legacy_suites() {
+        use tokio_rustls::rustls::CipherSuite;
+
+        let configured = super::https_proxy_tls_provider()
+            .cipher_suites
+            .iter()
+            .map(|suite| suite.suite())
+            .collect::<Vec<_>>();
+        assert!(!configured.contains(&CipherSuite::TLS_RSA_WITH_AES_128_CBC_SHA));
+        assert!(!configured.contains(&CipherSuite::TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA));
+    }
+
+    #[tokio::test]
+    async fn tls12_ocsp_staple_bytes_reach_certificate_verifier_unchanged() {
+        use std::sync::Mutex;
+        use tokio_rustls::TlsConnector;
+        use tokio_rustls::rustls::{ClientConfig, ServerConfig, version};
+
+        // rustls transports the staple to the verifier but does not validate
+        // OCSP itself. Exercise empty, minimal, typical, and near-record-sized
+        // opaque responses; TLS may fragment the largest response across records.
+        for staple in [
+            Vec::new(),
+            vec![0x30],
+            vec![0x30; 4096],
+            vec![0x30; 16 * 1024],
+        ] {
+            let seen = Arc::new(Mutex::new(None));
+            let cert = CertificateDer::from(
+                include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+            );
+            let key = PrivateKeyDer::try_from(
+                include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+            )
+            .unwrap();
+            let server_config = ServerConfig::builder_with_protocol_versions(&[&version::TLS12])
+                .with_no_client_auth()
+                .with_single_cert_with_ocsp(vec![cert], key, staple.clone())
+                .unwrap();
+            let verifier = Arc::new(OcspCaptureVerifier(seen.clone()));
+            let client_config = ClientConfig::builder_with_protocol_versions(&[&version::TLS12])
+                .dangerous()
+                .with_custom_certificate_verifier(verifier)
+                .with_no_client_auth();
+
+            let (client, server) = duplex(64 * 1024);
+            let server_task = tokio::spawn(async move {
+                TlsAcceptor::from(Arc::new(server_config))
+                    .accept(server)
+                    .await
+                    .unwrap();
+            });
+            let name = ServerName::try_from("localhost").unwrap();
+            TlsConnector::from(Arc::new(client_config))
+                .connect(name, client)
+                .await
+                .unwrap();
+            server_task.await.unwrap();
+            assert_eq!(*seen.lock().unwrap(), Some(staple));
+        }
+    }
+
+    #[tokio::test]
+    async fn tls12_ocsp_policy_rejection_fails_handshake_for_missing_or_malformed_staple() {
+        use tokio_rustls::TlsConnector;
+        use tokio_rustls::rustls::{ClientConfig, ServerConfig, version};
+
+        // rustls forwards OCSP bytes to the configured verifier; it does not
+        // apply an OCSP freshness policy on its own. This strict test verifier
+        // rejects absent and malformed responses and verifies that the error
+        // reaches the TLS handshake caller.
+        for staple in [Vec::new(), vec![0x30]] {
+            let cert = CertificateDer::from(
+                include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+            );
+            let key = PrivateKeyDer::try_from(
+                include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+            )
+            .unwrap();
+            let server_config = ServerConfig::builder_with_protocol_versions(&[&version::TLS12])
+                .with_no_client_auth()
+                .with_single_cert_with_ocsp(vec![cert], key, staple.clone())
+                .unwrap();
+            let client_config = ClientConfig::builder_with_protocol_versions(&[&version::TLS12])
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(OcspRejectingVerifier))
+                .with_no_client_auth();
+
+            let (client, server) = duplex(16 * 1024);
+            let server_task = tokio::spawn(async move {
+                TlsAcceptor::from(Arc::new(server_config))
+                    .accept(server)
+                    .await
+            });
+            let result = TlsConnector::from(Arc::new(client_config))
+                .connect(ServerName::try_from("localhost").unwrap(), client)
+                .await;
+            assert!(result.is_err(), "staple {staple:?} should be rejected");
+            assert!(server_task.await.unwrap().is_err());
+        }
+    }
+
+    #[derive(Debug)]
+    struct OcspRejectingVerifier;
+
+    impl ServerCertVerifier for OcspRejectingVerifier {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            ocsp_response: &[u8],
+            _now: UnixTime,
+        ) -> Result<
+            tokio_rustls::rustls::client::danger::ServerCertVerified,
+            tokio_rustls::rustls::Error,
+        > {
+            if ocsp_response.is_empty() || ocsp_response.first() != Some(&0x30) {
+                return Err(tokio_rustls::rustls::Error::General(
+                    "OCSP staple missing or malformed".into(),
+                ));
+            }
+            Err(tokio_rustls::rustls::Error::General(
+                "OCSP response rejected by test policy".into(),
+            ))
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+            AlpnTestVerifier.verify_tls12_signature(message, cert, dss)
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+            AlpnTestVerifier.verify_tls13_signature(message, cert, dss)
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            AlpnTestVerifier.supported_verify_schemes()
+        }
+    }
+
+    #[derive(Debug)]
+    struct OcspCaptureVerifier(Arc<std::sync::Mutex<Option<Vec<u8>>>>);
+
+    impl ServerCertVerifier for OcspCaptureVerifier {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            ocsp_response: &[u8],
+            _now: UnixTime,
+        ) -> Result<
+            tokio_rustls::rustls::client::danger::ServerCertVerified,
+            tokio_rustls::rustls::Error,
+        > {
+            *self.0.lock().unwrap() = Some(ocsp_response.to_vec());
+            Ok(tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+            AlpnTestVerifier.verify_tls12_signature(message, cert, dss)
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            message: &[u8],
+            cert: &CertificateDer<'_>,
+            dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+            AlpnTestVerifier.verify_tls13_signature(message, cert, dss)
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            AlpnTestVerifier.supported_verify_schemes()
+        }
+    }
+
+    #[tokio::test]
+    async fn https_proxy_session_tickets_are_reused_and_replenished() {
+        use tokio_rustls::rustls::{ClientConfig, HandshakeKind, ServerConfig, version};
+
+        let cert = CertificateDer::from(
+            include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+        );
+        let key = PrivateKeyDer::try_from(
+            include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+        )
+        .unwrap();
+        let mut server_config = ServerConfig::builder_with_protocol_versions(&[&version::TLS13])
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .unwrap();
+        // TLS 1.3 tickets are single-use; multiple tickets let a resumed
+        // connection consume one while refreshing the client's cache.
+        server_config.send_tls13_tickets = 2;
+        assert_eq!(
+            server_config.max_early_data_size, 0,
+            "the HTTPS proxy must not authorize TLS 1.3 early data"
+        );
+
+        let mut client_config = ClientConfig::builder_with_protocol_versions(&[&version::TLS13])
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AlpnTestVerifier))
+            .with_no_client_auth();
+        // Simulate a client willing to send 0-RTT. The server's ticket must
+        // still refuse early application data because CONNECT is stateful.
+        client_config.enable_early_data = true;
+        assert!(client_config.enable_early_data);
+        let client_config = Arc::new(client_config);
+
+        async fn handshake(
+            client_config: Arc<ClientConfig>,
+            server_config: Arc<ServerConfig>,
+        ) -> bool {
+            use tokio::io::{AsyncReadExt, AsyncWriteExt};
+            use tokio_rustls::{TlsAcceptor, TlsConnector};
+
+            let (client_io, server_io) = duplex(16 * 1024);
+            let server_task = tokio::spawn(async move {
+                let mut tls = TlsAcceptor::from(server_config)
+                    .accept(server_io)
+                    .await
+                    .unwrap();
+                tls.write_all(b"ready").await.unwrap();
+                tls.flush().await.unwrap();
+            });
+            let name = ServerName::try_from("localhost").unwrap();
+            let mut tls = TlsConnector::from(client_config)
+                .connect(name, client_io)
+                .await
+                .unwrap();
+            let mut ready = [0; 5];
+            tls.read_exact(&mut ready).await.unwrap();
+            assert_eq!(&ready, b"ready");
+            let resumed = tls.get_ref().1.handshake_kind() == Some(HandshakeKind::Resumed);
+            assert!(
+                !tls.get_ref().1.is_early_data_accepted(),
+                "HTTPS proxy must reject TLS early data, including on resumed sessions"
+            );
+            server_task.await.unwrap();
+            resumed
+        }
+
+        let server_config = Arc::new(server_config);
+        assert!(!handshake(client_config.clone(), server_config.clone()).await);
+        assert!(handshake(client_config.clone(), server_config.clone()).await);
+        // The resumed handshake must receive fresh tickets so the cache can
+        // continue across further proxy connections.
+        assert!(handshake(client_config, server_config).await);
+    }
+
+    #[tokio::test]
+    async fn https_proxy_tls12_sessions_resume_with_shared_config() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio_rustls::rustls::{ClientConfig, HandshakeKind, ServerConfig, version};
+        use tokio_rustls::{TlsAcceptor, TlsConnector};
+
+        let cert = CertificateDer::from(
+            include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+        );
+        let key = PrivateKeyDer::try_from(
+            include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+        )
+        .unwrap();
+        let server = Arc::new(
+            ServerConfig::builder_with_protocol_versions(&[&version::TLS12])
+                .with_no_client_auth()
+                .with_single_cert(vec![cert], key)
+                .unwrap(),
+        );
+        let client = Arc::new(
+            ClientConfig::builder_with_protocol_versions(&[&version::TLS12])
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(AlpnTestVerifier))
+                .with_no_client_auth(),
+        );
+
+        async fn handshake(client: Arc<ClientConfig>, server: Arc<ServerConfig>) -> HandshakeKind {
+            let (client_io, server_io) = duplex(16 * 1024);
+            let server_task = tokio::spawn(async move {
+                let mut tls = TlsAcceptor::from(server).accept(server_io).await.unwrap();
+                tls.write_all(b"ready").await.unwrap();
+                tls.flush().await.unwrap();
+            });
+            let name = ServerName::try_from("localhost").unwrap();
+            let mut tls = TlsConnector::from(client)
+                .connect(name, client_io)
+                .await
+                .unwrap();
+            let mut ready = [0; 5];
+            tls.read_exact(&mut ready).await.unwrap();
+            assert_eq!(&ready, b"ready");
+            let kind = tls.get_ref().1.handshake_kind().unwrap();
+            server_task.await.unwrap();
+            kind
+        }
+
+        assert_eq!(
+            handshake(client.clone(), server.clone()).await,
+            HandshakeKind::Full
+        );
+        assert_eq!(handshake(client, server).await, HandshakeKind::Resumed);
+    }
+
+    #[tokio::test]
+    async fn https_proxy_session_cache_is_partitioned_by_server_name() {
+        use tokio::io::AsyncWriteExt;
+        use tokio_rustls::TlsConnector;
+        use tokio_rustls::rustls::{ClientConfig, HandshakeKind, ServerConfig, version};
+
+        let cert = CertificateDer::from(
+            include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+        );
+        let key = PrivateKeyDer::try_from(
+            include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+        )
+        .unwrap();
+        let mut server = ServerConfig::builder_with_protocol_versions(&[&version::TLS13])
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .unwrap();
+        server.send_tls13_tickets = 2;
+        let server = Arc::new(server);
+        let client = Arc::new(
+            ClientConfig::builder_with_protocol_versions(&[&version::TLS13])
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(AlpnTestVerifier))
+                .with_no_client_auth(),
+        );
+
+        async fn handshake(
+            client: Arc<ClientConfig>,
+            server: Arc<ServerConfig>,
+            name: &'static str,
+        ) -> HandshakeKind {
+            let (client_io, server_io) = duplex(16 * 1024);
+            let server_task = tokio::spawn(async move {
+                let mut tls = TlsAcceptor::from(server).accept(server_io).await.unwrap();
+                tls.write_all(b"ready").await.unwrap();
+            });
+            let mut tls = TlsConnector::from(client)
+                .connect(ServerName::try_from(name).unwrap(), client_io)
+                .await
+                .unwrap();
+            let mut ready = [0; 5];
+            tls.read_exact(&mut ready).await.unwrap();
+            assert_eq!(&ready, b"ready");
+            let kind = tls.get_ref().1.handshake_kind().unwrap();
+            server_task.await.unwrap();
+            kind
+        }
+
+        assert_eq!(
+            handshake(client.clone(), server.clone(), "localhost").await,
+            HandshakeKind::Full
+        );
+        // A different SNI must not consume the localhost ticket; returning to
+        // localhost should still resume from the shared config's cache.
+        assert_eq!(
+            handshake(client.clone(), server.clone(), "otherhost").await,
+            HandshakeKind::Full
+        );
+        assert_eq!(
+            handshake(client, server, "localhost").await,
+            HandshakeKind::Resumed
+        );
+    }
+
+    #[test]
+    fn rustls_ticket_ciphertext_is_opaque_and_authenticated() {
+        // Exercise the ring-backed ticket primitive used by rustls. Session
+        // tickets contain resumable secrets, so ciphertext must not reveal
+        // them and modified tickets must fail authentication.
+        let ticketer = tokio_rustls::rustls::crypto::ring::Ticketer::new().unwrap();
+        let plaintext = b"sensitive resumable session state";
+        let ticket = ticketer
+            .encrypt(plaintext)
+            .expect("ticket encryption enabled");
+
+        assert_ne!(ticket, plaintext);
+        assert_eq!(
+            ticketer.decrypt(&ticket).as_deref(),
+            Some(plaintext.as_slice())
+        );
+
+        let mut modified = ticket.clone();
+        let last = modified.len() - 1;
+        modified[last] ^= 1;
+        assert!(ticketer.decrypt(&modified).is_none());
+        assert!(ticketer.decrypt(&[]).is_none());
+    }
+
+    #[derive(Debug)]
+    struct AlpnTestVerifier;
+
+    impl ServerCertVerifier for AlpnTestVerifier {
+        fn verify_server_cert(
+            &self,
+            _end_entity: &CertificateDer<'_>,
+            _intermediates: &[CertificateDer<'_>],
+            _server_name: &ServerName<'_>,
+            _ocsp_response: &[u8],
+            _now: UnixTime,
+        ) -> Result<
+            tokio_rustls::rustls::client::danger::ServerCertVerified,
+            tokio_rustls::rustls::Error,
+        > {
+            Ok(tokio_rustls::rustls::client::danger::ServerCertVerified::assertion())
+        }
+
+        fn verify_tls12_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+
+        fn verify_tls13_signature(
+            &self,
+            _message: &[u8],
+            _cert: &CertificateDer<'_>,
+            _dss: &DigitallySignedStruct,
+        ) -> Result<HandshakeSignatureValid, tokio_rustls::rustls::Error> {
+            Ok(HandshakeSignatureValid::assertion())
+        }
+
+        fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
+            tokio_rustls::rustls::crypto::ring::default_provider()
+                .signature_verification_algorithms
+                .supported_schemes()
+        }
+    }
+
+    #[tokio::test]
+    async fn https_proxy_tls_handshake_times_out_and_closes_connection() {
+        let (client, mut peer) = duplex(4096);
+        let server = tokio::spawn(async move {
+            let mut received = [0_u8; 1024];
+            let n = peer.read(&mut received).await.unwrap();
+            assert!(n > 0, "client should send a TLS ClientHello");
+            let n = timeout(Duration::from_secs(1), peer.read(&mut received))
+                .await
+                .expect("client socket should close after timeout")
+                .unwrap();
+            assert_eq!(n, 0, "cancelled TLS handshake must close its socket");
+        });
+
+        let result =
+            connect_tls_to_proxy_with_timeout(client, "localhost", Duration::from_millis(30)).await;
+        let error = result.expect_err("stalled TLS peer should hit handshake deadline");
+        assert!(format!("{error:#}").contains("TLS handshake with HTTPS proxy timed out"));
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn https_proxy_rejects_untrusted_server_certificate() {
+        // This self-signed localhost certificate is intentionally absent from
+        // the bundled WebPKI roots used by the production client config.
+        let cert = CertificateDer::from(
+            include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+        );
+        let key = PrivateKeyDer::try_from(
+            include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+        )
+        .unwrap();
+        let config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .unwrap();
+        let (client, server) = duplex(4096);
+        let server = tokio::spawn(async move {
+            let acceptor = TlsAcceptor::from(std::sync::Arc::new(config));
+            acceptor.accept(server).await
+        });
+
+        let result =
+            connect_tls_to_proxy_with_timeout(client, "localhost", Duration::from_secs(2)).await;
+        let error = result.expect_err("self-signed proxy certificate must be rejected");
+        assert!(format!("{error:#}").contains("TLS handshake with HTTPS proxy"));
+        assert!(
+            server.await.unwrap().is_err(),
+            "server handshake should be aborted after client rejection"
+        );
+    }
+
+    #[tokio::test]
+    async fn https_proxy_rejects_invalid_tls_server_name_before_handshake() {
+        // A proxy endpoint host is also the TLS identity. Reject malformed
+        // names before emitting a ClientHello so no ambiguous identity is used.
+        let (client, mut peer) = duplex(4096);
+        let result =
+            connect_tls_to_proxy_with_timeout(client, "proxy host", Duration::from_secs(2)).await;
+
+        let error = result.expect_err("a TLS server name containing whitespace is invalid");
+        assert!(format!("{error:#}").contains("invalid HTTPS proxy TLS server name"));
+        let mut received = [0_u8; 1];
+        assert_eq!(peer.read(&mut received).await.unwrap(), 0);
+    }
 
     #[test]
     fn builds_http_connect_request_with_basic_auth() {

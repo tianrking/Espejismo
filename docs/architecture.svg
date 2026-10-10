@@ -1,0 +1,59 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1180" height="340" viewBox="0 0 1180 340" font-family="system-ui, -apple-system, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#495057"/>
+    </marker>
+  </defs>
+
+  <!-- Client apps -->
+  <rect x="20" y="120" width="150" height="100" rx="8" fill="#e7f5ff" stroke="#1971c2" stroke-width="2"/>
+  <text x="95" y="152" text-anchor="middle" font-size="14" font-weight="bold" fill="#1864ab">Apps / Browser</text>
+  <text x="95" y="174" text-anchor="middle" font-size="12" fill="#495057">system traffic</text>
+  <text x="95" y="192" text-anchor="middle" font-size="12" fill="#495057">via SOCKS5 / HTTP</text>
+  <text x="95" y="210" text-anchor="middle" font-size="12" fill="#495057">or TUN capture</text>
+
+  <!-- espejismo-local -->
+  <rect x="230" y="100" width="200" height="140" rx="8" fill="#fff3bf" stroke="#f08c00" stroke-width="2"/>
+  <text x="330" y="128" text-anchor="middle" font-size="14" font-weight="bold" fill="#e67700">espejismo-local</text>
+  <text x="330" y="150" text-anchor="middle" font-size="12" fill="#495057">client binary</text>
+  <text x="330" y="172" text-anchor="middle" font-size="12" fill="#495057">ingress: SOCKS5 · HTTP</text>
+  <text x="330" y="190" text-anchor="middle" font-size="12" fill="#495057">TUN · lane pool</text>
+  <text x="330" y="208" text-anchor="middle" font-size="12" fill="#495057">adaptive frame writer</text>
+  <text x="330" y="226" text-anchor="middle" font-size="12" fill="#495057">padding</text>
+
+  <!-- Encrypted tunnel -->
+  <rect x="490" y="60" width="260" height="220" rx="8" fill="#f3f0ff" stroke="#7048e8" stroke-width="2"/>
+  <text x="620" y="88" text-anchor="middle" font-size="14" font-weight="bold" fill="#5f3dc4">Encrypted tunnel</text>
+  <text x="620" y="112" text-anchor="middle" font-size="12" fill="#495057">X25519 handshake</text>
+  <text x="620" y="132" text-anchor="middle" font-size="12" fill="#495057">dynamic HKDF windows</text>
+  <text x="620" y="152" text-anchor="middle" font-size="12" fill="#495057">XChaCha20-Poly1305 frames</text>
+  <text x="620" y="172" text-anchor="middle" font-size="12" fill="#495057">masked lengths · no TLV markers</text>
+  <text x="620" y="192" text-anchor="middle" font-size="12" fill="#495057">yamux / native mux · port hopping</text>
+  <text x="620" y="212" text-anchor="middle" font-size="12" fill="#495057">replay cache · silent reject</text>
+  <text x="620" y="240" text-anchor="middle" font-size="12" font-weight="bold" fill="#5f3dc4">does NOT impersonate</text>
+  <text x="620" y="258" text-anchor="middle" font-size="12" font-weight="bold" fill="#5f3dc4">TLS / QUIC / HTTP</text>
+
+  <!-- espejismo-remote -->
+  <rect x="810" y="100" width="200" height="140" rx="8" fill="#ebfbee" stroke="#2f9e44" stroke-width="2"/>
+  <text x="910" y="128" text-anchor="middle" font-size="14" font-weight="bold" fill="#2b8a3e">espejismo-remote</text>
+  <text x="910" y="150" text-anchor="middle" font-size="12" fill="#495057">server binary</text>
+  <text x="910" y="172" text-anchor="middle" font-size="12" fill="#495057">authenticated egress</text>
+  <text x="910" y="190" text-anchor="middle" font-size="12" fill="#495057">direct, or chained via</text>
+  <text x="910" y="208" text-anchor="middle" font-size="12" fill="#495057">upstream SOCKS5 / HTTP</text>
+  <text x="910" y="226" text-anchor="middle" font-size="12" fill="#495057">proxy</text>
+
+  <!-- Internet -->
+  <rect x="1070" y="120" width="90" height="100" rx="8" fill="#f8f9fa" stroke="#868e96" stroke-width="2"/>
+  <text x="1115" y="162" text-anchor="middle" font-size="14" font-weight="bold" fill="#495057">Internet</text>
+  <text x="1115" y="184" text-anchor="middle" font-size="12" fill="#495057">target</text>
+
+  <!-- Arrows -->
+  <line x1="170" y1="170" x2="224" y2="170" stroke="#495057" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="430" y1="170" x2="484" y2="170" stroke="#495057" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="750" y1="170" x2="804" y2="170" stroke="#495057" stroke-width="2" marker-end="url(#arrow)"/>
+  <line x1="1010" y1="170" x2="1064" y2="170" stroke="#495057" stroke-width="2" marker-end="url(#arrow)"/>
+
+  <!-- Caption -->
+  <text x="590" y="300" text-anchor="middle" font-size="12" fill="#868e96">TCP underlay · optional WebSocket / HTTP/2 · SOCKS5 UDP relay stays inside TCP</text>
+  <text x="590" y="324" text-anchor="middle" font-size="13" fill="#868e96">One server binary · one client binary · one TOML file. Protocol spec: docs/PROTOCOL.md</text>
+</svg>

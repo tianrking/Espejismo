@@ -746,6 +746,7 @@ fn should_send_padding(options: &FrameOptions, disabled_until: Option<Instant>) 
 }
 
 fn observe_backpressure(options: &FrameOptions, elapsed: Duration) -> Option<Instant> {
+    // Treat slow writes as a temporary padding circuit breaker; zero disables it.
     if options.backpressure_threshold_ms == 0 || options.backpressure_cooldown_ms == 0 {
         return None;
     }
@@ -757,13 +758,67 @@ fn observe_backpressure(options: &FrameOptions, elapsed: Duration) -> Option<Ins
 
 #[cfg(test)]
 mod tests {
+    use std::time::Duration;
     use tokio::io::duplex;
+    use tokio::time::Instant;
 
     use super::{
-        ChunkPolicy, Frame, FrameOptions, FrameReader, FrameType, FrameWriter, ObfuscationProfile,
-        NORMAL_PAYLOAD_CAPACITY,
+        observe_backpressure, should_send_padding, ChunkPolicy, Frame, FrameOptions, FrameReader,
+        FrameType, FrameWriter, ObfuscationProfile, NORMAL_PAYLOAD_CAPACITY,
     };
     use crate::crypto::{accept_handshake, connect_handshake, HandshakeConfig};
+
+    #[test]
+    fn padding_breaker_respects_disabled_and_threshold_boundaries() {
+        let options = FrameOptions {
+            backpressure_threshold_ms: 10,
+            backpressure_cooldown_ms: 250,
+            ..FrameOptions::default()
+        };
+        assert_eq!(
+            observe_backpressure(&options, Duration::from_millis(9)),
+            None
+        );
+        let before = Instant::now();
+        let until = observe_backpressure(&options, Duration::from_millis(10)).unwrap();
+        let remaining = until.duration_since(before);
+        assert!(remaining >= Duration::from_millis(250));
+        assert!(remaining <= Duration::from_millis(251));
+
+        let disabled_threshold = FrameOptions {
+            backpressure_threshold_ms: 0,
+            ..options.clone()
+        };
+        let disabled_cooldown = FrameOptions {
+            backpressure_cooldown_ms: 0,
+            ..options
+        };
+        assert_eq!(
+            observe_backpressure(&disabled_threshold, Duration::from_secs(1)),
+            None
+        );
+        assert_eq!(
+            observe_backpressure(&disabled_cooldown, Duration::from_secs(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn padding_breaker_disables_only_until_cooldown_expires() {
+        let options = FrameOptions {
+            padding_chance_percent: 100,
+            ..FrameOptions::default()
+        };
+        assert!(should_send_padding(&options, None));
+        assert!(!should_send_padding(
+            &options,
+            Some(Instant::now() + Duration::from_secs(1))
+        ));
+        assert!(should_send_padding(
+            &options,
+            Some(Instant::now() - Duration::from_millis(1))
+        ));
+    }
 
     #[test]
     fn normal_chunk_bounds_leave_room_for_frame_metadata_and_aead_tag() {
@@ -870,6 +925,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn normal_frame_payload_limit_roundtrips_and_rejects_one_byte_over() {
+        let cfg = HandshakeConfig::new(b"test-secret-that-is-long-enough".to_vec(), 30, 128, 4);
+        let (mut client, mut server) = duplex(NORMAL_PAYLOAD_CAPACITY + 64);
+        let client_cfg = cfg.clone();
+        let server_cfg = cfg;
+        let client_task = tokio::spawn(async move {
+            let keys = connect_handshake(&mut client, &client_cfg).await?;
+            anyhow::Ok((client, keys))
+        });
+        let server_task = tokio::spawn(async move {
+            let keys = accept_handshake(&mut server, &server_cfg).await?;
+            anyhow::Ok((server, keys))
+        });
+        let (client, client_keys) = client_task.await.unwrap().unwrap();
+        let (server, server_keys) = server_task.await.unwrap().unwrap();
+        let options = FrameOptions {
+            max_padding: 0,
+            padding_chance_percent: 0,
+            ..FrameOptions::default()
+        };
+        let mut writer = FrameWriter::new(client, client_keys, options.clone());
+        let mut reader = FrameReader::new(server, server_keys, options);
+
+        let payload = vec![0x5a; NORMAL_PAYLOAD_CAPACITY];
+        writer
+            .send(Frame {
+                ty: FrameType::Data,
+                payload: payload.clone(),
+            })
+            .await
+            .unwrap();
+        let received = reader.recv().await.unwrap();
+        assert_eq!(received.ty, FrameType::Data);
+        assert_eq!(received.payload, payload);
+
+        let oversized = Frame {
+            ty: FrameType::Data,
+            payload: vec![0xa5; NORMAL_PAYLOAD_CAPACITY + 1],
+        };
+        assert!(writer.send(oversized).await.is_err());
+    }
+
+    #[tokio::test]
     async fn key_update_frames_rotate_traffic_keys() {
         let cfg = HandshakeConfig::new(b"test-secret-that-is-long-enough".to_vec(), 30, 128, 4);
         let (mut client, mut server) = duplex(8192);
@@ -914,5 +1012,79 @@ mod tests {
         let after = reader.recv().await.unwrap();
         assert_eq!(before.payload, b"before");
         assert_eq!(after.payload, b"after");
+    }
+
+    #[test]
+    fn key_update_boundary_waits_for_a_nonzero_frame_count() {
+        let options = FrameOptions {
+            key_update_frames: 2,
+            ..FrameOptions::default()
+        };
+        assert!(!super::should_key_update(&options, 0, FrameType::Data));
+        assert!(!super::should_key_update(&options, 1, FrameType::Data));
+        assert!(super::should_key_update(&options, 2, FrameType::Data));
+        assert!(!super::should_key_update(&options, 2, FrameType::Padding));
+        assert!(!super::should_key_update(&options, 2, FrameType::KeyUpdate));
+        let disabled = FrameOptions {
+            key_update_frames: 0,
+            ..options
+        };
+        assert!(!super::should_key_update(&disabled, 2, FrameType::Data));
+    }
+
+    #[tokio::test]
+    async fn concurrent_sends_remain_ordered_across_repeated_key_updates() {
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let cfg = HandshakeConfig::new(b"concurrent-rotation-secret-long".to_vec(), 30, 128, 0);
+        let (mut client, mut server) = duplex(32 * 1024);
+        let client_cfg = cfg.clone();
+        let server_cfg = cfg;
+        let client_task = tokio::spawn(async move {
+            let keys = connect_handshake(&mut client, &client_cfg).await?;
+            anyhow::Ok((client, keys))
+        });
+        let server_task = tokio::spawn(async move {
+            let keys = accept_handshake(&mut server, &server_cfg).await?;
+            anyhow::Ok((server, keys))
+        });
+        let (client, client_keys) = client_task.await.unwrap().unwrap();
+        let (server, server_keys) = server_task.await.unwrap().unwrap();
+        let options = FrameOptions {
+            key_update_frames: 2,
+            max_padding: 0,
+            padding_chance_percent: 0,
+            ..FrameOptions::default()
+        };
+        let writer = Arc::new(Mutex::new(FrameWriter::new(
+            client,
+            client_keys,
+            options.clone(),
+        )));
+        let mut reader = FrameReader::new(server, server_keys, options);
+        let mut tasks = Vec::new();
+        for n in 0_u8..12 {
+            let writer = Arc::clone(&writer);
+            tasks.push(tokio::spawn(async move {
+                writer
+                    .lock()
+                    .await
+                    .send(Frame {
+                        ty: FrameType::Data,
+                        payload: vec![n],
+                    })
+                    .await
+            }));
+        }
+        for task in tasks {
+            task.await.unwrap().unwrap();
+        }
+        let mut received = Vec::new();
+        for _ in 0..12 {
+            received.push(reader.recv().await.unwrap().payload[0]);
+        }
+        received.sort_unstable();
+        assert_eq!(received, (0_u8..12).collect::<Vec<_>>());
     }
 }

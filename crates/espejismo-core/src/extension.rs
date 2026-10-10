@@ -1,3 +1,9 @@
+//! Extension traits for authentication, request policy, traffic observation,
+//! and outbound transport.
+//!
+//! These interfaces let deployments customize request handling while keeping
+//! the tunnel protocol and its authentication model explicit.
+
 use std::future::Future;
 use std::pin::Pin;
 use std::process::Command;

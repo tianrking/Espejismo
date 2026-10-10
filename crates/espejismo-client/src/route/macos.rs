@@ -5,7 +5,6 @@ use anyhow::{Context, Result};
 use espejismo_core::config::LocalTunConfig;
 use espejismo_core::split_authority;
 use serde::{Deserialize, Serialize};
-use tokio::net::lookup_host;
 use tracing::{debug, info, warn};
 
 use super::macos_parse::{
@@ -183,7 +182,7 @@ impl Drop for MacosRouteGuard {
 
 async fn resolve_server_ipv4(server: &str) -> Result<Vec<Ipv4Addr>> {
     let (_, port) = split_authority(server)?;
-    let addrs = lookup_host(server)
+    let addrs = espejismo_core::resolve_socket_addrs(server)
         .await
         .with_context(|| format!("resolve local.server {server}"))?;
     let mut ips = Vec::new();

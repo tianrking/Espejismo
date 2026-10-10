@@ -1,3 +1,8 @@
+//! Authenticated key exchange and traffic-key primitives.
+//!
+//! Handshake helpers establish authenticated sessions from configured
+//! pre-shared credentials; frame encryption uses the resulting session keys.
+
 use std::fmt;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -33,6 +38,12 @@ const VARIABLE_HANDSHAKE_NONCE_LEN: usize = 24;
 const VARIABLE_HANDSHAKE_LEN_LEN: usize = 4;
 const VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX: usize = 512;
 pub const PROTOCOL_VERSION: u16 = 1;
+
+// Version compatibility is deliberately exact: release numbers do not imply
+// wire compatibility, and this protocol has no version negotiation fallback.
+fn supports_protocol_version(version: u16) -> bool {
+    version == PROTOCOL_VERSION
+}
 pub const CAP_TCP_CONNECT: u64 = 1 << 0;
 pub const CAP_UDP_ASSOCIATE: u64 = 1 << 1;
 pub const CAP_MUX_YAMUX: u64 = 1 << 8;
@@ -180,9 +191,9 @@ impl SessionKeys {
     }
 
     pub(crate) fn update_tx(&mut self) -> Result<()> {
-        self.tx_generation = self.tx_generation.saturating_add(1);
-        let (key, len_mask) =
-            update_secret(&self.tx_key, self.tx_update_label, self.tx_generation)?;
+        let generation = next_key_generation(self.tx_generation)?;
+        let (key, len_mask) = update_secret(&self.tx_key, self.tx_update_label, generation)?;
+        self.tx_generation = generation;
         self.tx_key = key;
         self.tx_len_mask = len_mask;
         self.tx = XChaCha20Poly1305::new((&self.tx_key).into());
@@ -190,14 +201,20 @@ impl SessionKeys {
     }
 
     pub(crate) fn update_rx(&mut self) -> Result<()> {
-        self.rx_generation = self.rx_generation.saturating_add(1);
-        let (key, len_mask) =
-            update_secret(&self.rx_key, self.rx_update_label, self.rx_generation)?;
+        let generation = next_key_generation(self.rx_generation)?;
+        let (key, len_mask) = update_secret(&self.rx_key, self.rx_update_label, generation)?;
+        self.rx_generation = generation;
         self.rx_key = key;
         self.rx_len_mask = len_mask;
         self.rx = XChaCha20Poly1305::new((&self.rx_key).into());
         Ok(())
     }
+}
+
+fn next_key_generation(current: u64) -> Result<u64> {
+    current
+        .checked_add(1)
+        .context("traffic key generation exhausted")
 }
 
 impl Drop for SessionKeys {
@@ -525,7 +542,7 @@ fn finish_client_handshake(
     let server_public = PublicKey::from(slice_32(&reply[..32])?);
     let server_version = u16::from_be_bytes(reply[32..34].try_into()?);
     let server_capabilities = u64::from_be_bytes(reply[34..42].try_into()?);
-    if server_version != PROTOCOL_VERSION {
+    if !supports_protocol_version(server_version) {
         bail!("unsupported server protocol version {server_version}");
     }
     if server_capabilities & CAP_TCP_CONNECT == 0 {
@@ -862,7 +879,7 @@ async fn verify_client_hello(
     let timestamp = i64::from_be_bytes(client_hello.fixed_body[..8].try_into()?);
     let client_version = u16::from_be_bytes(client_hello.fixed_body[64..66].try_into()?);
     let client_capabilities = u64::from_be_bytes(client_hello.fixed_body[66..74].try_into()?);
-    if client_version != PROTOCOL_VERSION {
+    if !supports_protocol_version(client_version) {
         bail!("unsupported client protocol version {client_version}");
     }
     if client_capabilities & CAP_TCP_CONNECT == 0 {
@@ -877,8 +894,11 @@ async fn verify_client_hello(
     let client_public_bytes = slice_32(&client_hello.fixed_body[32..64])?;
     if let Some(replay) = replay {
         let mut replay = replay.lock().await;
-        replay.check_and_insert_first_packet_digest(now, client_hello.first_packet_digest)?;
-        replay.check_and_insert_ephemeral_public_key(now, client_public_bytes)?;
+        replay.check_and_insert_handshake(
+            now,
+            client_hello.first_packet_digest,
+            client_public_bytes,
+        )?;
     }
     Ok(())
 }
@@ -1302,10 +1322,57 @@ fn unix_now() -> Result<i64> {
 mod tests {
     use super::{
         accept_handshake, accept_handshake_with_replay, accept_handshake_with_users,
-        connect_handshake, parse_plain_client_hello, HandshakeConfig, HandshakeUser,
-        HandshakeWindow, SERVER_HELLO_LEN, STEALTH_HANDSHAKE_NONCE_LEN,
+        connect_handshake, parse_plain_client_hello, parse_stealth_client_hello, HandshakeConfig,
+        HandshakeUser, HandshakeWindow, SERVER_HELLO_LEN, STEALTH_HANDSHAKE_NONCE_LEN,
         VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
     };
+
+    #[test]
+    fn traffic_key_generation_stops_before_reusing_the_last_epoch() {
+        assert_eq!(super::next_key_generation(0).unwrap(), 1);
+        assert_eq!(super::next_key_generation(u64::MAX - 1).unwrap(), u64::MAX);
+        assert!(super::next_key_generation(u64::MAX).is_err());
+    }
+
+    #[test]
+    fn protocol_version_accepts_only_the_current_exact_value() {
+        for version in [0, 2, u16::MAX] {
+            assert!(
+                !super::supports_protocol_version(version),
+                "unexpectedly accepted protocol version {version}"
+            );
+        }
+        assert!(super::supports_protocol_version(super::PROTOCOL_VERSION));
+    }
+
+    #[test]
+    fn session_keys_bind_psk_ephemeral_secret_and_direction() {
+        let psk = b"rotation-boundary-secret";
+        let shared = [0x31; 32];
+        let nonce = [0x72; 24];
+        let client = super::derive_keys(psk, &shared, &nonce, b"client").unwrap();
+        let server = super::derive_keys(psk, &shared, &nonce, b"server").unwrap();
+
+        assert_eq!(client.tx_key, server.rx_key);
+        assert_eq!(client.rx_key, server.tx_key);
+        assert_ne!(client.tx_key, client.rx_key);
+
+        // A PSK rotation or a new ephemeral X25519 result must produce fresh
+        // traffic keys, even if the other handshake inputs are held constant.
+        let rotated =
+            super::derive_keys(b"rotated-psk-secret", &shared, &nonce, b"client").unwrap();
+        let new_ephemeral = super::derive_keys(psk, &[0x32; 32], &nonce, b"client").unwrap();
+        assert_ne!(client.tx_key, rotated.tx_key);
+        assert_ne!(client.tx_key, new_ephemeral.tx_key);
+    }
+
+    #[test]
+    fn psk_parser_enforces_minimum_decoded_entropy_length() {
+        assert!(super::parse_psk("123456789012345").is_err());
+        assert_eq!(super::parse_psk("1234567890123456").unwrap().len(), 16);
+        assert!(super::parse_psk("hex:00112233445566778899aabbccddeeff").is_ok());
+        assert!(super::parse_psk("base64:YWJj").is_err());
+    }
     use crate::config::MuxMode;
     use crate::protocol::replay::ReplayCache;
     use std::sync::Arc;
@@ -1399,6 +1466,41 @@ mod tests {
         )
         .unwrap();
         parse_plain_client_hello(&cfg, &payload, auth_key).unwrap();
+    }
+
+    #[test]
+    fn client_hello_parsers_enforce_padding_boundaries() {
+        let key = [7_u8; 32];
+        let cfg = HandshakeConfig::new(b"padding-boundary-secret-long-enough".to_vec(), 30, 4, 0)
+            .with_handshake_window(HandshakeWindow {
+                enabled: false,
+                step_secs: 30,
+                previous_windows: 0,
+                future_windows: 0,
+            });
+        let mut fixed = vec![0_u8; 32 + super::CLIENT_HELLO_FIXED_BODY_LEN];
+
+        // A zero-padding hello is the exact minimum accepted by both parsers.
+        assert!(parse_plain_client_hello(&cfg, &fixed, key).is_ok());
+        assert!(parse_stealth_client_hello(&cfg, &fixed, 140, key).is_ok());
+
+        // Declared padding must fit both the actual payload and configured cap.
+        fixed[32 + 82..32 + 84].copy_from_slice(&1_u16.to_be_bytes());
+        assert!(parse_plain_client_hello(&cfg, &fixed, key).is_err());
+        assert!(parse_stealth_client_hello(&cfg, &fixed, 140, key).is_err());
+
+        fixed.push(0);
+        assert!(parse_plain_client_hello(&cfg, &fixed, key).is_ok());
+        // At the minimum stealth frame, no client padding can fit.
+        assert!(parse_stealth_client_hello(&cfg, &fixed, 140, key).is_err());
+        // One additional byte of frame capacity permits exactly one byte.
+        assert!(parse_stealth_client_hello(&cfg, &fixed, 141, key).is_ok());
+        assert!(parse_stealth_client_hello(&cfg, &fixed, 139, key).is_err());
+
+        fixed[32 + 82..32 + 84].copy_from_slice(&5_u16.to_be_bytes());
+        fixed.extend_from_slice(&[0; 5]);
+        assert!(parse_plain_client_hello(&cfg, &fixed, key).is_err());
+        assert!(parse_stealth_client_hello(&cfg, &fixed, 145, key).is_err());
     }
 
     #[tokio::test]
@@ -1518,6 +1620,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn server_rejects_replayed_plain_hello_in_fresh_envelope() {
+        let cfg = HandshakeConfig::new(b"fresh-envelope-replay-secret".to_vec(), 30, 128, 0);
+        let auth_key = cfg.client_auth_key().unwrap();
+        let secret = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let hello =
+            super::build_client_hello(&cfg, &secret, cfg.max_handshake_padding, &auth_key).unwrap();
+        let first_envelope = super::mask_variable_handshake_envelope(
+            &auth_key,
+            b"plain-client",
+            &[],
+            &hello.wire,
+            VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+        )
+        .unwrap();
+        let second_envelope = super::mask_variable_handshake_envelope(
+            &auth_key,
+            b"plain-client",
+            &[],
+            &hello.wire,
+            VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+        )
+        .unwrap();
+        assert_ne!(first_envelope, second_envelope);
+        let replay = Arc::new(Mutex::new(ReplayCache::new(60)));
+
+        let (mut first_peer, mut first_server) = duplex(4096);
+        first_peer.write_all(&first_envelope).await.unwrap();
+        accept_handshake_with_replay(&mut first_server, &cfg, replay.clone())
+            .await
+            .unwrap();
+
+        let (mut replay_peer, mut replay_server) = duplex(4096);
+        replay_peer.write_all(&second_envelope).await.unwrap();
+        let err = match accept_handshake_with_replay(&mut replay_server, &cfg, replay).await {
+            Ok(_) => panic!("replayed authenticated hello should fail"),
+            Err(err) => err.to_string(),
+        };
+        assert!(err.contains("ephemeral public key"), "{err}");
+    }
+
+    #[tokio::test]
     async fn server_rejects_replayed_stealth_first_packet_digest() {
         let frame_size = 4096;
         let cfg = HandshakeConfig::new(b"first-packet-stealth-secret-long".to_vec(), 30, 128, 0)
@@ -1579,6 +1722,82 @@ mod tests {
         client_task.await.unwrap().unwrap();
         let session = server_task.await.unwrap().unwrap();
         assert_eq!(session.user, "good");
+    }
+
+    #[tokio::test]
+    async fn malformed_peer_handshake_error_does_not_disclose_configured_secrets() {
+        let server_secret = b"server-secret-that-is-long-enough";
+        let users = vec![HandshakeUser {
+            name: "private-user-name".to_string(),
+            config: HandshakeConfig::new(server_secret.to_vec(), 30, 128, 2),
+        }];
+        let replay = Arc::new(Mutex::new(ReplayCache::new(60)));
+        let (mut client, mut server) = duplex(4096);
+        client.write_all(b"invalid-peer-handshake").await.unwrap();
+        drop(client);
+        let err = match accept_handshake_with_users(&mut server, &users, replay).await {
+            Ok(_) => panic!("malformed peer handshake should be rejected"),
+            Err(err) => err.to_string(),
+        };
+
+        assert!(err.contains("client handshake nonce failed"), "{err}");
+        assert!(!err.contains(std::str::from_utf8(server_secret).unwrap()));
+        assert!(!err.contains("private-user-name"));
+    }
+
+    #[tokio::test]
+    async fn handshake_rejects_truncated_and_reordered_client_packets() {
+        let cfg = HandshakeConfig::new(b"fuzz-shape-secret-is-long-enough".to_vec(), 30, 128, 0);
+        let secret = x25519_dalek::StaticSecret::random_from_rng(rand::rngs::OsRng);
+        let auth_key = cfg.client_auth_key().unwrap();
+        let hello =
+            super::build_client_hello(&cfg, &secret, cfg.max_handshake_padding, &auth_key).unwrap();
+        let envelope = super::mask_variable_handshake_envelope(
+            &auth_key,
+            b"plain-client",
+            &[],
+            &hello.wire,
+            VARIABLE_HANDSHAKE_EXTRA_PADDING_MAX,
+        )
+        .unwrap();
+
+        // Exercise EOF at each variable-envelope boundary and within its payload.
+        for cut in [1, 23, 24, 27, 28, envelope.len() - 1] {
+            let (mut peer, mut server) = tokio::io::duplex(4096);
+            peer.write_all(&envelope[..cut]).await.unwrap();
+            drop(peer);
+            assert!(
+                accept_handshake(&mut server, &cfg).await.is_err(),
+                "cut={cut}"
+            );
+        }
+
+        // The envelope header is [nonce: 24][masked length: 4]. Keep nonce and
+        // payload intact while permuting every length-byte order; only the
+        // original byte order may decode to an admissible payload length.
+        let length = [envelope[24], envelope[25], envelope[26], envelope[27]];
+        for order in [
+            [0, 1, 3, 2], [0, 2, 1, 3], [0, 2, 3, 1], [0, 3, 1, 2], [0, 3, 2, 1],
+            [1, 0, 2, 3], [1, 0, 3, 2], [1, 2, 0, 3], [1, 2, 3, 0], [1, 3, 0, 2],
+            [1, 3, 2, 0], [2, 0, 1, 3], [2, 0, 3, 1], [2, 1, 0, 3], [2, 1, 3, 0],
+            [2, 3, 0, 1], [2, 3, 1, 0], [3, 0, 1, 2], [3, 0, 2, 1], [3, 1, 0, 2],
+            [3, 1, 2, 0], [3, 2, 0, 1], [3, 2, 1, 0],
+        ] {
+            let mut reordered = envelope.clone();
+            for (dst, src) in order.into_iter().enumerate() {
+                reordered[24 + dst] = length[src];
+            }
+            let (mut peer, mut server) = tokio::io::duplex(4096);
+            peer.write_all(&reordered).await.unwrap();
+            drop(peer);
+            assert!(accept_handshake(&mut server, &cfg).await.is_err(), "order={order:?}");
+        }
+
+        let stealth_cfg = cfg.clone().with_stealth_frame_size(Some(4096));
+        let (mut peer, mut server) = tokio::io::duplex(8192);
+        peer.write_all(&vec![0_u8; 4095]).await.unwrap();
+        drop(peer);
+        assert!(accept_handshake(&mut server, &stealth_cfg).await.is_err());
     }
 
     #[tokio::test]

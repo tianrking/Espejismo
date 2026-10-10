@@ -5,7 +5,7 @@ services:
       dockerfile: deployments/docker/Dockerfile
     command: ["--config", "/etc/espejismo/espejismo.toml"]
     ports:
-      - "8443:8443/tcp"
+      - "6690:6690/tcp"
     volumes:
       - ../../configs/examples/espejismo.toml:/etc/espejismo/espejismo.toml:ro
     restart: unless-stopped

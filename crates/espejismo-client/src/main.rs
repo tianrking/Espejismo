@@ -15,11 +15,11 @@ use espejismo_core::{
     ProxyAuth, RuntimeState, TcpConfig, TunnelPoolConfig,
 };
 use serde_json::json;
-use tokio::net::lookup_host;
 use tokio::sync::RwLock;
 use tokio::task::JoinSet;
 use tracing::{debug, info};
 
+mod adaptive;
 mod handler;
 mod mux;
 mod route;
@@ -30,112 +30,170 @@ use handler::{handle_http_client, handle_socks5_client};
 use tunnel::{TunnelManager, TunnelManagerConfig, TunnelService};
 
 #[derive(Parser, Clone, Debug)]
-#[command(name = "espejismo-local", version)]
+#[command(
+    name = "espejismo-local",
+    version,
+    about = "Local SOCKS5, HTTP, and TUN client for an Espejismo tunnel",
+    after_help = "Examples:\n  espejismo-local --config client.toml\n  espejismo-local --config client.toml --check-config\n  espejismo-local --import-profile 'espejismo://import/...' --write-config client.toml\n  espejismo-local --config client.toml --tun-enabled --tun-auto-route --tun-auto-dns"
+)]
 struct Args {
+    /// Load TOML settings from this file. Example: --config client.toml.
     #[arg(long)]
     config: Option<String>,
+    /// Load TOML settings from a base64-encoded string.
     #[arg(long)]
     config_base64: Option<String>,
+    /// Print a starter TOML configuration and exit.
     #[arg(long)]
     print_example_config: bool,
+    /// Print a base64-encoded starter configuration and exit.
     #[arg(long)]
     print_example_config_base64: bool,
+    /// Apply a built-in profile before CLI overrides, such as --profile balanced.
     #[arg(long)]
     profile: Option<String>,
+    /// Print the selected effective configuration as base64 and exit.
     #[arg(long)]
     print_config_base64: bool,
+    /// Print the selected effective configuration as TOML and exit.
     #[arg(long)]
     print_config: bool,
+    /// Write the selected effective configuration to a file and exit.
     #[arg(long)]
     write_config: Option<PathBuf>,
+    /// Decode a base64 configuration string to TOML and exit.
     #[arg(long)]
     decode_config_base64: Option<String>,
+    /// Validate configuration and local prerequisites, then exit.
     #[arg(long)]
     check_config: bool,
+    /// Run deployment diagnostics and profile advice, then exit.
     #[arg(long)]
     doctor: bool,
+    /// Connect to the configured server and complete a handshake, then exit.
     #[arg(long)]
     probe_server: bool,
+    /// Check the configured release metadata endpoint and exit.
     #[arg(long)]
     check_update: bool,
+    /// Override the release metadata URL used by --check-update.
     #[arg(long)]
     update_url: Option<String>,
+    /// Print a shareable client import URL and exit.
     #[arg(long)]
     print_client_profile: bool,
+    /// Set the name embedded in the exported client profile. Example: --profile-name laptop.
     #[arg(long, default_value = "default")]
     profile_name: String,
+    /// Import settings from an espejismo:// client profile URL.
     #[arg(long)]
     import_profile: Option<String>,
+    /// Override the local SOCKS5 listener address. Example: --socks5-listen 127.0.0.1:6680.
     #[arg(long)]
     socks5_listen: Option<SocketAddr>,
+    /// Override the local HTTP proxy listener address. Example: --http-listen 127.0.0.1:6681.
     #[arg(long)]
     http_listen: Option<SocketAddr>,
+    /// Enable the local TUN interface.
     #[arg(long)]
     tun_enabled: bool,
+    /// Set the TUN interface name. Example: --tun-name esptun0.
     #[arg(long)]
     tun_name: Option<String>,
+    /// Set the TUN IPv4 address.
     #[arg(long)]
     tun_address: Option<std::net::Ipv4Addr>,
+    /// Set the TUN IPv4 destination or peer address.
     #[arg(long)]
     tun_destination: Option<std::net::Ipv4Addr>,
+    /// Set the TUN IPv4 network prefix length, from 0 to 32.
     #[arg(long)]
     tun_prefix: Option<u8>,
+    /// Set the TUN interface MTU in bytes.
     #[arg(long)]
     tun_mtu: Option<u16>,
+    /// Install routes that send system traffic through the TUN interface.
     #[arg(long)]
     tun_auto_route: bool,
+    /// Configure system DNS to use the TUN DNS servers.
     #[arg(long)]
     tun_auto_dns: bool,
+    /// Remove routes and DNS changes left by a previous TUN run, then exit.
     #[arg(long)]
     tun_route_cleanup: bool,
+    /// Set comma-separated DNS server IP addresses for TUN mode. Example: --tun-dns 1.1.1.1,8.8.8.8.
     #[arg(long, value_delimiter = ',')]
     tun_dns: Vec<IpAddr>,
+    /// Disable UDP forwarding in TUN mode.
     #[arg(long)]
     tun_disable_udp: bool,
+    /// Set the idle timeout for TUN UDP flows, in seconds.
     #[arg(long)]
     tun_udp_timeout_secs: Option<u64>,
+    /// Comma-separated UDP destination ports to block in TUN mode. Example: --tun-udp-block-ports 443,5353.
     #[arg(long, value_delimiter = ',')]
     tun_udp_block_ports: Vec<u16>,
+    /// Override the remote server host and port. Example: --server remote.example.com:6690.
     #[arg(long)]
     server: Option<String>,
+    /// Override the pre-shared key; also read from ESPEJISMO_PSK when set.
     #[arg(long, env = "ESPEJISMO_PSK")]
     psk: Option<String>,
+    /// Override the allowed clock difference between peers, in seconds.
     #[arg(long)]
     clock_skew_secs: Option<i64>,
+    /// Set the maximum data-frame padding in bytes.
     #[arg(long)]
     max_padding: Option<usize>,
+    /// Set the maximum random frame delay in milliseconds.
     #[arg(long)]
     jitter_ms: Option<u64>,
+    /// Set the chance of adding padding, from 0 to 100 percent.
     #[arg(long)]
     padding_chance_percent: Option<u8>,
+    /// Set the backpressure detection threshold in milliseconds.
     #[arg(long)]
     backpressure_threshold_ms: Option<u64>,
+    /// Set the delay before retrying after backpressure, in milliseconds.
     #[arg(long)]
     backpressure_cooldown_ms: Option<u64>,
+    /// Set the maximum handshake padding in bytes.
     #[arg(long)]
     handshake_padding: Option<usize>,
+    /// Set the proof-of-work puzzle difficulty in bits.
     #[arg(long)]
     puzzle_bits: Option<u8>,
+    /// Set the per-tunnel I/O buffer size in bytes.
     #[arg(long)]
     tunnel_buffer: Option<usize>,
+    /// Set the minimum number of tunnel connections to keep available.
     #[arg(long)]
     tunnel_min_connections: Option<usize>,
+    /// Set the maximum number of concurrent tunnel connections.
     #[arg(long)]
     tunnel_max_connections: Option<usize>,
+    /// Set the number of connections reserved for interactive traffic.
     #[arg(long)]
     tunnel_interactive_lanes: Option<usize>,
+    /// Set the number of connections reserved for bulk traffic.
     #[arg(long)]
     tunnel_bulk_lanes: Option<usize>,
+    /// Set the logging filter, such as info, debug, or espejismo=trace.
     #[arg(long)]
     log_level: Option<String>,
+    /// Select human-readable or JSON log output. Example: --log-format json.
     #[arg(long)]
     log_format: Option<String>,
+    /// Append logs to this file. Example: --log-file ./client.log.
     #[arg(long)]
     log_file: Option<PathBuf>,
+    /// Disable ANSI color codes in terminal log output.
     #[arg(long)]
     no_log_ansi: bool,
+    /// Bind the local admin API to this address. Example: --admin-listen 127.0.0.1:9090.
     #[arg(long)]
     admin_listen: Option<SocketAddr>,
+    /// Set the bearer token required by the admin API.
     #[arg(long)]
     admin_token: Option<String>,
 }
@@ -267,6 +325,21 @@ async fn main() -> Result<()> {
         metrics.clone(),
         runtime_state.clone(),
     ));
+    validate_admin_listener(
+        runtime.admin_listen,
+        runtime.socks5_listen,
+        runtime.http_listen,
+    )?;
+    // Bind all local proxy ports before starting admin or accept tasks so a
+    // late port conflict cannot leave a partially started client behind.
+    let socks_listener = runtime
+        .socks5_listen
+        .map(|addr| bind_tcp_listener(addr, &runtime.tcp))
+        .transpose()?;
+    let http_listener = runtime
+        .http_listen
+        .map(|addr| bind_tcp_listener(addr, &runtime.tcp))
+        .transpose()?;
     if let Some(addr) = runtime.admin_listen {
         let reload = local_reload_action(
             config_input,
@@ -288,8 +361,7 @@ async fn main() -> Result<()> {
     }
 
     let mut listeners = JoinSet::new();
-    if let Some(addr) = runtime.socks5_listen {
-        let listener = bind_tcp_listener(addr, &runtime.tcp)?;
+    if let (Some(addr), Some(listener)) = (runtime.socks5_listen, socks_listener) {
         let service = service.clone();
         let metrics = metrics.clone();
         listeners.spawn(async move {
@@ -316,8 +388,7 @@ async fn main() -> Result<()> {
         });
     }
 
-    if let Some(addr) = runtime.http_listen {
-        let listener = bind_tcp_listener(addr, &runtime.tcp)?;
+    if let (Some(addr), Some(listener)) = (runtime.http_listen, http_listener) {
         let service = service.clone();
         let metrics = metrics.clone();
         listeners.spawn(async move {
@@ -366,7 +437,20 @@ async fn main() -> Result<()> {
         !listeners.is_empty(),
         "enable at least one local ingress: socks5_listen, http_listen, or local.tun.enabled"
     );
-    info!(server = %runtime.server, mux = ?runtime.mux.mode, "local proxy ready with reconnecting tunnel manager");
+    let ingress = startup_ingress_summary(
+        runtime.socks5_listen,
+        runtime.http_listen,
+        runtime.tun.enabled,
+    );
+    info!(
+        role = "local",
+        version = env!("CARGO_PKG_VERSION"),
+        server = %runtime.server,
+        mux = ?runtime.mux.mode,
+        underlay = ?runtime.underlay.mode,
+        ingress = %ingress,
+        "service started"
+    );
 
     tokio::select! {
         result = listeners.join_next() => {
@@ -381,6 +465,19 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn startup_ingress_summary(
+    socks5_listen: Option<SocketAddr>,
+    http_listen: Option<SocketAddr>,
+    tun_enabled: bool,
+) -> String {
+    format!(
+        "socks5={},http={},tun={}",
+        socks5_listen.map_or_else(|| "disabled".to_string(), |addr| addr.to_string()),
+        http_listen.map_or_else(|| "disabled".to_string(), |addr| addr.to_string()),
+        if tun_enabled { "enabled" } else { "disabled" },
+    )
 }
 
 fn build_tunnel_manager(
@@ -835,9 +932,8 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args, doctor: bool)
     }
     let server = args.server.clone().or_else(|| config.local.server.clone());
     match server {
-        Some(server) => match lookup_host(server.as_str()).await {
+        Some(server) => match espejismo_core::resolve_socket_addrs(server.as_str()).await {
             Ok(addrs) => {
-                let addrs = addrs.collect::<Vec<_>>();
                 if !addrs.is_empty() {
                     println!("OK local.server resolves: {server}");
                     if let Some(error) =
@@ -1010,6 +1106,18 @@ async fn check_local_config(config: &EspejismoConfig, args: &Args, doctor: bool)
     report_config_check(warnings, errors)
 }
 
+fn validate_admin_listener(
+    admin: Option<SocketAddr>,
+    socks5: Option<SocketAddr>,
+    http: Option<SocketAddr>,
+) -> Result<()> {
+    anyhow::ensure!(
+        admin.is_none_or(|addr| Some(addr) != socks5 && Some(addr) != http),
+        "admin.listen must not reuse a proxy listener address"
+    );
+    Ok(())
+}
+
 fn diagnose_low_feature_profile(config: &EspejismoConfig, warnings: &mut Vec<String>) {
     if !config.shared.obfuscation.profile.is_stealth() {
         warnings.push(
@@ -1066,10 +1174,32 @@ fn validate_windows_tun_dns_servers(dns_servers: &[IpAddr]) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_tun_auto_route_server_ipv4;
     #[cfg(target_os = "windows")]
     use super::validate_windows_tun_dns_servers;
+    use super::{
+        startup_ingress_summary, validate_admin_listener, validate_tun_auto_route_server_ipv4,
+    };
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+
+    #[test]
+    fn startup_ingress_summary_reports_disabled_and_enabled_ingresses() {
+        let socks = Some("127.0.0.1:6680".parse().unwrap());
+        assert_eq!(
+            startup_ingress_summary(socks, None, true),
+            "socks5=127.0.0.1:6680,http=disabled,tun=enabled"
+        );
+    }
+
+    #[test]
+    fn rejects_admin_listener_reusing_proxy_address() {
+        let proxy: SocketAddr = "127.0.0.1:6680".parse().unwrap();
+        let http: SocketAddr = "127.0.0.1:6681".parse().unwrap();
+        let admin: SocketAddr = "127.0.0.1:9090".parse().unwrap();
+        assert!(validate_admin_listener(Some(proxy), Some(proxy), None).is_err());
+        assert!(validate_admin_listener(Some(http), None, Some(http)).is_err());
+        assert!(validate_admin_listener(Some(admin), Some(proxy), None).is_ok());
+        assert!(validate_admin_listener(None, Some(proxy), None).is_ok());
+    }
 
     #[test]
     fn tun_auto_route_requires_ipv4_server_address() {
