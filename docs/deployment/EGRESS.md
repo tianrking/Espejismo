@@ -21,7 +21,9 @@ Rules:
 
 - `deny_private_ips`: blocks private, loopback, link-local, and special IP
   targets, including IPv4-mapped IPv6 literals according to their embedded
-  IPv4 address. For direct egress, resolved destination IPs are checked too.
+  IPv4 address. This also includes shared-use, benchmarking, documentation,
+  multicast, and reserved ranges. For direct egress, every resolved destination
+  IP is checked too, so a hostname resolving to a prohibited address is rejected.
   The setting defaults to `false`.
 - `allow_hosts`: optional host allowlist. An empty list imposes no host
   restriction. Entries match case-insensitively and may be exact names or

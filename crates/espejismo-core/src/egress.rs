@@ -229,12 +229,20 @@ fn host_matches(host: &str, pattern: &str) -> bool {
 fn is_private_or_special(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {
+            let [a, b, c, _] = ip.octets();
             ip.is_private()
                 || ip.is_loopback()
                 || ip.is_link_local()
                 || ip.is_broadcast()
                 || ip.is_documentation()
-                || ip.octets()[0] == 0
+                // Non-public and protocol-reserved IPv4 ranges are rejected
+                // with the same policy as RFC1918 destinations.
+                || a == 0
+                || a == 100 && (64..=127).contains(&b) // shared address space
+                || a == 192 && (b == 0 || b == 88 && c == 99)
+                || a == 198 && (b == 18 || b == 19 || b == 51 && c == 100)
+                || a == 203 && b == 0 && c == 113
+                || a >= 224
         }
         IpAddr::V6(ip) => {
             // Treat IPv4-mapped addresses like their IPv4 destination so they
@@ -246,6 +254,8 @@ fn is_private_or_special(ip: IpAddr) -> bool {
                 || ip.is_unspecified()
                 || ip.is_unique_local()
                 || ip.is_unicast_link_local()
+                || ip.is_multicast()
+                || ip.segments()[0] == 0x2001 && ip.segments()[1] == 0x0db8 // documentation
         }
     }
 }
@@ -350,6 +360,48 @@ mod tests {
         assert!(policy
             .validate_authority("[::ffff:8.8.8.8]:443")
             .is_ok());
+    }
+
+    #[test]
+    fn deny_private_ips_rejects_dns_rebinding_address_boundaries() {
+        let policy = EgressPolicy {
+            deny_private_ips: true,
+            ..EgressPolicy::default()
+        };
+
+        // Exercise the resolved-address check: a public hostname can resolve
+        // differently between validation and dialing (DNS rebinding).
+        for ip in [
+            "127.0.0.1",       // loopback
+            "10.0.0.1",        // private
+            "172.31.255.255",  // private upper edge
+            "192.168.0.1",     // private
+            "169.254.169.254", // link-local metadata
+            "100.64.0.1",      // shared address space
+            "192.0.2.1",       // documentation/reserved
+            "198.18.0.1",      // benchmarking
+            "203.0.113.1",     // documentation/reserved
+            "224.0.0.1",       // multicast
+            "240.0.0.1",       // reserved
+            "::",              // unspecified
+            "::1",             // loopback
+            "fc00::1",         // unique-local
+            "fe80::1",         // link-local
+            "ff02::1",         // multicast
+            "2001:db8::1",     // documentation
+        ] {
+            let addr = format!("{ip}:443").parse().unwrap_or_else(|_| {
+                format!("[{ip}]:443").parse().expect("valid test socket address")
+            });
+            assert!(policy.validate_resolved_addr(addr).is_err(), "{ip} must be rejected");
+        }
+
+        for ip in ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"] {
+            let addr = format!("{ip}:443").parse().unwrap_or_else(|_| {
+                format!("[{ip}]:443").parse().expect("valid test socket address")
+            });
+            assert!(policy.validate_resolved_addr(addr).is_ok(), "{ip} must remain allowed");
+        }
     }
 
     #[test]
