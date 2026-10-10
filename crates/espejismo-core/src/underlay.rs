@@ -1179,6 +1179,39 @@ mod tests {
         assert_eq!(accepted.0.uri().path(), "/");
     }
 
+    #[tokio::test]
+    async fn http2_priority_cycle_and_deep_chain_do_not_break_connection() {
+        // PRIORITY frames may refer to idle streams. Create a dependency cycle
+        // and a long (but bounded) chain, then verify normal request decoding.
+        // h2 currently accepts these frames but does not maintain a scheduling
+        // tree (see its proto::connection PRIORITY handler); this pins wire
+        // handling, not cycle repair or weighted scheduling behavior.
+        let mut frames = Vec::new();
+        frames.extend_from_slice(&raw_frame(2, 0, 1, &[0, 0, 0, 3, 15]));
+        frames.extend_from_slice(&raw_frame(2, 0, 3, &[0, 0, 0, 1, 31]));
+
+        // 64 dependency edges exercise substantially greater depth than the
+        // adapter's ordinary requests without imposing an artificial maximum.
+        let mut parent = 5;
+        for child in (7..=133).step_by(2) {
+            let mut payload = (parent as u32).to_be_bytes().to_vec();
+            payload.push((child % 256) as u8);
+            frames.extend_from_slice(&raw_frame(2, 0, child, &payload));
+            parent = child;
+        }
+
+        let block = [0x82, 0x86, 0x84, 0x01, 0x01, b'x'];
+        frames.extend_from_slice(&raw_frame(1, 5, 1, &block));
+        let (mut server, _peer) = http2_server_after_raw_frames(&frames).await;
+        let accepted = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+            .await
+            .expect("request after cycle and deep dependency chain should be processed")
+            .expect("connection should remain open")
+            .expect("request headers should decode");
+        assert_eq!(accepted.0.method(), http::Method::GET);
+        assert_eq!(accepted.0.uri().path(), "/");
+    }
+
     // WINDOW_UPDATE has a 31-bit increment, and zero is a protocol error.
     // Exercise raw frames so the h2 decoder's connection-versus-stream
     // handling remains pinned without introducing a second frame parser.
