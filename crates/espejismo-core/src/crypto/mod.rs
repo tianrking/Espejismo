@@ -1344,6 +1344,35 @@ mod tests {
         }
         assert!(super::supports_protocol_version(super::PROTOCOL_VERSION));
     }
+
+    #[test]
+    fn session_keys_bind_psk_ephemeral_secret_and_direction() {
+        let psk = b"rotation-boundary-secret";
+        let shared = [0x31; 32];
+        let nonce = [0x72; 24];
+        let client = super::derive_keys(psk, &shared, &nonce, b"client").unwrap();
+        let server = super::derive_keys(psk, &shared, &nonce, b"server").unwrap();
+
+        assert_eq!(client.tx_key, server.rx_key);
+        assert_eq!(client.rx_key, server.tx_key);
+        assert_ne!(client.tx_key, client.rx_key);
+
+        // A PSK rotation or a new ephemeral X25519 result must produce fresh
+        // traffic keys, even if the other handshake inputs are held constant.
+        let rotated =
+            super::derive_keys(b"rotated-psk-secret", &shared, &nonce, b"client").unwrap();
+        let new_ephemeral = super::derive_keys(psk, &[0x32; 32], &nonce, b"client").unwrap();
+        assert_ne!(client.tx_key, rotated.tx_key);
+        assert_ne!(client.tx_key, new_ephemeral.tx_key);
+    }
+
+    #[test]
+    fn psk_parser_enforces_minimum_decoded_entropy_length() {
+        assert!(super::parse_psk("123456789012345").is_err());
+        assert_eq!(super::parse_psk("1234567890123456").unwrap().len(), 16);
+        assert!(super::parse_psk("hex:00112233445566778899aabbccddeeff").is_ok());
+        assert!(super::parse_psk("base64:YWJj").is_err());
+    }
     use crate::config::MuxMode;
     use crate::protocol::replay::ReplayCache;
     use std::sync::Arc;

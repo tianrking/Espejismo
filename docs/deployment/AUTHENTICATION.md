@@ -32,6 +32,14 @@ authentication closes the physical connection. The remote also tracks recent
 authenticated first-packet digests and ephemeral public keys to reject replay.
 See [Protocol](../PROTOCOL.md) for the wire-level sequence and derivations.
 
+This is the tunnel's PSK-authenticated key exchange, not TLS-PSK: the core
+protocol does not use TLS. Session keys depend on both the configured PSK and
+the ephemeral X25519 shared secret; a fresh handshake therefore derives fresh
+traffic keys. This supports forward secrecy against later PSK disclosure when
+ephemeral secrets have been erased. It does not protect past sessions if an
+attacker recorded the handshake and later obtains the corresponding ephemeral
+secret.
+
 ### Handshake time windows
 
 `shared.handshake_window.enabled` derives the handshake authentication key
