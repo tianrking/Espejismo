@@ -1135,6 +1135,88 @@ mod tests {
         frame
     }
 
+    // GOAWAY is connection-scoped (stream zero) and carries last-stream-id,
+    // error code, then optional debug bytes. Keep the h2 crate's boundary
+    // behavior pinned using raw frames over memory.
+    #[tokio::test]
+    async fn http2_goaway_rejects_invalid_stream_and_payload_boundaries() {
+        for (stream_id, payload) in [
+            (1, vec![0; 8]), // GOAWAY must use stream zero
+            (0, vec![0; 7]),
+            (0, vec![0; 6]),
+        ] {
+            let frame = raw_frame(7, 0, stream_id, &payload);
+            let (mut server, _peer) = http2_server_after_raw_frames(&frame).await;
+            let result = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+                .await
+                .expect("malformed GOAWAY must be processed");
+            assert!(result.is_none() || result.unwrap().is_err());
+        }
+    }
+
+    #[tokio::test]
+    async fn http2_goaway_propagates_reason_and_last_stream_id() {
+        let (client_io, mut peer) = duplex(64 * 1024);
+        let (mut client, driver) = h2::client::Builder::new()
+            .handshake::<_, Bytes>(client_io)
+            .await
+            .unwrap();
+        tokio::spawn(async move { let _ = driver.await; });
+
+        // RFC 9113 §6.8: no stream (last-stream-id zero) was processed, and
+        // REFUSED_STREAM must reach the rejected request as the error reason.
+        let mut goaway = vec![0; 8];
+        goaway[4..8].copy_from_slice(&u32::from(h2::Reason::REFUSED_STREAM).to_be_bytes());
+        peer.write_all(&raw_frame(7, 0, 0, &goaway)).await.unwrap();
+
+        // Drive the client until it observes GOAWAY; a subsequent stream is
+        // outside last-stream-id and must fail with the peer's reason.
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let request = http::Request::builder().uri("/").body(()).unwrap();
+        let error = client.send_request(request, false).unwrap_err();
+        assert!(error.is_go_away());
+        assert_eq!(error.reason(), Some(h2::Reason::REFUSED_STREAM));
+    }
+
+    #[tokio::test]
+    async fn http2_graceful_goaway_refuses_streams_after_shutdown() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let (mut client, client_driver) = h2::client::Builder::new()
+            .handshake::<_, Bytes>(client_io)
+            .await
+            .unwrap();
+        tokio::spawn(async move { let _ = client_driver.await; });
+        let mut server = h2::server::Builder::new()
+            .handshake::<_, Bytes>(server_io)
+            .await
+            .unwrap();
+
+        let request = http::Request::builder().uri("/first").body(()).unwrap();
+        let (_response, _send) = client.send_request(request, false).unwrap();
+        let (first, mut respond) = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            server.accept(),
+        )
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+        drop(first);
+        respond
+            .send_response(http::Response::builder().status(200).body(()).unwrap(), true)
+            .unwrap();
+
+        server.graceful_shutdown();
+        let server_driver = tokio::spawn(async move {
+            while server.accept().await.is_some() {}
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        let request = http::Request::builder().uri("/after-shutdown").body(()).unwrap();
+        let error = client.send_request(request, false).unwrap_err();
+        assert!(error.is_go_away());
+        server_driver.abort();
+    }
+
     #[tokio::test]
     async fn http2_settings_rejects_invalid_lengths_ids_and_values() {
         // RFC 9113 requires a multiple of six bytes, stream zero, empty ACK,
