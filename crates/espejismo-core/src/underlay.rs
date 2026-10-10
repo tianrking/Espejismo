@@ -1147,6 +1147,65 @@ mod tests {
         assert!(result.is_none() || result.unwrap().is_err());
     }
 
+    #[tokio::test]
+    async fn http2_continuation_rejects_interleaved_ping() {
+        let block = [0x82, 0x86, 0x84, 0x01, 0x01, b'x'];
+        let mut frames = raw_frame(1, 0, 1, &block[..3]);
+        // Even connection-level control frames cannot interrupt a header block.
+        frames.extend_from_slice(&raw_frame(6, 0, 0, &[0; 8]));
+        frames.extend_from_slice(&raw_frame(9, 4, 1, &block[3..]));
+        let (mut server, _peer) = http2_server_after_raw_frames(&frames).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+            .await
+            .expect("interleaved PING should be processed");
+        assert!(result.is_none() || result.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn http2_continuation_header_list_limit_applies_across_frames() {
+        // Set a small receive limit and exceed it only after CONTINUATION.
+        // The HPACK block repeats a compact indexed field representation.
+        let (mut peer, server_io) = duplex(4096);
+        let mut wire = HTTP2_PREFACE.to_vec();
+        wire.extend_from_slice(&raw_frame(4, 0, 0, &[]));
+        let block = vec![0x82; 64];
+        wire.extend_from_slice(&raw_frame(1, 0, 1, &block[..32]));
+        wire.extend_from_slice(&raw_frame(9, 4, 1, &block[32..]));
+        peer.write_all(&wire).await.unwrap();
+        let mut builder = h2::server::Builder::new();
+        builder.max_header_list_size(64);
+        let mut server = builder.handshake::<_, Bytes>(server_io).await.unwrap();
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+            .await
+            .expect("oversized header list should be processed");
+        assert!(result.is_none() || result.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn http2_continuation_waits_for_completion_then_observes_disconnect() {
+        let block = [0x82, 0x86, 0x84, 0x01, 0x01, b'x'];
+        let (mut peer, server_io) = duplex(1024);
+        let mut wire = HTTP2_PREFACE.to_vec();
+        wire.extend_from_slice(&raw_frame(4, 0, 0, &[]));
+        wire.extend_from_slice(&raw_frame(1, 0, 1, &block[..3]));
+        peer.write_all(&wire).await.unwrap();
+        let mut server = h2::server::Builder::new()
+            .handshake::<_, Bytes>(server_io)
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), server.accept())
+                .await
+                .is_err(),
+            "partial header block must not be delivered"
+        );
+        drop(peer);
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+            .await
+            .expect("closed peer should release pending header block");
+        assert!(result.is_none() || result.unwrap().is_err());
+    }
+
     // The tunnel uses one POST stream and never needs server push. Pin the
     // h2 API boundary so future adapter changes cannot accidentally rely on
     // pushing when the client has disabled it.
