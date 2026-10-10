@@ -91,23 +91,26 @@ fn https_proxy_tls_config() -> Arc<ClientConfig> {
             roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
             // Pin HTTPS proxy TLS to the ring provider already selected by the
             // workspace, while retaining rustls' safe TLS 1.2/1.3 defaults.
-            let mut config = ClientConfig::builder_with_provider(https_proxy_tls_provider())
-                .with_safe_default_protocol_versions()
-                .expect("ring supports the safe default TLS protocol versions")
-                .with_root_certificates(roots)
-                .with_no_client_auth();
-            // TLS key logging exposes traffic secrets and is intended only for
-            // explicitly configured diagnostics. This proxy path never opts in.
-            config.key_log = Arc::new(tokio_rustls::rustls::NoKeyLog);
-            // CONNECT changes proxy state and must never be replayed as TLS
-            // 1.3 early data. Keep 0-RTT disabled even if rustls defaults change.
-            config.enable_early_data = false;
-            // HTTP CONNECT is used without an application protocol. Keep this
-            // explicit so a future TLS config change cannot negotiate h2/HTTP.
-            config.alpn_protocols.clear();
-            Arc::new(config)
+            https_proxy_tls_config_with_roots(roots)
         })
         .clone()
+}
+
+fn https_proxy_tls_config_with_roots(roots: RootCertStore) -> Arc<ClientConfig> {
+    let mut config = ClientConfig::builder_with_provider(https_proxy_tls_provider())
+        .with_safe_default_protocol_versions()
+        .expect("ring supports the safe default TLS protocol versions")
+        .with_root_certificates(roots)
+        .with_no_client_auth();
+    // TLS key logging exposes traffic secrets and is intended only for
+    // explicitly configured diagnostics. This proxy path never opts in.
+    config.key_log = Arc::new(tokio_rustls::rustls::NoKeyLog);
+    // CONNECT changes proxy state and must never be replayed as TLS 1.3 early
+    // data. Keep 0-RTT disabled even if rustls defaults change.
+    config.enable_early_data = false;
+    // HTTP CONNECT is used without an application protocol.
+    config.alpn_protocols.clear();
+    Arc::new(config)
 }
 
 fn https_proxy_tls_provider() -> Arc<tokio_rustls::rustls::crypto::CryptoProvider> {
@@ -158,12 +161,77 @@ mod tests {
     };
     use tokio_rustls::TlsAcceptor;
     use tokio_rustls::rustls::{
-        DigitallySignedStruct, ServerConfig, SignatureScheme,
+        DigitallySignedStruct, RootCertStore, ServerConfig, SignatureScheme,
         client::danger::{HandshakeSignatureValid, ServerCertVerifier},
         pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime},
     };
 
-    use super::{build_connect_request, connect_tls_to_proxy_with_timeout, https_proxy_tls_config};
+    use super::{
+        build_connect_request, connect_tls_to_proxy_with_timeout, https_proxy_tls_config,
+        https_proxy_tls_config_with_roots,
+    };
+
+    fn chain_test_client_config() -> Arc<tokio_rustls::rustls::ClientConfig> {
+        let root =
+            CertificateDer::from(include_bytes!("../tests/data/chain-test-root.der").to_vec());
+        let mut roots = RootCertStore::empty();
+        roots.add(root).unwrap();
+        https_proxy_tls_config_with_roots(roots)
+    }
+
+    async fn chain_test_handshake(leaf_name: &str, include_intermediate: bool) -> bool {
+        use tokio_rustls::TlsConnector;
+        let leaf = CertificateDer::from(match leaf_name {
+            "valid" => include_bytes!("../tests/data/chain-test-valid-leaf.der").to_vec(),
+            "expired" => include_bytes!("../tests/data/chain-test-expired-leaf.der").to_vec(),
+            _ => unreachable!(),
+        });
+        let key_bytes = match leaf_name {
+            "valid" => include_bytes!("../tests/data/chain-test-valid-leaf-key.der").to_vec(),
+            "expired" => include_bytes!("../tests/data/chain-test-expired-leaf-key.der").to_vec(),
+            _ => unreachable!(),
+        };
+        let key = PrivateKeyDer::try_from(key_bytes).unwrap();
+        let mut chain = vec![leaf];
+        if include_intermediate {
+            chain.push(CertificateDer::from(
+                include_bytes!("../tests/data/chain-test-intermediate.der").to_vec(),
+            ));
+        }
+        let server_config = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(chain, key)
+            .unwrap();
+        let (client_io, server_io) = duplex(16 * 1024);
+        let server_task = tokio::spawn(async move {
+            TlsAcceptor::from(Arc::new(server_config)).accept(server_io).await
+        });
+        let result = TlsConnector::from(chain_test_client_config())
+            .connect(ServerName::try_from("localhost").unwrap(), client_io)
+            .await;
+        let accepted = result.is_ok();
+        if accepted {
+            // Drop the stream to let the peer finish without a loopback socket.
+            drop(result);
+        }
+        let _ = server_task.await;
+        accepted
+    }
+
+    #[tokio::test]
+    async fn https_proxy_accepts_leaf_through_trusted_intermediate() {
+        assert!(chain_test_handshake("valid", true).await);
+    }
+
+    #[tokio::test]
+    async fn https_proxy_rejects_chain_without_intermediate() {
+        assert!(!chain_test_handshake("valid", false).await);
+    }
+
+    #[tokio::test]
+    async fn https_proxy_rejects_expired_leaf_in_trusted_chain() {
+        assert!(!chain_test_handshake("expired", true).await);
+    }
 
     #[test]
     fn https_proxy_handshakes_share_rustls_session_cache() {
