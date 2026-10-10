@@ -917,6 +917,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn websocket_ping_burst_is_answered_without_waiting_for_peer_pongs() {
+        let (mut peer, server_wire) = duplex(1024);
+        let _app = super::spawn_websocket_io(server_wire, super::WebSocketRole::Server, 1024);
+
+        // The adapter answers each inbound PING independently; WebSocket PONG
+        // frames are unsolicited acknowledgements and are not required here.
+        for ping_id in 0_u8..32 {
+            peer.write_all(&[0x89, 0x81, 1, 2, 3, 4, ping_id ^ 1])
+                .await
+                .unwrap();
+            let mut response = [0_u8; 3];
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                peer.read_exact(&mut response),
+            )
+            .await
+            .expect("each PING should receive a timely PONG")
+            .unwrap();
+            assert_eq!(response, [0x8a, 1, ping_id]);
+        }
+    }
+
+    #[tokio::test]
+    async fn websocket_incomplete_ping_read_is_bounded_by_caller_timeout() {
+        let (mut wire, mut peer) = duplex(16);
+        // A PING header declares one masked byte, but the peer never sends its
+        // mask key. Frame parsing has no built-in deadline; callers bound it.
+        peer.write_all(&[0x89, 0x81]).await.unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(10),
+            super::read_ws_frame(&mut wire, super::WebSocketRole::Server, 1024),
+        )
+        .await;
+        assert!(result.is_err(), "incomplete PING should remain pending");
+    }
+
+    #[tokio::test]
     async fn websocket_peer_close_is_acknowledged_and_disconnects_app_stream() {
         let (mut peer, server_wire) = duplex(1024);
         let mut app = super::spawn_websocket_io(server_wire, super::WebSocketRole::Client, 1024);
