@@ -2048,6 +2048,50 @@ mod tests {
         assert_eq!(&reply, b"reply");
     }
 
+    // END_STREAM closes only the sender's HTTP/2 half. The opposite direction
+    // remains usable, and dropping the application stream releases its adapter
+    // pumps instead of leaving an idle body reader behind.
+    #[tokio::test]
+    async fn http2_underlay_half_close_keeps_reverse_direction_alive() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let server_task = tokio::spawn(async move {
+            super::accept_http2_underlay(
+                server_io,
+                "/half-close",
+                super::Http2UnderlayOptions::default(),
+            )
+            .await
+            .unwrap()
+        });
+        let mut client = connect_http2_underlay(
+            client_io,
+            "example.com",
+            "/half-close",
+            super::Http2UnderlayOptions::default(),
+        )
+        .await
+        .unwrap();
+        let mut server = server_task.await.unwrap();
+
+        client.write_all(b"request half").await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut request = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(1), server.read_to_end(&mut request))
+            .await
+            .expect("client END_STREAM should reach server as EOF")
+            .unwrap();
+        assert_eq!(request, b"request half");
+
+        server.write_all(b"response after request EOF").await.unwrap();
+        server.shutdown().await.unwrap();
+        let mut response = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(1), client.read_to_end(&mut response))
+            .await
+            .expect("server response should remain available after request half-close")
+            .unwrap();
+        assert_eq!(response, b"response after request EOF");
+    }
+
     // Trailers terminate an HTTP/2 body but are not tunnel bytes. Exercise the
     // boundary through h2's in-memory transport; the adapter must expose only
     // DATA and then EOF, and HTTP's header-name parser rejects pseudo names as
