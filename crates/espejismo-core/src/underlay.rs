@@ -448,6 +448,12 @@ where
         apply_websocket_mask(&mut payload, &mask);
     }
     match opcode {
+        0x1 => {
+            // RFC 6455 text messages must contain valid UTF-8, even though
+            // this byte-stream adapter only carries binary messages.
+            std::str::from_utf8(&payload).context("websocket text payload is not UTF-8")?;
+            bail!("websocket text frames are unsupported")
+        }
         0x2 => Ok(Some(WsFrame::Data(payload))),
         0x8 => {
             // RFC 6455 permits an empty close payload, or a two-byte status
@@ -657,6 +663,40 @@ mod tests {
     };
     use bytes::Bytes;
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt, DuplexStream};
+
+    #[tokio::test]
+    async fn websocket_text_frames_validate_utf8_before_rejection() {
+        // The adapter transports binary frames only, but malformed text must
+        // still fail at the WebSocket UTF-8 boundary (RFC 6455).
+        for (payload, error) in [
+            (&[0xff][..], "text payload is not UTF-8"),
+            (&[0xe2, 0x82][..], "text payload is not UTF-8"),
+            (&[0xf0, 0x9f, 0x92][..], "text payload is not UTF-8"),
+            (&[b'a', 0xc0, 0xaf][..], "text payload is not UTF-8"),
+        ] {
+            let mut frame = vec![0x81, payload.len() as u8];
+            frame.extend_from_slice(payload);
+            let (mut wire, mut peer) = duplex(32);
+            peer.write_all(&frame).await.unwrap();
+            drop(peer);
+            let result = super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
+                .await;
+            assert!(result.unwrap_err().to_string().contains(error));
+        }
+
+        // UTF-8 permits Unicode control code points; valid text is rejected
+        // only because the tunnel contract carries binary frames.
+        let payload = "\0\u{1f}".as_bytes();
+        let mut frame = vec![0x81, payload.len() as u8];
+        frame.extend_from_slice(payload);
+        let (mut wire, mut peer) = duplex(32);
+        peer.write_all(&frame).await.unwrap();
+        drop(peer);
+        let error = super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("text frames are unsupported"));
+    }
 
     #[test]
     fn websocket_mask_xor_repeats_key_every_four_bytes() {

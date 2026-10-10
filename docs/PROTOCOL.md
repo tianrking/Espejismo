@@ -45,7 +45,8 @@ non-minimal payload-length encodings, and control payloads longer than 125
 bytes. It does not negotiate WebSocket extensions such as `permessage-deflate`;
 extension response headers and compressed frames are rejected. This avoids
 implicit compressor window or context takeover state around the encrypted
-tunnel stream.
+tunnel stream. Text frames are checked for valid UTF-8 as required by
+WebSocket, then rejected because the tunnel uses binary frames only.
 
 When `[shared.port_hopping].enabled = true`, the client deterministically
 selects a configured remote port from the current time window before opening a
