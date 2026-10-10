@@ -621,6 +621,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn rustls_ticket_ciphertext_is_opaque_and_authenticated() {
+        // Exercise the ring-backed ticket primitive used by rustls. Session
+        // tickets contain resumable secrets, so ciphertext must not reveal
+        // them and modified tickets must fail authentication.
+        let ticketer = tokio_rustls::rustls::crypto::ring::Ticketer::new().unwrap();
+        let plaintext = b"sensitive resumable session state";
+        let ticket = ticketer.encrypt(plaintext).expect("ticket encryption enabled");
+
+        assert_ne!(ticket, plaintext);
+        assert_eq!(ticketer.decrypt(&ticket).as_deref(), Some(plaintext.as_slice()));
+
+        let mut modified = ticket.clone();
+        let last = modified.len() - 1;
+        modified[last] ^= 1;
+        assert!(ticketer.decrypt(&modified).is_none());
+        assert!(ticketer.decrypt(&[]).is_none());
+    }
+
     #[derive(Debug)]
     struct AlpnTestVerifier;
 
