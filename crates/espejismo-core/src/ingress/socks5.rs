@@ -742,6 +742,45 @@ mod tests {
         assert_eq!(response, [5, 2, 1, 1]);
     }
 
+    #[tokio::test]
+    async fn password_auth_failure_ends_connection_but_does_not_lock_out_next_attempt() {
+        // A failed RFC 1929 exchange terminates this request handler. Retrying
+        // credentials on a fresh connection is independent and can succeed.
+        let mut pipelined_retry = vec![5, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4];
+        pipelined_retry.extend_from_slice(b"nope");
+        pipelined_retry.extend_from_slice(&[1, 4, b'u', b's', b'e', b'r', 4]);
+        pipelined_retry.extend_from_slice(b"pass");
+        let (result, response) = exchange(pipelined_retry, Some(auth())).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 2, 1, 1]);
+
+        let mut fresh_attempt = vec![5, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4];
+        fresh_attempt.extend_from_slice(b"pass");
+        fresh_attempt.extend_from_slice(&[5, 1, 0, 1, 127, 0, 0, 1, 0, 80]);
+        let (result, response) = exchange(fresh_attempt, Some(auth())).await;
+        assert!(matches!(result.unwrap(), SocksRequest::Connect(_)));
+        assert_eq!(&response[..4], &[5, 2, 1, 0]);
+    }
+
+    #[tokio::test]
+    async fn password_auth_accepts_maximum_wire_field_lengths() {
+        let username = vec![b'u'; u8::MAX as usize];
+        let password = vec![b'p'; u8::MAX as usize];
+        let configured = ProxyAuth {
+            username: String::from_utf8(username.clone()).unwrap(),
+            password: String::from_utf8(password.clone()).unwrap(),
+        };
+        let mut request = vec![5, 1, 2, 1, u8::MAX];
+        request.extend_from_slice(&username);
+        request.push(u8::MAX);
+        request.extend_from_slice(&password);
+        request.extend_from_slice(&[5, 1, 0, 1, 127, 0, 0, 1, 0, 80]);
+
+        let (result, response) = exchange(request, Some(configured)).await;
+        assert!(matches!(result.unwrap(), SocksRequest::Connect(_)));
+        assert_eq!(&response[..4], &[5, 2, 1, 0]);
+    }
+
     #[test]
     fn ipv6_target_authority_is_bracketed() {
         let target = SocksTarget {
