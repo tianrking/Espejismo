@@ -907,12 +907,87 @@ mod tests {
                     .is_err()
             );
         }
+
+        // The registered and private-use ranges are accepted at their edges;
+        // reserved pseudo-codes and values outside those ranges are rejected.
+        for (code, valid) in [
+            (999_u16, false),
+            (1000, true),
+            (1003, true),
+            (1004, false),
+            (1006, false),
+            (1014, true),
+            (1015, false),
+            (1999, false),
+            (2000, true),
+            (2999, true),
+            (3000, true),
+            (4999, true),
+            (5000, false),
+        ] {
+            let payload = code.to_be_bytes();
+            let mut frame = vec![0x88, 2];
+            frame.extend_from_slice(&payload);
+            let (mut wire, mut peer) = duplex(16);
+            peer.write_all(&frame).await.unwrap();
+            assert_eq!(
+                super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
+                    .await
+                    .is_ok(),
+                valid,
+                "close code {code} validity"
+            );
+        }
+
         let (mut wire, mut peer) = duplex(256);
         peer.write_all(&[0x88, 126, 0, 126]).await.unwrap();
         assert!(
             super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_close_read_timeout_covers_incomplete_frame() {
+        let (mut wire, mut peer) = duplex(16);
+        // A close header declares a two-byte status, but the peer sends only
+        // one byte. The parser must remain pending until the caller's timeout.
+        peer.write_all(&[0x88, 2, 0x03]).await.unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(10),
+            super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "incomplete close should be bounded by timeout"
+        );
+    }
+
+    #[tokio::test]
+    async fn websocket_application_half_close_sends_close_then_eof() {
+        let (mut peer, server_wire) = duplex(1024);
+        let mut app = super::spawn_websocket_io(server_wire, super::WebSocketRole::Server, 1024);
+        app.shutdown().await.unwrap();
+
+        let close = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            super::read_ws_frame(&mut peer, super::WebSocketRole::Client, 1024),
+        )
+        .await
+        .expect("local shutdown should send CLOSE")
+        .unwrap()
+        .unwrap();
+        assert!(matches!(close, super::WsFrame::Close(payload) if payload.is_empty()));
+
+        let mut byte = [0; 1];
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(1), peer.read(&mut byte))
+                .await
+                .expect("wire should close after CLOSE")
+                .unwrap(),
+            0
         );
     }
 

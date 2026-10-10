@@ -1,30 +1,27 @@
-# WebSocket close frame boundaries
+# WebSocket close handshake boundary tests
 
-The WebSocket frame reader previously treated every CLOSE opcode as EOF and
-discarded its payload. That accepted malformed close frames, including a
-truncated one-byte status, reserved status values, and invalid UTF-8 reasons.
+## Findings and approach
 
-The parser now accepts an empty payload or a two-byte valid close status with
-an optional UTF-8 reason. It rejects reserved/unassigned status ranges and
-malformed reason text while preserving the existing 125-byte control-frame
-limit. This is a protocol correctness change, with no throughput claim.
+`underlay.rs` already validates close payload length, status-code ranges, and
+UTF-8 reasons, echoes peer CLOSE, and turns application-side shutdown into an
+empty CLOSE followed by wire shutdown. The close reader intentionally has no
+standalone timer; callers bound handshake IO with their existing timeout. The
+RFC 6455 handling style in Xray-core and sing-box, referenced from
+`docs/research/REFERENCES.md`, supports testing the frame state and adapter
+shutdown paths while keeping this as a real WebSocket underlay. No transport
+or project positioning changes are needed.
 
-The approach follows the explicit control-frame handling and validation
-expected from the transport implementations referenced in
-`docs/research/REFERENCES.md` (Xray-core and sing-box), while retaining the
-real WebSocket underlay described by `docs/POSITIONING.md`; it does not add
-camouflage or change the tunnel protocol.
+Added regression coverage for status-code range edges, caller-bounded timeout
+on an incomplete CLOSE frame, and application half-close ordering (CLOSE then
+wire EOF). These tests do not require loopback sockets. Expected gain is
+correctness coverage only; no throughput improvement is claimed.
 
-Expected impact: malformed close payloads now terminate frame parsing with an
-error instead of being silently accepted. Valid empty close frames, the
-minimum status-only payload, and the maximum 125-byte payload remain accepted.
+## Validation
 
-Validation:
-
-- `$HOME/.cargo/bin/cargo test --offline -p espejismo-core` — passed: 248
-  unit tests, 10 HTTP proxy integration tests, 1 config example test, and 1
-  doctest; 1 existing loopback-bind test is ignored in the sandbox.
-- `websocket_close_frame_boundaries_validate_payload` — passed; covers empty,
-  status-only, maximum-size close payloads, one-byte truncation, reserved
-  status 1005, invalid UTF-8 reason, and over-limit extended payload.
-- Tests use in-memory Tokio duplex streams and do not require loopback binds.
+- `cargo test --offline -p espejismo-core websocket_`: passed, 20 matched
+  tests, including the new code-range, timeout, and half-close cases.
+- `cargo test --offline -p espejismo-core`: the run did not finish in the
+  available window. It passed 308 unit tests with the existing loopback-bind
+  test ignored, then stalled at `mux::native::frame::tests::arbitrary_bytes_are_panic_free`;
+  the run was interrupted. This is not counted as a full package pass.
+- No benchmark was run because this is protocol correctness work.
