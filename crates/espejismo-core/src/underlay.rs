@@ -2157,6 +2157,92 @@ mod tests {
         );
     }
 
+    // ACKs are matched by h2's connection state machine. Raw ACK frames let
+    // this pin behavior for unsolicited and repeated acknowledgements without
+    // relying on a real socket or reaching into h2 internals.
+    #[tokio::test]
+    async fn http2_ping_ignores_unsolicited_and_duplicate_acks() {
+        let (client_io, mut peer_io) = duplex(64 * 1024);
+        let (_client, mut client_conn) = h2::client::Builder::new()
+            .handshake::<_, bytes::Bytes>(client_io)
+            .await
+            .unwrap();
+        let mut ping = client_conn.ping_pong().expect("client ping handle");
+        let driver = tokio::spawn(async move { client_conn.await });
+
+        // An ACK with no outstanding PING must not fabricate a successful
+        // pong or poison the connection.
+        peer_io
+            .write_all(&raw_frame(6, 1, 0, &[0; 8]))
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            futures::future::poll_fn(|cx| ping.poll_pong(cx)),
+        )
+        .await
+        .expect_err("unsolicited ACK must not complete a nonexistent probe");
+
+        ping.send_ping(h2::Ping::opaque()).unwrap();
+        // Consume the client preface and frames until its PING is on the wire;
+        // SETTINGS and other control frames may precede it.
+        let mut preface = vec![0; HTTP2_PREFACE.len()];
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            peer_io.read_exact(&mut preface),
+        )
+        .await
+        .expect("client preface should arrive")
+        .unwrap();
+        assert_eq!(preface, HTTP2_PREFACE);
+        let ping_payload = loop {
+            let mut header = [0; 9];
+            tokio::time::timeout(
+                std::time::Duration::from_secs(1),
+                peer_io.read_exact(&mut header),
+            )
+            .await
+            .expect("client frame should arrive")
+            .unwrap();
+            let len = (usize::from(header[0]) << 16)
+                | (usize::from(header[1]) << 8)
+                | usize::from(header[2]);
+            let mut payload = vec![0; len];
+            peer_io.read_exact(&mut payload).await.unwrap();
+            if header[3] == 6 && header[4] & 1 == 0 {
+                break payload;
+            }
+        };
+        peer_io
+            .write_all(&raw_frame(6, 1, 0, &ping_payload))
+            .await
+            .unwrap();
+        tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            futures::future::poll_fn(|cx| ping.poll_pong(cx)),
+        )
+        .await
+        .expect("matching ACK should arrive")
+        .unwrap();
+
+        // The same ACK after the probe completed is now unsolicited.
+        peer_io
+            .write_all(&raw_frame(6, 1, 0, &ping_payload))
+            .await
+            .unwrap();
+        assert!(
+            tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                futures::future::poll_fn(|cx| ping.poll_pong(cx)),
+            )
+            .await
+            .is_err(),
+            "duplicate ACK must not produce a second pong"
+        );
+        drop(peer_io);
+        let _ = driver.await;
+    }
+
     #[tokio::test]
     async fn http2_ping_rejects_non_eight_byte_payloads() {
         // RFC 9113 §6.7 requires PING payloads to be exactly eight octets.
