@@ -1154,6 +1154,68 @@ mod tests {
         }
     }
 
+    // A minimal request opens stream 1; raw DATA frames then exercise PADDED
+    // length handling in h2's frame decoder without relying on loopback sockets.
+    async fn http2_server_after_padded_data(
+        data_payload: &[u8],
+    ) -> (h2::server::Connection<DuplexStream, Bytes>, DuplexStream) {
+        let (mut peer, server_io) = duplex(1024);
+        let mut wire = HTTP2_PREFACE.to_vec();
+        wire.extend_from_slice(&raw_frame(4, 0, 0, &[]));
+        // HPACK indexed GET, https, /, then literal :authority = "x".
+        wire.extend_from_slice(&raw_frame(1, 4, 1, &[0x82, 0x87, 0x84, 0x01, 0x01, b'x']));
+        wire.extend_from_slice(&raw_frame(0, 0x9, 1, data_payload));
+        peer.write_all(&wire).await.unwrap();
+        let connection = h2::server::Builder::new()
+            .handshake::<_, Bytes>(server_io)
+            .await
+            .unwrap();
+        (connection, peer)
+    }
+
+    #[tokio::test]
+    async fn http2_data_padding_strips_boundary_padding() {
+        for (payload, expected) in [
+            (vec![0, b'a'], b"a".as_slice()), // PADDED flag with zero padding
+            (vec![2, b'a', 0, 0], b"a".as_slice()), // maximal valid padding
+            (vec![0], b"".as_slice()),        // empty data, zero padding
+        ] {
+            let (mut server, _peer) = http2_server_after_padded_data(&payload).await;
+            let (request, mut respond) =
+                tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+                    .await
+                    .unwrap()
+                    .unwrap()
+                    .unwrap();
+            respond
+                .send_response(http::Response::new(()), true)
+                .unwrap();
+            tokio::spawn(async move { while server.accept().await.is_some() {} });
+            let mut body = request.into_body();
+            let mut received = Vec::new();
+            while let Some(chunk) =
+                tokio::time::timeout(std::time::Duration::from_secs(1), body.data())
+                    .await
+                    .unwrap()
+            {
+                let chunk = chunk.unwrap();
+                received.extend_from_slice(&chunk);
+                body.flow_control().release_capacity(chunk.len()).unwrap();
+            }
+            assert_eq!(received, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn http2_data_padding_rejects_length_past_payload() {
+        // The pad length byte cannot exceed the remaining DATA payload.
+        let (mut server, _peer) = http2_server_after_padded_data(&[2, b'x']).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+            .await
+            .unwrap();
+        assert!(result.is_none() || result.unwrap().is_err());
+    }
+
     #[tokio::test]
     async fn http2_goaway_propagates_reason_and_last_stream_id() {
         let (client_io, mut peer) = duplex(64 * 1024);
@@ -1203,15 +1265,19 @@ mod tests {
         .unwrap();
         drop(first);
         respond
-            .send_response(http::Response::builder().status(200).body(()).unwrap(), true)
+            .send_response(
+                http::Response::builder().status(200).body(()).unwrap(),
+                true,
+            )
             .unwrap();
 
         server.graceful_shutdown();
-        let server_driver = tokio::spawn(async move {
-            while server.accept().await.is_some() {}
-        });
+        let server_driver = tokio::spawn(async move { while server.accept().await.is_some() {} });
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-        let request = http::Request::builder().uri("/after-shutdown").body(()).unwrap();
+        let request = http::Request::builder()
+            .uri("/after-shutdown")
+            .body(())
+            .unwrap();
         let error = client.send_request(request, false).unwrap_err();
         assert!(error.is_go_away());
         server_driver.abort();
