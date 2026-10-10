@@ -52,6 +52,10 @@ outside the tunnel using host-level network policy if that is required by your
 deployment. Windows TUN DNS takeover currently accepts IPv4 DNS server
 addresses only; see [DNS behavior](DNS.md).
 
+The userspace TUN stack validates UDP checksums before exposing datagrams to
+the relay. IPv4 accepts a zero UDP checksum as the protocol's "checksum not
+provided" value; IPv6 requires a non-zero valid checksum.
+
 ## Deployment checks
 
 1. Validate the config with `--check-config` on the binary that uses it.

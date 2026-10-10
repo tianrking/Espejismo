@@ -98,7 +98,12 @@ pub async fn run_tun_ingress(
             match device_to_stack.recv(&mut buf).await {
                 Ok(0) => continue,
                 Ok(n) => {
-                    if let Err(err) = stack_sink.send(buf[..n].to_vec()).await {
+                    let packet = buf[..n].to_vec();
+                    if !tun_udp_checksums_valid(&packet) {
+                        trace!("TUN packet dropped for invalid UDP checksum");
+                        continue;
+                    }
+                    if let Err(err) = stack_sink.send(packet).await {
                         warn!(error = %err, "TUN packet could not enter netstack");
                         break;
                     }
@@ -383,6 +388,60 @@ fn authority_from_socket(addr: SocketAddr) -> String {
     addr.to_string()
 }
 
+// UDP checksum zero is the IPv4 "not supplied" sentinel. IPv6 requires a
+// checksum, so do not let smoltcp's shared UDP verifier accept zero there.
+fn udp_checksum_valid(
+    packet: &netstack_smoltcp::smoltcp::wire::UdpPacket<&[u8]>,
+    src_addr: &netstack_smoltcp::smoltcp::wire::IpAddress,
+    dst_addr: &netstack_smoltcp::smoltcp::wire::IpAddress,
+) -> bool {
+    let is_ipv6 = matches!(src_addr, netstack_smoltcp::smoltcp::wire::IpAddress::Ipv6(_));
+    (!is_ipv6 || packet.checksum() != 0) && packet.verify_checksum(src_addr, dst_addr)
+}
+
+fn tun_udp_checksums_valid(packet: &[u8]) -> bool {
+    use netstack_smoltcp::smoltcp::wire::{
+        IpAddress, Ipv4Packet, Ipv6Packet, UdpPacket,
+    };
+
+    match packet.first().map(|byte| byte >> 4) {
+        Some(4) => {
+            let Ok(ip) = Ipv4Packet::new_checked(packet) else {
+                return false;
+            };
+            if ip.next_header() != netstack_smoltcp::smoltcp::wire::IpProtocol::Udp {
+                return true;
+            }
+            let Ok(udp) = UdpPacket::new_checked(ip.payload()) else {
+                return false;
+            };
+            udp_checksum_valid(
+                &udp,
+                &IpAddress::Ipv4(ip.src_addr()),
+                &IpAddress::Ipv4(ip.dst_addr()),
+            )
+        }
+        Some(6) => {
+            let Ok(ip) = Ipv6Packet::new_checked(packet) else {
+                return false;
+            };
+            if ip.next_header() != netstack_smoltcp::smoltcp::wire::IpProtocol::Udp {
+                return true;
+            }
+            let Ok(udp) = UdpPacket::new_checked(ip.payload()) else {
+                return false;
+            };
+            udp_checksum_valid(
+                &udp,
+                &IpAddress::Ipv6(ip.src_addr()),
+                &IpAddress::Ipv6(ip.dst_addr()),
+            )
+        }
+        // Leave unsupported IP versions and non-UDP parsing to smoltcp.
+        _ => true,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -545,5 +604,44 @@ mod tests {
             !packet.verify_checksum(),
             "mutating a checksummed header must be detected"
         );
+    }
+
+    #[test]
+    fn udp_checksum_rules_cover_ipv4_ipv6_zero_and_corruption() {
+        use netstack_smoltcp::smoltcp::wire::{
+            IpAddress, Ipv4Address, Ipv6Address, UdpPacket,
+        };
+
+        let v4_src = IpAddress::Ipv4(Ipv4Address::new(192, 0, 2, 1));
+        let v4_dst = IpAddress::Ipv4(Ipv4Address::new(198, 51, 100, 2));
+        let v6_src = IpAddress::Ipv6(Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 1));
+        let v6_dst = IpAddress::Ipv6(Ipv6Address::new(0x2001, 0xdb8, 0, 0, 0, 0, 0, 2));
+
+        // A zero checksum is accepted only for IPv4's optional checksum.
+        let mut zero = [0_u8; 8];
+        zero[4..6].copy_from_slice(&8_u16.to_be_bytes());
+        let packet = UdpPacket::new_checked(&zero[..]).unwrap();
+        assert!(udp_checksum_valid(&packet, &v4_src, &v4_dst));
+        assert!(!udp_checksum_valid(&packet, &v6_src, &v6_dst));
+
+        // A non-zero checksum must match the address-family pseudo-header.
+        let mut valid_v4 = zero;
+        UdpPacket::new_unchecked(&mut valid_v4[..]).fill_checksum(&v4_src, &v4_dst);
+        let packet = UdpPacket::new_checked(&valid_v4[..]).unwrap();
+        assert!(udp_checksum_valid(&packet, &v4_src, &v4_dst));
+        let mut corrupt = valid_v4;
+        corrupt[7] ^= 1;
+        let packet = UdpPacket::new_checked(&corrupt[..]).unwrap();
+        assert!(!udp_checksum_valid(&packet, &v4_src, &v4_dst));
+
+        let mut valid_v6 = zero;
+        UdpPacket::new_unchecked(&mut valid_v6[..]).fill_checksum(&v6_src, &v6_dst);
+        let packet = UdpPacket::new_checked(&valid_v6[..]).unwrap();
+        assert_ne!(packet.checksum(), 0);
+        assert!(udp_checksum_valid(&packet, &v6_src, &v6_dst));
+        let mut corrupt = valid_v6;
+        corrupt[6] ^= 1;
+        let packet = UdpPacket::new_checked(&corrupt[..]).unwrap();
+        assert!(!udp_checksum_valid(&packet, &v6_src, &v6_dst));
     }
 }
