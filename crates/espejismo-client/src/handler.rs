@@ -1,11 +1,12 @@
+use std::future::Future;
 use std::io;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use espejismo_core::{
-    http_proxy, idle_copy_bidirectional, socks5, write_tcp_connect_with_priority,
-    write_udp_datagram_with_priority, Metrics, ProxyAuth, StreamPriority,
+    Metrics, ProxyAuth, StreamPriority, http_proxy, idle_copy_bidirectional, socks5,
+    write_tcp_connect_with_priority, write_udp_datagram_with_priority,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::{TcpStream, UdpSocket};
@@ -309,6 +310,9 @@ async fn write_all_chunked<W>(writer: &mut W, data: &[u8]) -> std::io::Result<()
 where
     W: AsyncWrite + Unpin,
 {
+    if data.is_empty() {
+        return Ok(());
+    }
     for chunk in data.chunks(HTTP_BODY_COPY_BUFFER_SIZE) {
         writer.write_all(chunk).await?;
     }
@@ -355,14 +359,27 @@ async fn handle_udp_associate(
     let udp_addr = udp.local_addr()?;
     socks5::reply_udp_associate(control_stream, udp_addr).await?;
     let mut buf = vec![0_u8; 65_535];
+    let mut reassembler = socks5::SocksUdpReassembler::default();
     loop {
-        let (n, peer) = timeout(idle, udp.recv_from(&mut buf)).await??;
-        let packet = socks5::parse_udp_packet(&buf[..n])?;
+        let (n, peer) = recv_udp_association_datagram(idle, udp.recv_from(&mut buf)).await?;
+        let Some(packet) = reassembler.push_from(peer, &buf[..n])? else {
+            continue;
+        };
         let response = relay_udp_packet(tunnel.clone(), &packet.target, &packet.payload).await?;
         let wrapped = socks5::build_udp_packet(&packet.target, &response)?;
         udp.send_to(&wrapped, peer).await?;
         metrics.add_tunnel_bytes(packet.payload.len() as u64, response.len() as u64);
     }
+}
+
+// Apply the association's inactivity window to one receive operation. Timing
+// out drops recv_from and returns from the association handler, releasing its
+// UDP socket and fragment reassembly state.
+async fn recv_udp_association_datagram<F, T>(idle: Duration, receive: F) -> Result<T>
+where
+    F: Future<Output = io::Result<T>>,
+{
+    Ok(timeout(idle, receive).await??)
 }
 
 async fn relay_udp_packet(
@@ -401,11 +418,58 @@ async fn relay_udp_packet(
 #[cfg(test)]
 mod tests {
     use super::{
-        copy_exact_request_body, copy_fixed_length_http, http_stream_priority, write_all_chunked,
+        copy_exact_request_body, copy_fixed_length_http, http_stream_priority,
+        recv_udp_association_datagram, write_all_chunked,
     };
     use espejismo_core::StreamPriority;
-    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+    use std::io;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
     use tokio::time::Duration;
+
+    #[tokio::test]
+    async fn udp_association_idle_timeout_cancels_pending_receive() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        struct MarkDropped(Arc<AtomicBool>);
+        impl Drop for MarkDropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+
+        let dropped = Arc::new(AtomicBool::new(false));
+        let receive = {
+            let dropped = dropped.clone();
+            async move {
+                let _guard = MarkDropped(dropped);
+                std::future::pending::<io::Result<()>>().await
+            }
+        };
+
+        assert!(
+            recv_udp_association_datagram(Duration::from_millis(10), receive)
+                .await
+                .is_err()
+        );
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn udp_association_receive_succeeds_inside_idle_window() {
+        let receive = async {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+            Ok::<_, io::Error>(42)
+        };
+        assert_eq!(
+            recv_udp_association_datagram(Duration::from_secs(1), receive)
+                .await
+                .unwrap(),
+            42
+        );
+    }
 
     #[test]
     fn large_http_request_uses_bulk_priority() {
@@ -484,6 +548,30 @@ mod tests {
         let mut received = Vec::new();
         peer.read_to_end(&mut received).await.unwrap();
         assert_eq!(received, data);
+    }
+
+    #[tokio::test]
+    async fn chunked_prebuffer_write_handles_buffer_boundaries() {
+        for len in [
+            0,
+            1,
+            128 * 1024 - 1,
+            128 * 1024,
+            128 * 1024 + 1,
+            256 * 1024 + 7,
+        ] {
+            let (mut tunnel, mut peer) = duplex(512 * 1024);
+            let data = (0..len)
+                .map(|index| (index % 251) as u8)
+                .collect::<Vec<_>>();
+
+            write_all_chunked(&mut tunnel, &data).await.unwrap();
+            tunnel.shutdown().await.unwrap();
+
+            let mut received = Vec::new();
+            peer.read_to_end(&mut received).await.unwrap();
+            assert_eq!(received, data, "body length {len}");
+        }
     }
 
     #[tokio::test]

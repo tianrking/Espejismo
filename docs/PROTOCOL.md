@@ -38,6 +38,16 @@ path. Multiplexing and transport adapters sit above the encrypted frame
 transport so underlays reuse the same handshake, frame codec, request prefaces,
 and policy layer.
 
+The WebSocket adapter answers control PING frames with a PONG carrying the same
+payload (including an empty payload), accepts PONG frames, and rejects
+fragmented data frames, standalone continuation frames, reserved bits,
+non-minimal payload-length encodings, and control payloads longer than 125
+bytes. It does not negotiate WebSocket extensions such as `permessage-deflate`;
+extension response headers and compressed frames are rejected. This avoids
+implicit compressor window or context takeover state around the encrypted
+tunnel stream. Text frames are checked for valid UTF-8 as required by
+WebSocket, then rejected because the tunnel uses binary frames only.
+
 When `[shared.port_hopping].enabled = true`, the client deterministically
 selects a configured remote port from the current time window before opening a
 new physical underlay connection. This does not change any handshake, frame, or
@@ -54,7 +64,9 @@ Unless otherwise stated:
 
 ## Protocol Version And Capabilities
 
-The current protocol version is `1`.
+The current protocol version is `1`. Both peers require an exact match; there
+is no range negotiation, fallback, or inference from binary release versions.
+Values below or above `1` (including the `u16` maximum) are unsupported.
 
 Handshake capabilities are authenticated as part of the client hello and server
 reply. Current capability bits are:
@@ -76,7 +88,10 @@ Plain mode starts with a variable-length masked client envelope:
 ```
 
 The payload length and payload are XOR-masked with HMAC-derived streams keyed by
-the handshake authentication key. When `shared.handshake_window.enabled = true`,
+the handshake authentication key. The four masked length bytes retain their
+wire order and decode as one big-endian `u32`; parsers consume the nonce, all
+four length bytes, then exactly the bounded payload. When
+`shared.handshake_window.enabled = true`,
 that key is derived from the PSK and the current time slot:
 
 ```text
@@ -115,6 +130,8 @@ The server MUST reject a client hello when:
 - The envelope is shorter than the minimum fixed body.
 - The masked length exceeds configured bounds.
 - The padding length exceeds `remote.max_handshake_padding`.
+- The declared padding bytes are missing from the payload; trailing envelope
+  padding beyond the declared hello body is ignored.
 - The puzzle is invalid.
 - No configured user/window key authenticates the HMAC.
 - More than one configured user/window candidate could match the masked hello
@@ -145,7 +162,10 @@ variable-length envelope to fixed-size masked blocks.
 The configured stealth frame size MUST be large enough to hold the fixed
 handshake body plus the nonce, length metadata, authentication data, and minimum
 padding. Implementations MUST reject too-small stealth frame sizes at config
-check or startup.
+check or startup. The declared client padding MUST also fit both the configured
+padding cap and the bytes remaining in the received frame after its nonce and
+fixed hello body. A frame exactly at the minimum size therefore carries no
+client padding.
 
 ## Frame Transport
 
@@ -158,6 +178,11 @@ transport uses encrypted super-frames:
 
 The 4-byte ciphertext length is XOR-masked with a per-direction HKDF-derived
 header-mask stream keyed by the frame sequence number.
+
+The ciphertext MUST be between 1 and 262144 bytes inclusive. Since the
+ciphertext contains a 1-byte frame type and a 16-byte AEAD tag, a plaintext
+payload MUST NOT exceed 262127 bytes. Receivers MUST reject larger lengths
+before allocating the ciphertext buffer.
 
 Frame types are encrypted. Current frame semantics are:
 
@@ -243,6 +268,11 @@ OPEN, DATA, WINDOW_UPDATE, FIN, RST, PING, and GOAWAY frames. Native mux streams
 MUST observe configured stream limits, bounded queues, byte-window flow control,
 and graceful drain semantics.
 
+Native mux DATA payloads are limited to 256 KiB per frame. A stream write larger
+than that limit is split into ordered DATA frames, and the receiver exposes the
+payload bytes as one continuous stream. A frame declaring a larger payload MUST
+be rejected before allocating its payload buffer.
+
 Mux mode is part of the authenticated handshake capabilities. Peers MUST NOT
 silently fall back to another mux mode after handshake.
 
@@ -252,6 +282,12 @@ SOCKS5 UDP ASSOCIATE is carried as application-level UDP DATAGRAM requests over
 the authenticated mux tunnel. The current production path does not use a UDP
 physical underlay.
 
+The UDP DATAGRAM payload length is a 16-bit field, so the protocol accepts at
+most 65,535 payload bytes. This is a wire-format ceiling, not a path-MTU-safe
+size: the TUN stack uses its configured interface MTU and does not perform IP
+fragmentation or path-MTU discovery on behalf of the UDP relay. Large datagrams
+may therefore be dropped by the local network stack or the underlying path.
+
 The core UDP underlay packet codec and reliability/congestion primitives are
 reserved for future transport integration. Implementations MUST treat that
 underlay as experimental unless explicitly enabled by a future protocol version
@@ -260,6 +296,9 @@ or capability bit.
 ## Error Handling
 
 Invalid or incomplete handshakes MUST NOT receive Espejismo application data.
+The parser reads the plain envelope in nonce, masked-length, then payload order;
+EOF at any boundary is a handshake error. Stealth mode requires one complete
+configured-size block, so a truncated block is also rejected before a reply.
 The remote MAY silently delay closure or place the socket in a bounded silent
 tarpit. Any tarpit MUST have a hard capacity and time-to-live.
 
@@ -268,7 +307,10 @@ and the X25519 client ephemeral public key. The first-packet digest is computed
 over the bytes observed on the wire for the initial client handshake envelope
 or stealth block. This makes exact active-probe replays inside the accepted
 handshake time window fail before the server sends a response, while preserving
-the public-key replay check as a second guard.
+the public-key replay check as a second guard. The two identifiers are checked
+and inserted together: if either has been seen, neither new identifier is
+retained. Re-encoding an already authenticated hello in a fresh outer envelope
+therefore still fails on its repeated ephemeral public key.
 
 HTTP-looking probes MAY be routed to a configured fallback upstream or a built-in
 HTTP response when probe fallback is enabled. Fallback behavior MUST remain

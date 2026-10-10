@@ -1,8 +1,15 @@
 use anyhow::{bail, Result};
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::{
+    net::{Ipv4Addr, Ipv6Addr, SocketAddr},
+    time::{Duration, Instant},
+};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use crate::protocol::request::MAX_UDP_PAYLOAD_LEN;
+
 use super::ProxyAuth;
+
+const SOCKS_UDP_FRAGMENT_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Debug)]
 pub struct SocksTarget {
@@ -22,9 +29,127 @@ pub struct UdpPacket {
     pub payload: Vec<u8>,
 }
 
+#[derive(Clone, Debug)]
+pub struct SocksUdpReassembler {
+    target: Option<SocksTarget>,
+    payload: Vec<u8>,
+    next_fragment: u8,
+    expires_at: Option<Instant>,
+    peer: Option<SocketAddr>,
+}
+
+impl Default for SocksUdpReassembler {
+    fn default() -> Self {
+        Self {
+            target: None,
+            payload: Vec::new(),
+            next_fragment: 1,
+            expires_at: None,
+            peer: None,
+        }
+    }
+}
+
+impl SocksUdpReassembler {
+    /// Accept one SOCKS5 UDP datagram and return a packet only when complete.
+    /// The queue is capped at the tunnel's 16-bit UDP payload limit and expires
+    /// after the RFC 1928 minimum reassembly interval.
+    pub fn push(&mut self, input: &[u8]) -> Result<Option<UdpPacket>> {
+        self.push_for_peer(None, input)
+    }
+
+    pub fn push_from(&mut self, peer: SocketAddr, input: &[u8]) -> Result<Option<UdpPacket>> {
+        self.push_for_peer(Some(peer), input)
+    }
+
+    fn push_for_peer(
+        &mut self,
+        peer: Option<SocketAddr>,
+        input: &[u8],
+    ) -> Result<Option<UdpPacket>> {
+        let parsed = match parse_udp_packet_inner(input) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                // A malformed datagram breaks the ordered fragment sequence.
+                self.reset();
+                return Err(error);
+            }
+        };
+        if parsed.frag == 0 {
+            self.reset();
+            return Ok(Some(parsed.packet));
+        }
+
+        let now = Instant::now();
+        if self.expires_at.is_some_and(|deadline| now >= deadline) {
+            self.reset();
+        }
+        let sequence = parsed.frag & 0x7f;
+        let final_fragment = parsed.frag & 0x80 != 0;
+        if sequence == 0 {
+            self.reset();
+            return Ok(None);
+        }
+        if sequence == 1 {
+            self.reset();
+            self.target = Some(parsed.packet.target.clone());
+            self.expires_at = Some(now + SOCKS_UDP_FRAGMENT_TIMEOUT);
+            self.peer = peer;
+        } else if self.target.is_none() {
+            return Ok(None);
+        }
+
+        if sequence != self.next_fragment
+            || self.peer != peer
+            || self.target.as_ref().is_none_or(|target| {
+                target.host != parsed.packet.target.host || target.port != parsed.packet.target.port
+            })
+            || self
+                .payload
+                .len()
+                .saturating_add(parsed.packet.payload.len())
+                > MAX_UDP_PAYLOAD_LEN
+        {
+            self.reset();
+            return Ok(None);
+        }
+        self.payload.extend_from_slice(&parsed.packet.payload);
+        if final_fragment {
+            let packet = UdpPacket {
+                target: self.target.take().expect("active fragment sequence"),
+                payload: std::mem::take(&mut self.payload),
+            };
+            self.reset();
+            return Ok(Some(packet));
+        }
+        self.next_fragment = self.next_fragment.saturating_add(1);
+        if self.next_fragment > 0x7f {
+            self.reset();
+        }
+        Ok(None)
+    }
+
+    fn reset(&mut self) {
+        self.target = None;
+        self.payload.clear();
+        self.next_fragment = 1;
+        self.expires_at = None;
+        self.peer = None;
+    }
+}
+
+struct ParsedSocksUdpPacket {
+    frag: u8,
+    packet: UdpPacket,
+}
+
 impl SocksTarget {
     pub fn authority(&self) -> String {
-        format!("{}:{}", self.host, self.port)
+        if self.host.parse::<Ipv6Addr>().is_ok() {
+            format!("[{}]:{}", self.host, self.port)
+        } else {
+            format!("{}:{}", self.host, self.port)
+        }
     }
 }
 
@@ -66,11 +191,15 @@ where
 
     let ver = stream.read_u8().await?;
     let cmd = stream.read_u8().await?;
-    let _rsv = stream.read_u8().await?;
+    let rsv = stream.read_u8().await?;
     let atyp = stream.read_u8().await?;
     if ver != 5 {
         reply(stream, 0x07).await?;
         bail!("unsupported SOCKS request version {ver}");
+    }
+    if rsv != 0 {
+        reply(stream, 0x01).await?;
+        bail!("SOCKS request reserved byte must be zero");
     }
 
     let host = match atyp {
@@ -83,7 +212,14 @@ where
             let len = stream.read_u8().await? as usize;
             let mut name = vec![0_u8; len];
             stream.read_exact(&mut name).await?;
-            String::from_utf8(name)?
+            let name = match String::from_utf8(name) {
+                Ok(name) if !name.is_empty() && !name.as_bytes().contains(&0) => name,
+                _ => {
+                    reply(stream, 0x08).await?;
+                    bail!("invalid SOCKS5 domain name");
+                }
+            };
+            name
         }
         4 => {
             let mut ip = [0_u8; 16];
@@ -103,6 +239,8 @@ where
         }
         3 => Ok(SocksRequest::UdpAssociate),
         _ => {
+            // BIND (0x02) requires a second inbound peer and listener lifecycle,
+            // which this ingress deliberately does not expose.
             reply(stream, 0x07).await?;
             bail!("unsupported SOCKS5 command {cmd}");
         }
@@ -131,15 +269,21 @@ where
 }
 
 pub fn parse_udp_packet(input: &[u8]) -> Result<UdpPacket> {
+    let parsed = parse_udp_packet_inner(input)?;
+    if parsed.frag != 0 {
+        bail!("SOCKS UDP fragmentation is not supported by packet parser");
+    }
+    Ok(parsed.packet)
+}
+
+fn parse_udp_packet_inner(input: &[u8]) -> Result<ParsedSocksUdpPacket> {
     if input.len() < 4 {
         bail!("SOCKS UDP packet too short");
     }
     if input[0] != 0 || input[1] != 0 {
         bail!("SOCKS UDP reserved bytes are invalid");
     }
-    if input[2] != 0 {
-        bail!("SOCKS UDP fragmentation is not supported");
-    }
+    let frag = input[2];
     let atyp = input[3];
     let mut idx = 4;
     let host = match atyp {
@@ -161,6 +305,9 @@ pub fn parse_udp_packet(input: &[u8]) -> Result<UdpPacket> {
                 bail!("SOCKS UDP domain packet too short");
             }
             let host = String::from_utf8(input[idx..idx + len].to_vec())?;
+            if host.is_empty() || host.as_bytes().contains(&0) {
+                bail!("invalid SOCKS UDP domain name");
+            }
             idx += len;
             host
         }
@@ -177,9 +324,12 @@ pub fn parse_udp_packet(input: &[u8]) -> Result<UdpPacket> {
     };
     let port = u16::from_be_bytes([input[idx], input[idx + 1]]);
     idx += 2;
-    Ok(UdpPacket {
-        target: SocksTarget { host, port },
-        payload: input[idx..].to_vec(),
+    Ok(ParsedSocksUdpPacket {
+        frag,
+        packet: UdpPacket {
+            target: SocksTarget { host, port },
+            payload: input[idx..].to_vec(),
+        },
     })
 }
 
@@ -193,6 +343,9 @@ pub fn build_udp_packet(target: &SocksTarget, payload: &[u8]) -> Result<Vec<u8>>
         output.extend_from_slice(&ip.octets());
     } else {
         let host = target.host.as_bytes();
+        if host.is_empty() || host.contains(&0) {
+            bail!("invalid SOCKS UDP domain name");
+        }
         if host.len() > u8::MAX as usize {
             bail!("SOCKS UDP domain name too long");
         }
@@ -239,9 +392,17 @@ where
         bail!("unsupported SOCKS username/password auth version {ver}");
     }
     let username_len = stream.read_u8().await? as usize;
+    if username_len == 0 {
+        stream.write_all(&[0x01, 0x01]).await?;
+        bail!("SOCKS username must not be empty");
+    }
     let mut username = vec![0_u8; username_len];
     stream.read_exact(&mut username).await?;
     let password_len = stream.read_u8().await? as usize;
+    if password_len == 0 {
+        stream.write_all(&[0x01, 0x01]).await?;
+        bail!("SOCKS password must not be empty");
+    }
     let mut password = vec![0_u8; password_len];
     stream.read_exact(&mut password).await?;
     if !auth.matches(&username, &password) {
@@ -264,7 +425,447 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{build_udp_packet, parse_udp_packet, SocksTarget};
+    use super::{
+        accept_request_with_auth, build_udp_packet, parse_udp_packet, reply_udp_associate,
+        SocksRequest, SocksTarget, SocksUdpReassembler, MAX_UDP_PAYLOAD_LEN,
+    };
+    use crate::ingress::ProxyAuth;
+    use std::net::Ipv6Addr;
+    use std::time::{Duration, Instant};
+
+    fn auth() -> ProxyAuth {
+        ProxyAuth {
+            username: "user".into(),
+            password: "pass".into(),
+        }
+    }
+
+    async fn exchange(
+        input: Vec<u8>,
+        auth: Option<ProxyAuth>,
+    ) -> (anyhow::Result<SocksRequest>, Vec<u8>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let (mut client, mut server) = tokio::io::duplex(256);
+        let server_task =
+            tokio::spawn(async move { accept_request_with_auth(&mut server, auth.as_ref()).await });
+        client.write_all(&input).await.unwrap();
+        client.shutdown().await.unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        (server_task.await.unwrap(), response)
+    }
+
+    #[tokio::test]
+    async fn no_auth_accepts_method_zero_and_connects() {
+        let (result, response) =
+            exchange(vec![5, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1, 0, 80], None).await;
+        assert!(
+            matches!(result.unwrap(), SocksRequest::Connect(target) if target.authority() == "127.0.0.1:80")
+        );
+        assert_eq!(&response[..2], &[5, 0]);
+        assert_eq!(&response[2..4], &[5, 0]);
+    }
+
+    #[tokio::test]
+    async fn connect_preserves_domain_for_remote_resolution() {
+        let domain = b"remote.test.invalid";
+        let mut request = vec![5, 1, 0, 5, 1, 0, 3, domain.len() as u8];
+        request.extend_from_slice(domain);
+        request.extend_from_slice(&[0x01, 0xbb]);
+        let (result, response) = exchange(request, None).await;
+        assert!(matches!(result.unwrap(), SocksRequest::Connect(target)
+            if target.host == "remote.test.invalid" && target.port == 443));
+        assert_eq!(&response[2..4], &[5, 0]);
+    }
+
+    #[tokio::test]
+    async fn connect_accepts_maximum_wire_domain_length() {
+        let domain = "a".repeat(u8::MAX as usize);
+        let mut request = vec![5, 1, 0, 5, 1, 0, 3, u8::MAX];
+        request.extend_from_slice(domain.as_bytes());
+        request.extend_from_slice(&[0x01, 0xbb]);
+
+        let (result, response) = exchange(request, None).await;
+        assert!(matches!(result.unwrap(), SocksRequest::Connect(target)
+            if target.host == domain && target.port == 443));
+        assert_eq!(&response[2..4], &[5, 0]);
+    }
+
+    #[tokio::test]
+    async fn connect_preserves_idn_domain_utf8_bytes() {
+        // SOCKS5 carries domain bytes; name normalization/IDNA conversion is
+        // left to the remote resolver, so ingress must preserve the input.
+        let domain = "例え.テスト";
+        let mut request = vec![5, 1, 0, 5, 1, 0, 3, domain.len() as u8];
+        request.extend_from_slice(domain.as_bytes());
+        request.extend_from_slice(&[0, 53]);
+
+        let (result, response) = exchange(request, None).await;
+        assert!(matches!(result.unwrap(), SocksRequest::Connect(target)
+            if target.host == domain && target.host.as_bytes() == domain.as_bytes()
+                && target.port == 53));
+        assert_eq!(&response[2..4], &[5, 0]);
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_domain_when_declared_bytes_are_truncated() {
+        let mut request = vec![5, 1, 0, 5, 1, 0, 3, u8::MAX];
+        request.extend_from_slice(b"short");
+
+        let (result, response) = exchange(request, None).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 0]); // method negotiation only; no CONNECT reply
+    }
+
+    #[tokio::test]
+    async fn connect_ipv6_literals_preserve_address_and_port_boundaries() {
+        for (octets, port, expected_host) in [
+            ([0_u8; 16], 0, "::"),
+            (
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1],
+                u16::MAX,
+                "::1",
+            ),
+            (
+                [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 255, 255, 192, 0, 2, 1],
+                443,
+                "::ffff:192.0.2.1",
+            ),
+        ] {
+            let mut request = vec![5, 1, 0, 5, 1, 0, 4];
+            request.extend_from_slice(&octets);
+            request.extend_from_slice(&port.to_be_bytes());
+            let (result, response) = exchange(request, None).await;
+            let target = match result.unwrap() {
+                SocksRequest::Connect(target) => target,
+                SocksRequest::UdpAssociate => panic!("expected CONNECT"),
+            };
+            assert_eq!(
+                target.host.parse::<std::net::Ipv6Addr>().unwrap().octets(),
+                octets
+            );
+            assert_eq!(target.host, expected_host);
+            assert_eq!(target.port, port);
+            assert_eq!(target.authority(), format!("[{expected_host}]:{port}"));
+            assert_eq!(&response[2..4], &[5, 0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn connect_rejects_empty_non_utf8_and_nul_domain_names() {
+        for domain in [vec![], vec![0xff], vec![b'a', 0, b'b']] {
+            let mut request = vec![5, 1, 0, 5, 1, 0, 3, domain.len() as u8];
+            request.extend_from_slice(&domain);
+            request.extend_from_slice(&[0, 80]);
+            let (result, response) = exchange(request, None).await;
+            assert!(result.is_err());
+            assert_eq!(&response[2..4], &[5, 8]);
+        }
+    }
+
+    #[tokio::test]
+    async fn bind_requests_are_rejected_for_address_and_port_boundaries() {
+        // BIND is intentionally unsupported. Exercise each SOCKS address form
+        // and both port boundaries so it always receives command-not-supported.
+        let cases = [
+            vec![5, 1, 0, 5, 2, 0, 1, 0, 0, 0, 0, 0, 0],
+            vec![5, 1, 0, 5, 2, 0, 1, 255, 255, 255, 255, 255, 255],
+            vec![5, 1, 0, 5, 2, 0, 3, 1, b'x', 0, 0],
+            vec![5, 1, 0, 5, 2, 0, 3, 1, b'x', 0xff, 0xff],
+            vec![
+                5, 1, 0, 5, 2, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            ],
+        ];
+
+        for request in cases {
+            // Unsupported BIND must fail during request parsing; it must not
+            // wait for a peer connection or a listener timeout.
+            let (result, response) =
+                tokio::time::timeout(Duration::from_secs(1), exchange(request, None))
+                    .await
+                    .expect("BIND rejection must not wait for a second connection");
+            assert!(result.is_err());
+            assert_eq!(&response[2..4], &[5, 7]);
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_bind_requests_are_rejected_without_cross_talk() {
+        let burst = (0..32).map(|index| {
+            let request = vec![5, 1, 0, 5, 2, 0, 1, 192, 0, 2, index as u8, 0, index as u8];
+            exchange(request, None)
+        });
+
+        let results =
+            tokio::time::timeout(Duration::from_secs(1), futures::future::join_all(burst))
+                .await
+                .expect("unsupported BIND requests must not wait for peer connections");
+        assert_eq!(results.len(), 32);
+        for (result, response) in results {
+            assert!(result.is_err());
+            assert_eq!(&response[2..4], &[5, 7]);
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_ingress_burst_keeps_socks_requests_isolated() {
+        let burst = (1..=128).map(|port| {
+            let request = vec![
+                5,
+                1,
+                0,
+                5,
+                1,
+                0,
+                3,
+                12,
+                b'e',
+                b'x',
+                b'a',
+                b'm',
+                b'p',
+                b'l',
+                b'e',
+                b'.',
+                b't',
+                b'e',
+                b's',
+                b't',
+                (port >> 8) as u8,
+                port as u8,
+            ];
+            exchange(request, None)
+        });
+
+        let results = futures::future::join_all(burst).await;
+        assert_eq!(results.len(), 128);
+        for (index, (result, response)) in results.into_iter().enumerate() {
+            let port = index as u16 + 1;
+            assert!(matches!(result.unwrap(), SocksRequest::Connect(target)
+                if target.host == "example.test" && target.port == port));
+            assert_eq!(&response[..4], [5, 0, 5, 0]);
+        }
+    }
+
+    #[tokio::test]
+    async fn udp_associate_accepts_unspecified_ipv4_client_endpoint() {
+        let request = vec![5, 1, 0, 5, 3, 0, 1, 0, 0, 0, 0, 0, 0];
+        let (result, response) = exchange(request, None).await;
+        assert!(matches!(result.unwrap(), SocksRequest::UdpAssociate));
+        assert_eq!(response, [5, 0]);
+    }
+
+    #[tokio::test]
+    async fn udp_associate_requires_credentials_on_its_control_connection() {
+        let mut valid = vec![5, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4];
+        valid.extend_from_slice(b"pass");
+        valid.extend_from_slice(&[5, 3, 0, 1, 0, 0, 0, 0, 0, 0]);
+        let (result, response) = exchange(valid, Some(auth())).await;
+        assert!(matches!(result.unwrap(), SocksRequest::UdpAssociate));
+        assert_eq!(&response, &[5, 2, 1, 0]);
+
+        // Authenticated TCP control streams authorize the associated UDP relay;
+        // an unauthenticated or incorrectly authenticated stream cannot reach
+        // command parsing (and therefore cannot create an association).
+        let (result, response) =
+            exchange(vec![5, 1, 0, 5, 3, 0, 1, 0, 0, 0, 0, 0, 0], Some(auth())).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 0xff]);
+
+        let mut invalid = vec![5, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4];
+        invalid.extend_from_slice(b"nope");
+        invalid.extend_from_slice(&[5, 3, 0, 1, 0, 0, 0, 0, 0, 0]);
+        let (result, response) = exchange(invalid, Some(auth())).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 2, 1, 1]);
+    }
+
+    #[tokio::test]
+    async fn udp_associate_reply_encodes_ipv4_and_ipv6_bound_endpoints() {
+        use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+        use tokio::io::AsyncReadExt;
+
+        for (addr, expected) in [
+            (
+                SocketAddr::from((Ipv4Addr::LOCALHOST, 1234)),
+                vec![5, 0, 0, 1, 127, 0, 0, 1, 4, 210],
+            ),
+            (
+                SocketAddr::from((Ipv6Addr::LOCALHOST, 53)),
+                vec![
+                    5, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 53,
+                ],
+            ),
+        ] {
+            let (mut client, mut server) = tokio::io::duplex(64);
+            reply_udp_associate(&mut server, addr).await.unwrap();
+            let mut actual = vec![0; expected.len()];
+            client.read_exact(&mut actual).await.unwrap();
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn request_rejects_nonzero_reserved_byte() {
+        let request = vec![5, 1, 0, 5, 3, 1, 1, 0, 0, 0, 0, 0, 0];
+        let (result, response) = exchange(request, None).await;
+        assert!(result.is_err());
+        assert_eq!(&response[2..], &[5, 1, 0, 1, 0, 0, 0, 0, 0, 0]);
+    }
+
+    #[tokio::test]
+    async fn configured_auth_rejects_no_auth_only_offer() {
+        let (result, response) = exchange(vec![5, 1, 0], Some(auth())).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 0xff]);
+    }
+
+    #[tokio::test]
+    async fn configured_auth_does_not_select_no_auth_from_mixed_offer() {
+        // Even when the client offers both methods, configured credentials must
+        // be negotiated before any SOCKS request can be accepted.
+        let (result, response) = exchange(vec![5, 2, 0, 2], Some(auth())).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 2]);
+    }
+
+    #[tokio::test]
+    async fn gssapi_only_offer_is_rejected() {
+        // GSSAPI (0x01) is not implemented; the server must not claim it.
+        let (result, response) = exchange(vec![5, 1, 1], None).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 0xff]);
+    }
+
+    #[tokio::test]
+    async fn no_auth_configuration_selects_no_auth_from_gssapi_offer() {
+        // Explicitly selecting no-auth is a policy fallback, not GSSAPI.
+        let request = vec![5, 2, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1, 0, 80];
+        let (result, response) = exchange(request, None).await;
+        assert!(matches!(result.unwrap(), SocksRequest::Connect(_)));
+        assert_eq!(&response[..4], &[5, 0, 5, 0]);
+    }
+
+    #[tokio::test]
+    async fn configured_auth_selects_password_over_gssapi() {
+        let request = vec![
+            5, 2, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4, b'p', b'a', b's', b's', 5, 1, 0, 1, 127,
+            0, 0, 1, 0, 80,
+        ];
+        let (result, response) = exchange(request, Some(auth())).await;
+        assert!(matches!(result.unwrap(), SocksRequest::Connect(_)));
+        assert_eq!(&response[..4], &[5, 2, 1, 0]);
+    }
+
+    #[tokio::test]
+    async fn no_auth_rejects_password_only_offer() {
+        let (result, response) = exchange(vec![5, 1, 2], None).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 0xff]);
+    }
+
+    #[tokio::test]
+    async fn empty_method_list_is_rejected_with_no_acceptable_method() {
+        for auth in [None, Some(auth())] {
+            let (result, response) = exchange(vec![5, 0], auth).await;
+            assert!(result.is_err());
+            assert_eq!(response, [5, 0xff]);
+        }
+    }
+
+    #[tokio::test]
+    async fn password_auth_rejects_unsupported_subnegotiation_version() {
+        let (result, response) = exchange(vec![5, 1, 2, 2], Some(auth())).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 2, 1, 1]);
+    }
+
+    #[tokio::test]
+    async fn password_auth_checks_credentials_and_nonempty_fields() {
+        let valid = vec![
+            5, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4, b'p', b'a', b's', b's', 5, 1, 0, 1, 127, 0,
+            0, 1, 0, 80,
+        ];
+        let (result, response) = exchange(valid, Some(auth())).await;
+        assert!(matches!(result.unwrap(), SocksRequest::Connect(_)));
+        assert_eq!(&response[..4], &[5, 2, 1, 0]);
+
+        let wrong_user = vec![
+            5, 1, 2, 1, 4, b'U', b's', b'e', b'r', 4, b'p', b'a', b's', b's',
+        ];
+        let (result, response) = exchange(wrong_user, Some(auth())).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 2, 1, 1]);
+
+        let bad = vec![
+            5, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4, b'n', b'o', b'p', b'e',
+        ];
+        let (result, response) = exchange(bad, Some(auth())).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 2, 1, 1]);
+
+        let empty_user = vec![5, 1, 2, 1, 0];
+        let (result, response) = exchange(empty_user, Some(auth())).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 2, 1, 1]);
+
+        let empty_password = vec![5, 1, 2, 1, 1, b'u', 0];
+        let (result, response) = exchange(empty_password, Some(auth())).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 2, 1, 1]);
+    }
+
+    #[tokio::test]
+    async fn password_auth_failure_ends_connection_but_does_not_lock_out_next_attempt() {
+        // A failed RFC 1929 exchange terminates this request handler. Retrying
+        // credentials on a fresh connection is independent and can succeed.
+        let mut pipelined_retry = vec![5, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4];
+        pipelined_retry.extend_from_slice(b"nope");
+        pipelined_retry.extend_from_slice(&[1, 4, b'u', b's', b'e', b'r', 4]);
+        pipelined_retry.extend_from_slice(b"pass");
+        let (result, response) = exchange(pipelined_retry, Some(auth())).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 2, 1, 1]);
+
+        let mut fresh_attempt = vec![5, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4];
+        fresh_attempt.extend_from_slice(b"pass");
+        fresh_attempt.extend_from_slice(&[5, 1, 0, 1, 127, 0, 0, 1, 0, 80]);
+        let (result, response) = exchange(fresh_attempt, Some(auth())).await;
+        assert!(matches!(result.unwrap(), SocksRequest::Connect(_)));
+        assert_eq!(&response[..4], &[5, 2, 1, 0]);
+    }
+
+    #[tokio::test]
+    async fn password_auth_accepts_maximum_wire_field_lengths() {
+        let username = vec![b'u'; u8::MAX as usize];
+        let password = vec![b'p'; u8::MAX as usize];
+        let configured = ProxyAuth {
+            username: String::from_utf8(username.clone()).unwrap(),
+            password: String::from_utf8(password.clone()).unwrap(),
+        };
+        let mut request = vec![5, 1, 2, 1, u8::MAX];
+        request.extend_from_slice(&username);
+        request.push(u8::MAX);
+        request.extend_from_slice(&password);
+        request.extend_from_slice(&[5, 1, 0, 1, 127, 0, 0, 1, 0, 80]);
+
+        let (result, response) = exchange(request, Some(configured)).await;
+        assert!(matches!(result.unwrap(), SocksRequest::Connect(_)));
+        assert_eq!(&response[..4], &[5, 2, 1, 0]);
+    }
+
+    #[test]
+    fn ipv6_target_authority_is_bracketed() {
+        let target = SocksTarget {
+            host: "2001:db8::1".to_string(),
+            port: 443,
+        };
+        assert_eq!(target.authority(), "[2001:db8::1]:443");
+        assert_eq!(
+            crate::egress::split_authority(&target.authority()).unwrap(),
+            ("2001:db8::1".to_string(), 443)
+        );
+    }
 
     #[test]
     fn udp_packet_roundtrips_domain_target() {
@@ -295,14 +896,334 @@ mod tests {
     }
 
     #[test]
-    fn udp_packet_rejects_fragmentation() {
-        let packet = [0x00, 0x00, 0x01, 0x01, 127, 0, 0, 1, 0, 53];
-        assert!(parse_udp_packet(&packet).is_err());
+    fn udp_ipv4_mapped_ipv6_stays_ipv6_and_roundtrips() {
+        let target = SocksTarget {
+            host: "::ffff:192.0.2.1".to_string(),
+            port: u16::MAX,
+        };
+        let encoded = build_udp_packet(&target, b"v6").unwrap();
+        assert_eq!(encoded[3], 0x04, "mapped address retains IPv6 ATYP");
+        assert_eq!(&encoded[14..16], &[0xff, 0xff]);
+        let decoded = parse_udp_packet(&encoded).unwrap();
+        assert_eq!(
+            decoded.target.host.parse::<Ipv6Addr>().unwrap(),
+            target.host.parse::<Ipv6Addr>().unwrap()
+        );
+        assert_eq!(decoded.target.port, u16::MAX);
+        assert_eq!(decoded.payload, b"v6");
+    }
+
+    #[test]
+    fn udp_builder_rejects_empty_and_nul_domain_fallbacks() {
+        for host in ["", "bad\0name"] {
+            let target = SocksTarget {
+                host: host.to_string(),
+                port: 53,
+            };
+            assert!(
+                build_udp_packet(&target, b"query").is_err(),
+                "host={host:?}"
+            );
+        }
+        let max_domain = SocksTarget {
+            host: "a".repeat(u8::MAX as usize),
+            port: 53,
+        };
+        assert_eq!(build_udp_packet(&max_domain, b"").unwrap()[4], u8::MAX);
+        let too_long = SocksTarget {
+            host: "a".repeat(u8::MAX as usize + 1),
+            port: 53,
+        };
+        assert!(build_udp_packet(&too_long, b"").is_err());
+    }
+
+    #[test]
+    fn udp_packet_parser_rejects_fragments_without_reassembler() {
+        for frag in 1..=u8::MAX {
+            let packet = [0x00, 0x00, frag, 0x01, 127, 0, 0, 1, 0, 53];
+            assert!(parse_udp_packet(&packet).is_err(), "FRAG={frag:#04x}");
+        }
+        // Reject FRAG before parsing the address, even when the rest is absent.
+        assert!(parse_udp_packet(&[0, 0, 0x80, 0x01]).is_err());
+    }
+
+    #[test]
+    fn socks_udp_reassembler_joins_ordered_fragments_and_final_marker() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'h', b'e'];
+        let last = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'l', b'l', b'o'];
+        assert!(reassembler.push(&first).unwrap().is_none());
+        let packet = reassembler.push(&last).unwrap().unwrap();
+        assert_eq!(packet.target.authority(), "127.0.0.1:53");
+        assert_eq!(packet.payload, b"hello");
+    }
+
+    #[test]
+    fn socks_udp_reassembler_discards_gaps_and_changed_targets() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        let gap = [0, 0, 0x83, 1, 127, 0, 0, 1, 0, 53, b'c'];
+        let changed = [0, 0, 0x82, 1, 127, 0, 0, 2, 0, 53, b'b'];
+        assert!(reassembler.push(&first).unwrap().is_none());
+        assert!(reassembler.push(&gap).unwrap().is_none());
+        assert!(reassembler.push(&changed).unwrap().is_none());
+        assert!(reassembler.target.is_none());
+        assert!(reassembler.payload.is_empty());
+    }
+
+    #[test]
+    fn socks_udp_reassembler_discards_duplicate_fragment_and_resets_sequence() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        let second = [0, 0, 2, 1, 127, 0, 0, 1, 0, 53, b'b'];
+        let duplicate = [0, 0, 2, 1, 127, 0, 0, 1, 0, 53, b'x'];
+        let stale_final = [0, 0, 0x83, 1, 127, 0, 0, 1, 0, 53, b'c'];
+        let fresh_final = [0, 0, 0x81, 1, 127, 0, 0, 1, 0, 53, b'c'];
+
+        assert!(reassembler.push(&first).unwrap().is_none());
+        assert!(reassembler.push(&second).unwrap().is_none());
+        assert!(reassembler.push(&duplicate).unwrap().is_none());
+        assert!(reassembler.push(&stale_final).unwrap().is_none());
+        assert!(reassembler.target.is_none());
+        assert!(reassembler.payload.is_empty());
+
+        let packet = reassembler.push(&fresh_final).unwrap().unwrap();
+        assert_eq!(packet.payload, b"c");
+    }
+
+    #[test]
+    fn socks_udp_reassembler_discards_sequence_after_malformed_datagram() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        let final_fragment = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'b'];
+
+        assert!(reassembler.push(&first).unwrap().is_none());
+        assert!(reassembler.push(&[0, 0, 0, 1]).is_err());
+        assert!(reassembler.push(&final_fragment).unwrap().is_none());
+        assert!(reassembler.target.is_none());
+        assert!(reassembler.payload.is_empty());
+    }
+
+    #[test]
+    fn socks_udp_reassembler_expires_incomplete_sequence() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        let late_fragment = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'b'];
+        let restarted = [0, 0, 0x81, 1, 127, 0, 0, 1, 0, 53, b'c'];
+
+        assert!(reassembler.push(&first).unwrap().is_none());
+        // Set the deadline directly so the timeout boundary is deterministic.
+        reassembler.expires_at = Some(Instant::now() - Duration::from_secs(1));
+        assert!(reassembler.push(&late_fragment).unwrap().is_none());
+        assert!(reassembler.target.is_none());
+        assert!(reassembler.payload.is_empty());
+
+        // A new sequence can start after expiry; a final first fragment is complete.
+        let packet = reassembler.push(&restarted).unwrap().unwrap();
+        assert_eq!(packet.payload, b"c");
+    }
+
+    #[test]
+    fn socks_udp_reassembler_accepts_maximum_fragment_sequence() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        assert!(reassembler.push(&first).unwrap().is_none());
+
+        for sequence in 2..0x7f {
+            let fragment = [0, 0, sequence, 1, 127, 0, 0, 1, 0, 53, b'x'];
+            assert!(reassembler.push(&fragment).unwrap().is_none());
+        }
+        let last = [0, 0, 0xff, 1, 127, 0, 0, 1, 0, 53, b'z'];
+        let packet = reassembler.push(&last).unwrap().unwrap();
+        assert_eq!(packet.payload.len(), 127);
+        assert_eq!(packet.payload.first(), Some(&b'a'));
+        assert_eq!(packet.payload.last(), Some(&b'z'));
+    }
+
+    #[test]
+    fn socks_udp_reassembler_does_not_mix_fragment_sources() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        let last = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'b'];
+        let peer_a = "127.0.0.1:1000".parse().unwrap();
+        let peer_b = "127.0.0.2:1001".parse().unwrap();
+        assert!(reassembler.push_from(peer_a, &first).unwrap().is_none());
+        assert!(reassembler.push_from(peer_b, &last).unwrap().is_none());
+        assert!(reassembler.target.is_none());
+    }
+
+    #[test]
+    fn socks_udp_reassembler_rejects_fragment_source_port_changes() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        let last = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'b'];
+        let original = "127.0.0.1:1000".parse().unwrap();
+        let changed_port = "127.0.0.1:1001".parse().unwrap();
+
+        assert!(reassembler.push_from(original, &first).unwrap().is_none());
+        assert!(reassembler
+            .push_from(changed_port, &last)
+            .unwrap()
+            .is_none());
+        assert!(reassembler.target.is_none());
+        assert!(reassembler.payload.is_empty());
+    }
+
+    #[test]
+    fn socks_udp_reassembly_is_isolated_between_concurrent_associations() {
+        let mut association_a = SocksUdpReassembler::default();
+        let mut association_b = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        let last = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'z'];
+        let peer = "192.0.2.10:40000".parse().unwrap();
+
+        assert!(association_a.push_from(peer, &first).unwrap().is_none());
+        assert!(association_b.push_from(peer, &last).unwrap().is_none());
+        let completed = association_a.push_from(peer, &last).unwrap().unwrap();
+
+        assert_eq!(completed.payload, b"az");
+        assert!(association_b.target.is_none());
+        assert!(association_b.payload.is_empty());
+    }
+
+    #[test]
+    fn socks_udp_reassembler_accepts_reused_peer_after_fragment_expiry() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let peer = "192.0.2.10:40000".parse().unwrap();
+        let stale_first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'x'];
+        let fresh_final = [0, 0, 0x81, 1, 127, 0, 0, 1, 0, 53, b'y'];
+
+        assert!(reassembler.push_from(peer, &stale_first).unwrap().is_none());
+        reassembler.expires_at = Some(Instant::now() - Duration::from_secs(1));
+
+        let completed = reassembler.push_from(peer, &fresh_final).unwrap().unwrap();
+        assert_eq!(completed.payload, b"y");
+    }
+
+    #[test]
+    fn socks_udp_reassembler_allows_same_peer_to_start_a_new_sequence_after_completion() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let peer = "192.0.2.10:40000".parse().unwrap();
+        let first_a = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        let final_a = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'b'];
+        let first_b = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'c'];
+        let final_b = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'd'];
+
+        assert!(reassembler.push_from(peer, &first_a).unwrap().is_none());
+        assert_eq!(
+            reassembler
+                .push_from(peer, &final_a)
+                .unwrap()
+                .unwrap()
+                .payload,
+            b"ab"
+        );
+        assert!(reassembler.push_from(peer, &first_b).unwrap().is_none());
+        assert_eq!(
+            reassembler
+                .push_from(peer, &final_b)
+                .unwrap()
+                .unwrap()
+                .payload,
+            b"cd"
+        );
+    }
+
+    #[test]
+    fn socks_udp_reassembler_forwards_completed_payload_as_udp_packet() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'd'];
+        let last = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'n', b's'];
+        assert!(reassembler.push(&first).unwrap().is_none());
+        let packet = reassembler.push(&last).unwrap().unwrap();
+        assert_eq!(packet.target.host, "127.0.0.1");
+        assert_eq!(packet.payload, b"dns");
+        let encoded = build_udp_packet(&packet.target, &packet.payload).unwrap();
+        let decoded = parse_udp_packet(&encoded).unwrap();
+        assert_eq!(decoded.target.authority(), "127.0.0.1:53");
+        assert_eq!(decoded.payload, b"dns");
+    }
+
+    #[test]
+    fn socks_udp_reassembler_drops_sequences_over_wire_payload_limit() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let mut first = vec![0, 0, 1, 1, 127, 0, 0, 1, 0, 53];
+        first.extend(std::iter::repeat_n(b'a', MAX_UDP_PAYLOAD_LEN));
+        let last = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'b'];
+        assert!(reassembler.push(&first).unwrap().is_none());
+        assert!(reassembler.push(&last).unwrap().is_none());
+        assert!(reassembler.target.is_none());
+    }
+
+    #[test]
+    fn socks_udp_reassembler_accepts_payload_at_wire_limit() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let mut first = vec![0, 0, 1, 1, 127, 0, 0, 1, 0, 53];
+        first.extend(std::iter::repeat_n(b'a', MAX_UDP_PAYLOAD_LEN - 1));
+        let last = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'z'];
+
+        assert!(reassembler.push(&first).unwrap().is_none());
+        let packet = reassembler.push(&last).unwrap().unwrap();
+        assert_eq!(packet.payload.len(), MAX_UDP_PAYLOAD_LEN);
+        assert_eq!(packet.payload.first(), Some(&b'a'));
+        assert_eq!(packet.payload.last(), Some(&b'z'));
+    }
+
+    #[test]
+    fn udp_packet_checks_address_header_boundaries() {
+        let valid_ipv4_header = [0, 0, 0, 1, 127, 0, 0, 1, 0, 53];
+        let valid_ipv6_header = [
+            0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 53,
+        ];
+        let valid_domain_header = [0, 0, 0, 3, 1, b'a', 0, 53];
+
+        for (name, packet) in [
+            ("ipv4", valid_ipv4_header.as_slice()),
+            ("ipv6", valid_ipv6_header.as_slice()),
+            ("domain", valid_domain_header.as_slice()),
+        ] {
+            for end in 0..packet.len() {
+                assert!(
+                    parse_udp_packet(&packet[..end]).is_err(),
+                    "{name} len={end}"
+                );
+            }
+            let parsed = parse_udp_packet(packet).unwrap();
+            assert!(parsed.payload.is_empty(), "{name} empty payload");
+        }
     }
 
     #[test]
     fn udp_packet_rejects_truncated_domain() {
         let packet = [0x00, 0x00, 0x00, 0x03, 10, b'e', b'x'];
         assert!(parse_udp_packet(&packet).is_err());
+    }
+
+    #[test]
+    fn udp_packet_rejects_empty_and_nul_domain_names() {
+        let empty = [0, 0, 0, 3, 0, 0, 53];
+        let nul = [0, 0, 0, 3, 1, 0, 0, 53];
+        assert!(parse_udp_packet(&empty).is_err());
+        assert!(parse_udp_packet(&nul).is_err());
+    }
+
+    #[test]
+    fn udp_parser_never_panics_on_bounded_random_inputs() {
+        use rand::{Rng, SeedableRng};
+
+        let mut rng = rand::rngs::StdRng::seed_from_u64(0x534f_434b_5355_4450);
+        for len in 0..=1024 {
+            let mut bytes = vec![0; len];
+            rng.fill(bytes.as_mut_slice());
+            assert!(std::panic::catch_unwind(|| parse_udp_packet(&bytes)).is_ok());
+        }
+
+        for atyp in [1, 3, 4] {
+            for len in 0..=24 {
+                let mut packet = vec![0, 0, 0, atyp];
+                packet.resize(len, 0);
+                assert!(std::panic::catch_unwind(|| parse_udp_packet(&packet)).is_ok());
+            }
+        }
     }
 }

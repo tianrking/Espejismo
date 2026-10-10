@@ -1,9 +1,12 @@
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub const CMD_TCP_CONNECT: u8 = 1;
 pub const CMD_UDP_DATAGRAM: u8 = 2;
+/// Maximum UDP payload representable by the tunnel's 16-bit length field.
+/// This is a protocol ceiling, not a path-MTU-safe packet size.
+pub const MAX_UDP_PAYLOAD_LEN: usize = u16::MAX as usize;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -76,12 +79,12 @@ pub async fn write_udp_datagram_with_priority<W>(
 where
     W: AsyncWriteExt + Unpin,
 {
+    if payload.len() > MAX_UDP_PAYLOAD_LEN {
+        bail!("UDP payload too large");
+    }
     writer.write_u8(CMD_UDP_DATAGRAM).await?;
     writer.write_u8(priority as u8).await?;
     write_authority(writer, authority).await?;
-    if payload.len() > u16::MAX as usize {
-        bail!("UDP payload too large");
-    }
     writer.write_u16(payload.len() as u16).await?;
     writer.write_all(payload).await?;
     Ok(())
@@ -142,9 +145,21 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        read_tunnel_request, write_tcp_connect_with_priority, write_udp_datagram_with_priority,
-        StreamPriority, TunnelRequest, CMD_TCP_CONNECT, CMD_UDP_DATAGRAM,
+        CMD_TCP_CONNECT, CMD_UDP_DATAGRAM, StreamPriority, TunnelRequest, read_tunnel_request,
+        MAX_UDP_PAYLOAD_LEN, write_tcp_connect_with_priority, write_udp_datagram_with_priority,
     };
+
+    #[test]
+    fn stream_priority_rejects_values_outside_wire_assignments() {
+        for value in [0, 3, u8::MAX] {
+            assert!(StreamPriority::try_from(value).is_err(), "value {value}");
+        }
+        assert_eq!(
+            StreamPriority::try_from(1).unwrap(),
+            StreamPriority::Interactive
+        );
+        assert_eq!(StreamPriority::try_from(2).unwrap(), StreamPriority::Bulk);
+    }
 
     #[tokio::test]
     async fn tcp_connect_wire_format_matches_protocol_doc() {
@@ -199,5 +214,81 @@ mod tests {
             }
             _ => panic!("expected UDP datagram request"),
         }
+    }
+
+    #[tokio::test]
+    async fn udp_datagram_rejects_payload_larger_than_wire_length_limit() {
+        let payload = vec![0_u8; MAX_UDP_PAYLOAD_LEN + 1];
+        let mut wire = Vec::new();
+
+        assert!(
+            write_udp_datagram_with_priority(
+                &mut wire,
+                "example.com:53",
+                StreamPriority::Interactive,
+                &payload,
+            )
+            .await
+            .is_err()
+        );
+        assert!(wire.is_empty());
+    }
+
+    #[tokio::test]
+    async fn udp_datagram_accepts_exact_wire_payload_limit() {
+        let payload = vec![0x5a; MAX_UDP_PAYLOAD_LEN];
+        let mut wire = Vec::new();
+
+        write_udp_datagram_with_priority(
+            &mut wire,
+            "example.com:53",
+            StreamPriority::Interactive,
+            &payload,
+        )
+        .await
+        .unwrap();
+
+        let request = read_tunnel_request(&mut &wire[..]).await.unwrap();
+        match request {
+            TunnelRequest::UdpDatagram { payload: actual, .. } => assert_eq!(actual, payload),
+            _ => panic!("expected UDP datagram request"),
+        }
+    }
+
+    #[tokio::test]
+    async fn maximum_udp_datagram_survives_fragmented_stream_io() {
+        // A small duplex buffer forces the length-prefixed datagram across many
+        // underlying reads and writes, as happens when a large request is split
+        // into transport frames or TCP segments.
+        let payload: Vec<u8> = (0..=u8::MAX)
+            .cycle()
+            .take(MAX_UDP_PAYLOAD_LEN)
+            .collect();
+        let (mut tx, mut rx) = tokio::io::duplex(31);
+        let expected = payload.clone();
+        let writer = tokio::spawn(async move {
+            write_udp_datagram_with_priority(
+                &mut tx,
+                "example.com:53",
+                StreamPriority::Bulk,
+                &payload,
+            )
+            .await
+            .unwrap();
+        });
+
+        match read_tunnel_request(&mut rx).await.unwrap() {
+            TunnelRequest::UdpDatagram {
+                authority,
+                priority,
+                payload,
+            } => {
+                assert_eq!(authority, "example.com:53");
+                assert_eq!(priority, StreamPriority::Bulk);
+                assert_eq!(payload, expected);
+            }
+            _ => panic!("expected UDP datagram request"),
+        }
+        writer.await.unwrap();
     }
 }

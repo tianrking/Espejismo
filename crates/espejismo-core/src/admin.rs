@@ -1,3 +1,8 @@
+//! Local administrative HTTP endpoint and runtime control actions.
+//!
+//! The endpoint exposes operational state and authenticated actions; it is
+//! intended for a trusted local management network, not public proxy traffic.
+
 use std::future::Future;
 use std::net::SocketAddr;
 use std::pin::Pin;
@@ -7,16 +12,23 @@ use anyhow::{Context, Result};
 use serde::Serialize;
 use serde_json::json;
 use subtle::ConstantTimeEq;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::{TcpListener, TcpStream};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::TcpListener;
+use tokio::sync::Semaphore;
 use tokio::time::{timeout, Duration};
 use tracing::{debug, info};
 
 use crate::metrics::Metrics;
 use crate::runtime_state::{RuntimeState, RuntimeStateSnapshot};
 
+// Bound local control-plane clients that stop sending an unauthenticated request midway.
 const ADMIN_HEADER_TIMEOUT: Duration = Duration::from_secs(15);
 const ADMIN_BODY_TIMEOUT: Duration = Duration::from_secs(15);
+const ADMIN_ACTION_TIMEOUT: Duration = Duration::from_secs(30);
+const ADMIN_MAX_CONCURRENT_CLIENTS: usize = 32;
+// Admin responses are machine-readable and never need to execute or embed content.
+const ADMIN_CONTENT_SECURITY_POLICY: &str =
+    "default-src 'none'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'none'";
 
 pub type AdminAction = Arc<
     dyn Fn(Option<String>) -> Pin<Box<dyn Future<Output = Result<serde_json::Value>> + Send>>
@@ -54,18 +66,38 @@ async fn run_admin_server(addr: SocketAddr, state: AdminState) -> Result<()> {
         .await
         .with_context(|| format!("bind admin endpoint {addr}"))?;
     info!(listen = %addr, role = %state.role, "admin endpoint listening");
+    let clients = Arc::new(Semaphore::new(ADMIN_MAX_CONCURRENT_CLIENTS));
     loop {
         let (stream, peer) = listener.accept().await?;
         let state = state.clone();
+        let clients = clients.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle_admin_peer(stream, state).await {
+            if let Err(err) = handle_admin_peer_limited(stream, state, clients).await {
                 debug!(%peer, error = %err, "admin request ended");
             }
         });
     }
 }
 
-async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<()> {
+async fn handle_admin_peer_limited<S>(
+    mut stream: S,
+    state: AdminState,
+    clients: Arc<Semaphore>,
+) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let Ok(_permit) = clients.try_acquire_owned() else {
+        write_response(&mut stream, 503, "text/plain", b"admin capacity reached").await?;
+        return Ok(());
+    };
+    handle_admin_peer(stream, state).await
+}
+
+async fn handle_admin_peer<S>(mut stream: S, state: AdminState) -> Result<()>
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
     let mut buffer = Vec::with_capacity(2048);
     let mut byte = [0_u8; 1];
     while !buffer.ends_with(b"\r\n\r\n") {
@@ -91,8 +123,18 @@ async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<(
     let path = parts.next().unwrap_or("/");
     let headers: Vec<&str> = lines.filter(|line| !line.is_empty()).collect();
 
-    if !authorized(&headers, state.token.as_deref()) {
+    // Keep the fixed liveness response usable by load balancers without
+    // granting unauthenticated access to runtime or administrative data.
+    let health_probe = is_health_probe(method, path);
+    if !health_probe && !authorized(&headers, state.token.as_deref()) {
         write_response(&mut stream, 401, "text/plain", b"unauthorized").await?;
+        return Ok(());
+    }
+
+    // A liveness probe has no body semantics. Answer immediately so a stale
+    // or bogus Content-Length cannot make the probe wait for body bytes.
+    if health_probe {
+        write_response(&mut stream, 200, "text/plain", b"ok\n").await?;
         return Ok(());
     }
 
@@ -146,9 +188,6 @@ async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<(
             )
             .await?;
         }
-        ("GET", "/healthz") => {
-            write_response(&mut stream, 200, "text/plain", b"ok\n").await?;
-        }
         ("POST", "/reload") => {
             let Some(reload) = state.reload else {
                 write_response(
@@ -160,7 +199,16 @@ async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<(
                 .await?;
                 return Ok(());
             };
-            match reload(None).await {
+            match run_admin_action(reload, None, ADMIN_ACTION_TIMEOUT).await {
+                Err(err) if err.to_string() == "admin action timed out" => {
+                    write_response(
+                        &mut stream,
+                        504,
+                        "application/json",
+                        br#"{"error":"admin action timed out"}"#,
+                    )
+                    .await?;
+                }
                 Ok(value) => {
                     let body = serde_json::to_vec_pretty(&value)?;
                     write_response(&mut stream, 200, "application/json", &body).await?;
@@ -187,7 +235,16 @@ async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<(
                 return Ok(());
             };
             let body = String::from_utf8(body).context("apply body is not UTF-8")?;
-            match reload(Some(body)).await {
+            match run_admin_action(reload, Some(body), ADMIN_ACTION_TIMEOUT).await {
+                Err(err) if err.to_string() == "admin action timed out" => {
+                    write_response(
+                        &mut stream,
+                        504,
+                        "application/json",
+                        br#"{"error":"admin action timed out"}"#,
+                    )
+                    .await?;
+                }
                 Ok(value) => {
                     let body = serde_json::to_vec_pretty(&value)?;
                     write_response(&mut stream, 200, "application/json", &body).await?;
@@ -215,6 +272,16 @@ async fn handle_admin_peer(mut stream: TcpStream, state: AdminState) -> Result<(
     Ok(())
 }
 
+async fn run_admin_action(
+    action: AdminAction,
+    body: Option<String>,
+    limit: Duration,
+) -> Result<serde_json::Value> {
+    timeout(limit, action(body))
+        .await
+        .map_err(|_| anyhow::anyhow!("admin action timed out"))?
+}
+
 fn authorized(headers: &[&str], token: Option<&str>) -> bool {
     let Some(token) = token else {
         return true;
@@ -230,6 +297,10 @@ fn authorized(headers: &[&str], token: Option<&str>) -> bool {
                     && token_matches(value, token))
         })
     })
+}
+
+fn is_health_probe(method: &str, path: &str) -> bool {
+    method == "GET" && path == "/healthz"
 }
 
 fn token_matches(candidate: &str, expected: &str) -> bool {
@@ -248,12 +319,10 @@ fn content_length(headers: &[&str]) -> Result<usize> {
     value.parse().context("invalid content-length")
 }
 
-async fn write_response(
-    stream: &mut TcpStream,
-    code: u16,
-    content_type: &str,
-    body: &[u8],
-) -> Result<()> {
+async fn write_response<S>(stream: &mut S, code: u16, content_type: &str, body: &[u8]) -> Result<()>
+where
+    S: AsyncWrite + Unpin,
+{
     let reason = match code {
         200 => "OK",
         401 => "Unauthorized",
@@ -263,10 +332,11 @@ async fn write_response(
         431 => "Request Header Fields Too Large",
         500 => "Internal Server Error",
         503 => "Service Unavailable",
+        504 => "Gateway Timeout",
         _ => "Error",
     };
     let header = format!(
-        "HTTP/1.1 {code} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        "HTTP/1.1 {code} {reason}\r\nContent-Type: {content_type}\r\nContent-Security-Policy: {ADMIN_CONTENT_SECURITY_POLICY}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
         body.len()
     );
     stream.write_all(header.as_bytes()).await?;
@@ -448,8 +518,293 @@ fn escape_label_value(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{authorized, content_length, render_runtime_prometheus};
+    use super::{
+        authorized, content_length, handle_admin_peer, handle_admin_peer_limited, is_health_probe,
+        render_runtime_prometheus, AdminState,
+    };
     use crate::runtime_state::{RuntimeStateSnapshot, TunnelLaneSnapshot};
+    use crate::{metrics::Metrics, runtime_state::RuntimeState};
+    use std::sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    };
+    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+    use tokio::sync::Semaphore;
+    use tokio::time::Duration;
+
+    async fn request(state: AdminState, request: &str) -> String {
+        let (mut client, server_stream) = duplex(4096);
+        let server = tokio::spawn(async move {
+            handle_admin_peer(server_stream, state).await.unwrap();
+        });
+        client.write_all(request.as_bytes()).await.unwrap();
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        server.await.unwrap();
+        String::from_utf8(response).unwrap()
+    }
+
+    #[tokio::test]
+    async fn admin_action_timeout_returns_gateway_timeout() {
+        let action: super::AdminAction = Arc::new(|_| {
+            Box::pin(async {
+                tokio::time::sleep(Duration::from_secs(1)).await;
+                Ok(serde_json::json!({"ok": true}))
+            })
+        });
+        let result = super::run_admin_action(action, None, Duration::from_millis(1)).await;
+        assert!(result.unwrap_err().to_string().contains("timed out"));
+    }
+
+    #[tokio::test]
+    async fn admin_client_limit_rejects_excess_connection() {
+        let permits = Arc::new(Semaphore::new(1));
+        let held = permits.clone().try_acquire_owned().unwrap();
+        let (mut client, server_stream) = duplex(256);
+        let server = tokio::spawn(async move {
+            handle_admin_peer_limited(server_stream, admin_state(None), permits)
+                .await
+                .unwrap();
+        });
+        let mut response = Vec::new();
+        client.read_to_end(&mut response).await.unwrap();
+        server.await.unwrap();
+        drop(held);
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 503"));
+        assert!(response.contains(&format!(
+            "Content-Security-Policy: {}\r\n",
+            super::ADMIN_CONTENT_SECURITY_POLICY
+        )));
+    }
+
+    fn admin_state(reload: Option<super::AdminAction>) -> AdminState {
+        AdminState {
+            role: "test".to_string(),
+            metrics: Metrics::default(),
+            runtime: RuntimeState::default(),
+            token: Some("admin-secret".to_string()),
+            reload,
+        }
+    }
+
+    #[tokio::test]
+    async fn protected_admin_routes_reject_missing_and_invalid_credentials() {
+        for path in ["/status", "/connections", "/metrics"] {
+            let response = request(
+                admin_state(None),
+                &format!("GET {path} HTTP/1.1\r\nHost: localhost\r\n\r\n"),
+            )
+            .await;
+            assert!(response.starts_with("HTTP/1.1 401"), "{path}: {response}");
+            assert!(response.ends_with("unauthorized"));
+        }
+
+        for auth in [
+            "Authorization: Bearer wrong",
+            "Authorization: Basic admin-secret",
+        ] {
+            let response = request(
+                admin_state(None),
+                &format!("GET /status HTTP/1.1\r\nHost: localhost\r\n{auth}\r\n\r\n"),
+            )
+            .await;
+            assert!(response.starts_with("HTTP/1.1 401"), "{auth}: {response}");
+        }
+
+        let response = request(
+            admin_state(None),
+            "POST /apply HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\n\r\nx=1",
+        )
+        .await;
+        assert!(response.starts_with("HTTP/1.1 401"));
+    }
+
+    #[tokio::test]
+    async fn cors_origins_and_preflight_do_not_grant_admin_access() {
+        // The admin API is a trusted management endpoint, not a browser API.
+        // Origin headers and OPTIONS preflights must neither authorize access
+        // nor cause the server to emit permissive CORS response headers.
+        for origin in ["https://example.com", "null", "*"] {
+            let response = request(
+                admin_state(None),
+                &format!(
+                    "GET /status HTTP/1.1\r\nHost: localhost\r\nOrigin: {origin}\r\n\r\n"
+                ),
+            )
+            .await;
+            assert!(response.starts_with("HTTP/1.1 401"), "{origin}: {response}");
+            assert!(!response.to_ascii_lowercase().contains("access-control-"));
+        }
+
+        let preflight = request(
+            admin_state(None),
+            "OPTIONS /apply HTTP/1.1\r\nHost: localhost\r\nOrigin: https://example.com\r\nAccess-Control-Request-Method: POST\r\nAccess-Control-Request-Headers: authorization, content-type\r\n\r\n",
+        )
+        .await;
+        assert!(preflight.starts_with("HTTP/1.1 401"), "{preflight}");
+        assert!(!preflight.to_ascii_lowercase().contains("access-control-"));
+
+        let public_health = request(
+            admin_state(None),
+            "GET /healthz HTTP/1.1\r\nHost: localhost\r\nOrigin: https://example.com\r\n\r\n",
+        )
+        .await;
+        assert!(public_health.starts_with("HTTP/1.1 200"));
+        assert!(!public_health.to_ascii_lowercase().contains("access-control-"));
+    }
+
+    #[tokio::test]
+    async fn every_admin_response_has_fixed_restrictive_csp() {
+        let cases = [
+            ("GET /healthz HTTP/1.1\r\n\r\n", "HTTP/1.1 200"),
+            ("GET /status HTTP/1.1\r\n\r\n", "HTTP/1.1 401"),
+            (
+                "GET /status HTTP/1.1\r\nAuthorization: Bearer admin-secret\r\nContent-Security-Policy: default-src *\r\n\r\n",
+                "HTTP/1.1 200",
+            ),
+            (
+                "GET /missing HTTP/1.1\r\nAuthorization: Bearer admin-secret\r\n\r\n",
+                "HTTP/1.1 404",
+            ),
+            (
+                "PATCH /status HTTP/1.1\r\nAuthorization: Bearer admin-secret\r\n\r\n",
+                "HTTP/1.1 405",
+            ),
+        ];
+        let expected = format!(
+            "Content-Security-Policy: {}",
+            super::ADMIN_CONTENT_SECURITY_POLICY
+        );
+        for (request_text, status) in cases {
+            let response = request(admin_state(None), request_text).await;
+            assert!(response.starts_with(status), "{response}");
+            let (headers, _) = response.split_once("\r\n\r\n").unwrap();
+            assert_eq!(headers.matches("Content-Security-Policy:").count(), 1);
+            assert!(headers.lines().any(|line| line == expected), "{headers}");
+        }
+    }
+
+    #[tokio::test]
+    async fn only_health_is_public_and_unauthorized_apply_has_no_side_effect() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let action_calls = calls.clone();
+        let action: super::AdminAction = Arc::new(move |_| {
+            let calls = action_calls.clone();
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({"ok": true}))
+            })
+        });
+
+        let health = request(
+            admin_state(Some(action.clone())),
+            "GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )
+        .await;
+        assert!(health.starts_with("HTTP/1.1 200"));
+        assert!(health.ends_with("ok\n"));
+
+        let denied = request(
+            admin_state(Some(action.clone())),
+            "POST /apply HTTP/1.1\r\nHost: localhost\r\nContent-Length: 3\r\n\r\nx=1",
+        )
+        .await;
+        assert!(denied.starts_with("HTTP/1.1 401"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        let accepted = request(
+            admin_state(Some(action)),
+            "POST /apply HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer admin-secret\r\nContent-Length: 3\r\n\r\nx=1",
+        ).await;
+        assert!(accepted.starts_with("HTTP/1.1 200"));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn health_probe_ignores_invalid_or_unfinished_request_body() {
+        for headers in [
+            "Content-Length: nope\r\n",
+            "Content-Length: 16777216\r\n",
+            "Content-Length: 4\r\n",
+        ] {
+            let response = request(
+                admin_state(None),
+                &format!("GET /healthz HTTP/1.1\r\nHost: localhost\r\n{headers}\r\n"),
+            )
+            .await;
+            assert!(response.starts_with("HTTP/1.1 200"), "{headers}: {response}");
+            assert!(response.ends_with("ok\n"), "{headers}: {response}");
+        }
+    }
+
+    #[tokio::test]
+    async fn every_admin_action_obeys_the_authorization_matrix() {
+        // Keep this route list aligned with the dispatch table above: every
+        // data or control endpoint must reject absent/invalid credentials.
+        let routes = [
+            ("GET", "/status", ""),
+            ("GET", "/connections", ""),
+            ("GET", "/metrics", ""),
+            ("POST", "/reload", ""),
+            ("POST", "/apply", "x=1"),
+        ];
+        let calls = Arc::new(AtomicUsize::new(0));
+        let action_calls = calls.clone();
+        let action: super::AdminAction = Arc::new(move |_| {
+            let calls = action_calls.clone();
+            Box::pin(async move {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(serde_json::json!({"ok": true}))
+            })
+        });
+
+        for (method, path, body) in routes {
+            let content_length = if body.is_empty() {
+                ""
+            } else {
+                "Content-Length: 3\r\n"
+            };
+            for credential in [None, Some("Authorization: Bearer wrong\r\n")] {
+                let auth = credential.unwrap_or("");
+                let response = request(
+                    admin_state(Some(action.clone())),
+                    &format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\n{auth}{content_length}\r\n{body}"),
+                ).await;
+                assert!(
+                    response.starts_with("HTTP/1.1 401"),
+                    "{method} {path} without valid auth: {response}"
+                );
+            }
+
+            for credential in [
+                "Authorization: Bearer admin-secret\r\n",
+                "X-Espejismo-Admin-Token: admin-secret\r\n",
+            ] {
+                let response = request(
+                    admin_state(Some(action.clone())),
+                    &format!("{method} {path} HTTP/1.1\r\nHost: localhost\r\n{credential}{content_length}\r\n{body}"),
+                ).await;
+                assert!(
+                    response.starts_with("HTTP/1.1 200"),
+                    "{method} {path} with valid auth: {response}"
+                );
+            }
+        }
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            4,
+            "only authenticated control actions run"
+        );
+
+        let health = request(
+            admin_state(None),
+            "GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n",
+        )
+        .await;
+        assert!(health.starts_with("HTTP/1.1 200"));
+        assert!(health.ends_with("ok\n"));
+    }
 
     #[test]
     fn authorization_accepts_bearer_and_legacy_header() {
@@ -466,6 +821,29 @@ mod tests {
             &["Authorization: Bearer wrong-secret"],
             Some("admin-secret")
         ));
+        assert!(!authorized(&[], Some("admin-secret")));
+        assert!(!authorized(
+            &["Authorization: Basic admin-secret"],
+            Some("admin-secret")
+        ));
+        assert!(!authorized(
+            &["Authorization: Bearer admin-secret-extra"],
+            Some("admin-secret")
+        ));
+        assert!(authorized(
+            &[
+                "Authorization: Bearer wrong-secret",
+                "X-Espejismo-Admin-Token: admin-secret"
+            ],
+            Some("admin-secret")
+        ));
+    }
+
+    #[test]
+    fn only_get_health_probe_bypasses_admin_authorization() {
+        assert!(is_health_probe("GET", "/healthz"));
+        assert!(!is_health_probe("POST", "/healthz"));
+        assert!(!is_health_probe("GET", "/status"));
     }
 
     #[test]

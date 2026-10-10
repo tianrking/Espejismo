@@ -1,9 +1,14 @@
+//! Encrypted framed I/O transport and bidirectional stream copying.
+//!
+//! Copy helpers preserve idle behavior and allow callers to meter bytes without
+//! coupling protocol framing to ingress or egress implementations.
+
 use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
 use std::time::{Duration, Instant};
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use rand::Rng;
 use tokio::io::{duplex, split, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, DuplexStream};
 use tokio::time::{sleep, timeout};
@@ -117,11 +122,12 @@ where
                 tokio::select! {
                     r = ra => {
                         match r {
-                            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => {
+                            Ok(Ok(0)) | Err(_) => {
                                 a_done = true;
                                 let _ = b.shutdown().await;
                                 if b_done { break; }
                             }
+                            Ok(Err(err)) => return Err(err).context("read relay input stream"),
                             Ok(Ok(n)) => {
                                 meter.account(n as u64).await?;
                                 total_a += n as u64;
@@ -132,11 +138,12 @@ where
                     }
                     r = rb => {
                         match r {
-                            Ok(Ok(0)) | Ok(Err(_)) | Err(_) => {
+                            Ok(Ok(0)) | Err(_) => {
                                 b_done = true;
                                 let _ = a.shutdown().await;
                                 if a_done { break; }
                             }
+                            Ok(Err(err)) => return Err(err).context("read relay egress stream"),
                             Ok(Ok(n)) => {
                                 meter.account(n as u64).await?;
                                 total_b += n as u64;
@@ -148,7 +155,8 @@ where
                 }
             }
             (Some(ra), None) => match ra.await {
-                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(0)) | Err(_) => break,
+                Ok(Err(err)) => return Err(err).context("read relay input stream"),
                 Ok(Ok(n)) => {
                     meter.account(n as u64).await?;
                     total_a += n as u64;
@@ -156,7 +164,8 @@ where
                 }
             },
             (None, Some(rb)) => match rb.await {
-                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(0)) | Err(_) => break,
+                Ok(Err(err)) => return Err(err).context("read relay egress stream"),
                 Ok(Ok(n)) => {
                     meter.account(n as u64).await?;
                     total_b += n as u64;
@@ -402,6 +411,7 @@ async fn stealth_pre_write_delay(options: &FrameOptions) {
     }
 }
 
+/// Token bucket for optional idle-padding traffic, independent of relay pacing.
 #[derive(Debug)]
 struct StealthPaddingBudget {
     enabled: bool,
@@ -447,6 +457,10 @@ impl StealthPaddingBudget {
 
     fn refill(&mut self) {
         let now = Instant::now();
+        self.refill_at(now);
+    }
+
+    fn refill_at(&mut self, now: Instant) {
         let elapsed = now.saturating_duration_since(self.last_refill);
         self.last_refill = now;
         let refill = elapsed.as_secs_f64() * self.bytes_per_sec as f64;
@@ -510,11 +524,16 @@ fn throughput_bps(bytes: u64, elapsed: Duration) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{idle_copy_bidirectional, stealth_tick_delay, StealthPaddingBudget};
+    use super::{
+        idle_copy_bidirectional, metered_idle_copy_bidirectional, stealth_tick_delay,
+        NoopCopyMeter, StealthPaddingBudget,
+    };
     use crate::protocol::framing::{
         FrameOptions, StealthIdleNoise, StealthShaperMode, DEFAULT_STEALTH_FRAME_SIZE,
     };
-    use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+    use tokio::io::{duplex, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
     use tokio::time::Duration;
 
     #[test]
@@ -530,6 +549,56 @@ mod tests {
         assert!(budget.allow(DEFAULT_STEALTH_FRAME_SIZE));
         assert!(budget.allow(DEFAULT_STEALTH_FRAME_SIZE));
         assert!(!budget.allow(DEFAULT_STEALTH_FRAME_SIZE));
+    }
+
+    #[test]
+    fn stealth_padding_budget_refills_tokens_after_elapsed_time() {
+        let options = FrameOptions {
+            stealth_shaper_enabled: true,
+            stealth_padding_budget_bps: 10,
+            stealth_frame_size: 10,
+            ..FrameOptions::default()
+        };
+        let mut budget = StealthPaddingBudget::new(&options);
+
+        assert!(budget.allow(10));
+        assert!(budget.allow(10));
+        assert!(!budget.allow(1));
+
+        budget.last_refill -= Duration::from_secs(1);
+        assert!(budget.allow(10));
+        assert!(!budget.allow(11));
+    }
+
+    #[test]
+    fn stealth_padding_budget_caps_long_idle_refill_at_burst_limit() {
+        let options = FrameOptions {
+            stealth_shaper_enabled: true,
+            stealth_padding_budget_bps: 10,
+            stealth_frame_size: 10,
+            ..FrameOptions::default()
+        };
+        let mut budget = StealthPaddingBudget::new(&options);
+
+        assert!(budget.allow(20));
+        let later = budget.last_refill + Duration::from_secs(30);
+        budget.refill_at(later);
+
+        assert_eq!(budget.tokens, budget.burst);
+        assert!(budget.allow(20));
+        assert!(!budget.allow(1));
+    }
+
+    #[test]
+    fn disabled_stealth_padding_budget_does_not_block_padding() {
+        let options = FrameOptions {
+            stealth_shaper_enabled: false,
+            stealth_padding_budget_bps: 0,
+            ..FrameOptions::default()
+        };
+        let mut budget = StealthPaddingBudget::new(&options);
+
+        assert!(budget.allow(usize::MAX));
     }
 
     #[test]
@@ -561,6 +630,43 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn idle_copy_bidirectional_zero_timeout_expires_pending_reads() {
+        let (mut left, _left_peer) = duplex(64);
+        let (mut right, _right_peer) = duplex(64);
+
+        let copied = idle_copy_bidirectional(&mut left, &mut right, Duration::ZERO).await;
+
+        assert_eq!(copied.unwrap(), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn idle_copy_bidirectional_refreshes_timeout_on_traffic() {
+        let (mut left, mut left_peer) = duplex(64);
+        let (mut right, mut right_peer) = duplex(64);
+        let idle = Duration::from_millis(100);
+
+        let task = tokio::spawn(async move {
+            idle_copy_bidirectional(&mut left, &mut right, idle).await
+        });
+
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        left_peer.write_all(b"activity").await.unwrap();
+        let mut received = [0_u8; 8];
+        right_peer.read_exact(&mut received).await.unwrap();
+        assert_eq!(&received, b"activity");
+
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(!task.is_finished(), "traffic must refresh the idle deadline");
+
+        let copied = tokio::time::timeout(Duration::from_millis(150), task)
+            .await
+            .expect("connection should close after traffic stops")
+            .unwrap()
+            .unwrap();
+        assert_eq!(copied, (8, 0));
+    }
+
+    #[tokio::test]
     async fn idle_copy_bidirectional_copies_one_direction_before_shutdown() {
         let (mut left, mut left_peer) = duplex(64);
         let (mut right, mut right_peer) = duplex(64);
@@ -577,6 +683,56 @@ mod tests {
 
         let copied = task.await.unwrap().unwrap();
         assert_eq!(copied.0, 4);
+    }
+
+    struct ReadErrorStream;
+
+    impl AsyncRead for ReadErrorStream {
+        fn poll_read(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            _buf: &mut ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Err(std::io::Error::new(
+                std::io::ErrorKind::ConnectionReset,
+                "injected connection reset",
+            )))
+        }
+    }
+
+    impl AsyncWrite for ReadErrorStream {
+        fn poll_write(
+            self: Pin<&mut Self>,
+            _cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Poll::Ready(Ok(buf.len()))
+        }
+        fn poll_flush(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+        fn poll_shutdown(self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+            Poll::Ready(Ok(()))
+        }
+    }
+
+    #[tokio::test]
+    async fn idle_copy_bidirectional_reports_read_errors() {
+        let mut failing = ReadErrorStream;
+        let (mut peer, _peer_end) = duplex(64);
+        let mut meter = NoopCopyMeter;
+
+        let error = metered_idle_copy_bidirectional(
+            &mut failing,
+            &mut peer,
+            Duration::from_secs(1),
+            &mut meter,
+        )
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("read relay input stream"));
+        assert!(format!("{error:#}").contains("injected connection reset"));
     }
 
     // Isolates spawn_frame_transport (encrypted duplex + pumps) with NO mux on
@@ -629,6 +785,44 @@ mod tests {
         for (i, b) in received.iter().enumerate() {
             assert_eq!(*b, (i % 256) as u8, "byte mismatch at offset {i}");
         }
+    }
+
+    #[tokio::test]
+    async fn frame_sent_immediately_after_handshake_is_released_to_transport() {
+        use super::spawn_frame_transport;
+        use crate::crypto::{accept_handshake, connect_handshake, HandshakeConfig};
+        use crate::protocol::framing::{Frame, FrameOptions, FrameType, FrameWriter};
+
+        let (mut client, mut server) = duplex(16 * 1024);
+        let cfg = HandshakeConfig::new(b"test-secret-that-is-long-enough".to_vec(), 30, 128, 0);
+        let client_cfg = cfg.clone();
+        let client_task = tokio::spawn(async move {
+            let keys = connect_handshake(&mut client, &client_cfg).await?;
+            Ok::<_, anyhow::Error>((client, keys))
+        });
+        let server_cfg = cfg.clone();
+        let server_task = tokio::spawn(async move {
+            let keys = accept_handshake(&mut server, &server_cfg).await?;
+            Ok::<_, anyhow::Error>((server, keys))
+        });
+        let (mut client, client_keys) = client_task.await.unwrap().unwrap();
+        let (server, server_keys) = server_task.await.unwrap().unwrap();
+
+        let options = FrameOptions::default();
+        let payload = b"first application bytes after authentication";
+        let mut writer = FrameWriter::new(&mut client, client_keys, options.clone());
+        writer.send(Frame { ty: FrameType::Data, payload: payload.to_vec() }).await.unwrap();
+        drop(writer);
+
+        // The peer may have written these bytes before the server starts its
+        // frame pump. They must remain queued on the underlay until released.
+        let mut app = spawn_frame_transport(server, server_keys, options, 1024);
+        let mut received = vec![0; payload.len()];
+        tokio::time::timeout(std::time::Duration::from_secs(1), app.read_exact(&mut received))
+            .await
+            .expect("early frame was not released")
+            .unwrap();
+        assert_eq!(received, payload);
     }
 
     // Reproduces the real production stack end-to-end:
@@ -714,6 +908,9 @@ mod tests {
 
     // Same full-stack shape as the native test above but exercising the yamux
     // path with the operator-tuned window (P1: config now maps to YamuxConfig).
+    // Regression test for the yamux window-update writer stall (fixed in
+    // crates/tokio-yamux, see its VENDOR.md): a one-way bulk transfer larger
+    // than the stream window must complete.
     #[tokio::test]
     async fn encrypted_transport_with_yamux_mux_preserves_bulk_integrity() {
         use super::spawn_frame_transport;
@@ -761,7 +958,10 @@ mod tests {
         let mut server_stream = session_b.next().await.unwrap().unwrap();
         tokio::spawn(async move { while session_b.next().await.is_some() {} });
 
-        let total: usize = 1024 * 1024;
+        // Exercise flow control and stream shutdown at the reported transfer size.
+        let total: usize = 64 * 1024 * 1024;
+        let sent = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let writer_sent = sent.clone();
         let writer = tokio::spawn(async move {
             let mut sent = 0usize;
             let mut buf = vec![0u8; 8192];
@@ -777,13 +977,31 @@ mod tests {
                     written += n;
                 }
                 sent += take;
+                writer_sent.store(sent, std::sync::atomic::Ordering::Relaxed);
             }
             server_stream.shutdown().await.unwrap();
         });
 
         let mut received = Vec::with_capacity(total);
-        client_stream.read_to_end(&mut received).await.unwrap();
-        writer.await.unwrap();
+        // Full-stack (encrypted transport + pumps) throughput in test is
+        // ~1.7 MB/s, so 64 MiB needs ~40 s; allow generous headroom for CI.
+        let read_result = tokio::time::timeout(
+            Duration::from_secs(120),
+            client_stream.read_to_end(&mut received),
+        )
+        .await;
+        assert!(
+            read_result.is_ok(),
+            "Yamux bulk read stalled: received {} of {} bytes while writer had sent {}",
+            received.len(),
+            total,
+            sent.load(std::sync::atomic::Ordering::Relaxed)
+        );
+        read_result.unwrap().unwrap();
+        tokio::time::timeout(Duration::from_secs(120), writer)
+            .await
+            .expect("Yamux bulk writer did not finish after receiver observed EOF")
+            .unwrap();
         assert_eq!(received.len(), total, "client received wrong byte count");
         for (i, b) in received.iter().enumerate() {
             assert_eq!(*b, (i % 256) as u8, "byte mismatch at offset {i}");

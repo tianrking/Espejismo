@@ -27,8 +27,15 @@ LOG_SCAN_LINES="${ESPEJISMO_LOG_SCAN_LINES:-300}"
 MAX_LOG_LINE_BYTES="${ESPEJISMO_MAX_LOG_LINE_BYTES:-8192}"
 ALLOW_VERBOSE_LOGS="${ESPEJISMO_ALLOW_VERBOSE_LOGS:-0}"
 
-mkdir -p "$RAW_DIR"
-: >"$RESULTS_JSONL"
+validate_uint() {
+    local name="$1"
+    local value="$2"
+    local minimum="$3"
+    if [[ ! "$value" =~ ^[0-9]+$ ]] || (( 10#$value < minimum )); then
+        echo "${name} must be an integer >= ${minimum}; got: ${value}" >&2
+        exit 2
+    fi
+}
 
 need_command() {
     if ! command -v "$1" >/dev/null 2>&1; then
@@ -48,10 +55,22 @@ if command -v "$PYTHON_BIN" >/dev/null 2>&1 && "$PYTHON_BIN" -c 'import json, st
     HAS_PYTHON=1
 fi
 
-if [ "$ROUNDS" -lt 1 ]; then
-    echo "ESPEJISMO_ROUNDS must be >= 1" >&2
+validate_uint ESPEJISMO_UPLOAD_MIB "$UPLOAD_MIB" 1
+validate_uint ESPEJISMO_PARALLEL "$PARALLEL" 1
+validate_uint ESPEJISMO_ROUNDS "$ROUNDS" 1
+validate_uint ESPEJISMO_ROUND_DELAY_SECS "$ROUND_DELAY_SECS" 0
+validate_uint ESPEJISMO_CURL_MAX_TIME "$MAX_TIME" 1
+validate_uint ESPEJISMO_LOG_SCAN_LINES "$LOG_SCAN_LINES" 1
+validate_uint ESPEJISMO_MAX_LOG_LINE_BYTES "$MAX_LOG_LINE_BYTES" 1
+
+if [ -e "$OUTPUT_DIR" ]; then
+    echo "benchmark output directory already exists: ${OUTPUT_DIR}" >&2
     exit 2
 fi
+mkdir -p "$RAW_DIR"
+: >"$RESULTS_JSONL"
+
+BENCH_FAILED=0
 
 if [ ! -f "$UPLOAD_FILE" ]; then
     echo "creating upload payload: $UPLOAD_FILE (${UPLOAD_MIB} MiB)"
@@ -302,6 +321,7 @@ summarize_one() {
         ok=true
     fi
     append_result "$round" "$case_name" "$label" "$mode" "$direction" 1 "${elapsed:-0}" "${bytes:-0}" "$mbps" "$ok"
+    if [ "$ok" != true ]; then BENCH_FAILED=1; fi
     printf '| %s | %s | %s | %s | 1 | %s | %s | %s |\n' "$round" "$case_name" "$mode" "$direction" "${mbps}" "${elapsed:-0}" "$ok" >>"$SUMMARY_MD"
     echo "${label}: ${mbps} Mbit/s (${elapsed:-0}s, ok=${ok})"
 }
@@ -355,6 +375,7 @@ run_parallel() {
     done
     mbps="$(awk -v bytes="$bytes" -v ms="$elapsed_ms" 'BEGIN { if (ms > 0) printf "%.3f", bytes * 8 / (ms / 1000) / 1000000; else printf "0.000" }')"
     append_result "$round" "$case_name" "$label" "$mode" "$direction" "$PARALLEL" "$elapsed_secs" "$bytes" "$mbps" "$ok"
+    if [ "$ok" != true ]; then BENCH_FAILED=1; fi
     printf '| %s | %s | %s | %s | %s | %s | %s | %s |\n' "$round" "$case_name" "$mode" "$direction" "$PARALLEL" "$mbps" "$elapsed_secs" "$ok" >>"$SUMMARY_MD"
     echo "${label}: ${mbps} Mbit/s (${elapsed_secs}s, parallel=${PARALLEL}, ok=${ok})"
     capture_admin "${label}-after"
@@ -554,3 +575,7 @@ cat >>"$SUMMARY_MD" <<EOF
 EOF
 
 echo "wrote ${SUMMARY_MD}"
+if [ "$BENCH_FAILED" -ne 0 ]; then
+    echo "one or more benchmark transfers failed; see ${SUMMARY_MD}" >&2
+    exit 1
+fi

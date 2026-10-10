@@ -1,5 +1,8 @@
 # Espejismo Design Principles
 
+These principles guide architecture and implementation choices while
+preserving Espejismo's documented product boundaries.
+
 ## Native First
 
 The current implementation is a native Rust transport built around Tokio TCP.

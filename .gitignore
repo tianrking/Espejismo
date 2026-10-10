@@ -2,3 +2,6 @@
 /dist/
 __pycache__/
 *.log
+
+# transient per-round commit message used by the hourly opt loop (round.sh)
+.commit-msg

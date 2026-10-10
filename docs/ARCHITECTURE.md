@@ -1,5 +1,53 @@
 # Espejismo Architecture
 
+This page maps the client, remote server, protocol layers, and supported
+traffic paths for maintainers and operators.
+
+![Data flow](architecture.svg)
+
+## Textual Architecture Map
+
+```text
+Client machine                                               Remote machine
+┌──────────────────────────────┐                    ┌─────────────────────────────┐
+│ Applications / system flows  │                    │                             │
+│  SOCKS5 · HTTP · optional TUN│                    │                             │
+└──────────────┬───────────────┘                    │                             │
+               v                                    │                             │
+┌──────────────────────────────┐                    │                             │
+│ espejismo-local              │                    │                             │
+│ ingress → internal commands  │                    │                             │
+│ mux → authenticated lanes    │                    │                             │
+└──────────────┬───────────────┘                    │                             │
+               │ TCP (optional WebSocket / HTTP/2 underlay)                        │
+               └── encrypted Espejismo frames ────>┌─────────────────────────────┐
+                                                    │ espejismo-remote            │
+                                                    │ listener → auth → mux       │
+                                                    │ stream request → egress     │
+                                                    └──────────────┬──────────────┘
+                                                                   v
+                                                    Destination or configured proxy
+```
+
+Each process reads the shared TOML configuration with its local or remote
+section; CLI overrides and runtime admin updates affect the corresponding
+process. The local listener converts SOCKS5, HTTP proxy, or optional TUN traffic
+into internal tunnel commands. Commands travel as independent mux streams over
+authenticated physical lanes. On the remote, each stream is checked against
+egress policy and relayed to its destination, directly or through a configured
+upstream proxy. SOCKS5 UDP relay is an application-level flow over the same TCP
+tunnel. The diagram does not represent the experimental UDP underlay primitives
+as a production path.
+
+Native mux streams are scoped to their physical session. If a carrier ends
+while a caller still holds an unclosed stream handle, that handle reaches EOF
+for reads and rejects writes; it does not keep the session's stream table or
+frame reader alive.
+
+This map shows component ownership and the ordinary data path. The following
+sections detail handshake and frame formats, underlay choices, mux behavior,
+failure scopes, configuration, and egress policy.
+
 ## Goals
 
 Espejismo is a native Rust encrypted transport for public and untrusted
@@ -18,6 +66,10 @@ stream with no stable cleartext TLV markers or borrowed protocol fingerprint.
   HTTP proxy parsing, configuration/profile loading, encrypted transport
   adapter, UDP underlay primitives, update metadata checks, and adaptive frame
   writer.
+- The HTTP proxy forwards chunked request bodies opaquely, including trailers.
+  Absolute-form requests accept one `Transfer-Encoding: chunked` field and
+  reject other or repeated transfer codings and any request that also carries
+  `Content-Length`, avoiding ambiguous upstream body framing.
 - `espejismo-client`: builds `espejismo-local`, the local SOCKS5 and HTTP proxy
   ingress.
 - `espejismo-server`: builds `espejismo-remote`, the authenticated remote
@@ -88,6 +140,11 @@ body carries client-to-remote bytes and the response body carries
 remote-to-client bytes. This keeps the same Espejismo crypto and mux layers
 above a real HTTP/2 stream abstraction.
 
+HTTP/2 header compression is provided by the `h2` dependency's HPACK
+implementation. The underlay tests exercise header-value preservation over an
+in-memory HTTP/2 connection, including empty, repeated, and large values; the
+project does not maintain a separate HPACK codec.
+
 `[shared.port_hopping]` can optionally choose the remote port per time window.
 The client rewrites the configured server port for each new physical lane, while
 the remote binds the configured candidate ports and sends all accepted sockets
@@ -140,7 +197,9 @@ and runs the configured logical stream mux over it. Each accepted SOCKS5 or HTTP
 proxy connection opens a logical stream on a health-scored lane and sends an
 internal command preface. HTTP CONNECT is accepted directly; absolute-form
 `http://` requests are rewritten to origin-form before entering the tunnel.
-SOCKS5 UDP ASSOCIATE datagrams are relayed as UDP command streams. Optional
+SOCKS5 UDP ASSOCIATE datagrams are relayed as UDP command streams. Its UDP
+receive loop uses the configured idle timeout per receive; expiration ends the
+association handler and drops its socket and fragment reassembly state. Optional
 native TUN ingress creates a local virtual network interface and uses a
 userspace netstack to convert captured TCP flows and UDP datagrams into the same
 internal tunnel commands. The remote side does not need a separate TUN-specific
@@ -153,6 +212,110 @@ then return traffic through the tunnel.
 Remote physical connections are capped by `shared.max_physical_connections`.
 Logical stream permits and first tunnel-request reads use bounded timeouts so a
 slow peer cannot hold semaphores or tasks indefinitely.
+
+### Connection and Stream Lifecycle
+
+The lifecycle has three independent scopes. A listener accepts underlay
+connections; each accepted physical connection authenticates once and owns one
+mux session; each mux stream carries one TCP CONNECT relay or one UDP datagram
+transaction. A stream failure does not by itself imply that its physical
+connection failed, and a physical connection failure ends every stream on that
+session.
+
+The labels below describe the control flow and the client lane's published
+health state. They are not protocol states negotiated on the wire. In
+particular, `connected` means that a mux control is available for opens; it
+does not mean that every stream is healthy.
+
+```text
+Client lane: disconnected -> connecting -> authenticated/mux-ready
+             -> (stream opens and closes; lane remains ready)
+             -> disconnected on session end or max-age rotation
+             -> connecting on the next stream demand
+
+Remote peer: accepted -> authenticating -> authenticated/mux-serving
+             -> closed on mux/session end
+
+Logical stream: opened -> request received -> egress/relay
+                -> clean completion, or stream-local failure -> closed
+```
+
+Client TCP/underlay connect or handshake failure leaves the lane unavailable;
+that open request fails, and a later request observes the lane's reconnect
+backoff. The first connection attempt has no delay. After each consecutive
+lane error, the next demand waits for an exponential delay starting at 500 ms,
+with a fresh uniformly sampled integer-millisecond delay in the 80–120% range
+and a 16 s maximum. The failure count is
+lane-local and is reset when a lane connection succeeds.
+A failed connect/handshake is returned to its caller immediately; it does not
+consume the mux stream-open attempt budget. A mux stream-open failure clears
+that lane's control and is retried within
+`local.tunnel_pool.max_reconnect_attempts` (default 3). Session termination
+decrements active physical-connection accounting and the lane is re-established
+lazily when a later stream needs it. Reconnection creates a fresh authenticated
+session; streams from the failed session are not replayed or transparently
+resumed.
+Maximum connection age similarly causes the current control to be discarded
+when checked before a later open.
+
+On the server, each listener retries `accept` only for recognized temporary
+resource exhaustion (such as descriptor or memory exhaustion). Its delay
+doubles from 250 ms to a 16 s cap and resets after a successful accept. Other
+accept errors stop that listener. This retry is independent of client lane
+reconnection; it does not retry authentication failures, destination connects,
+or established proxy streams. A failed logical stream ends with its session;
+the tunnel does not replay or automatically resume it.
+
+| Scope | State / event | Next state | Effect |
+| --- | --- | --- | --- |
+| Client lane | no mux control; stream demand arrives | connecting | Select lane, reserve an open, and connect underlay with a bounded timeout. |
+| Client lane | connect and handshake succeed | connected | Create the encrypted transport and mux session; the control can accept stream opens. |
+| Client lane | connect/handshake fails | unavailable (reported degraded) | Record the failure; a later demand retries after bounded backoff. |
+| Client lane | stream open succeeds | connected | Add one active logical stream; the lane remains reusable. |
+| Client lane | mux open fails | connecting on retry, or unavailable | Discard the control and retry within the configured attempt limit. |
+| Client lane | session ends or age expires | disconnected / discarded | Existing streams fail with that session; age is checked before a later open. |
+| Client lane | idle for 300 seconds and above configured minimum | disconnected / pruned | Before a later stream open, discard excess idle controls; the lane slot reconnects on demand. Active or reserved lanes are kept. |
+| Remote physical session | accepted | authenticating | Apply handshake timeout and configured auth/fallback policy. |
+| Remote physical session | authentication succeeds | mux-serving | Yield streams to independent handlers until the mux session ends. |
+| Remote physical session | authentication rejects/times out | closed or fallback | Does not enter mux service. |
+| Native mux session | no active streams for the idle timeout | draining, then closed | Send `GOAWAY`; a session with any open stream stays alive, and the final stream closing starts the idle window again. |
+| Remote physical session | mux/session error | closed | All streams on this physical session lose their carrier. |
+| Logical stream | mux yields stream | request pending | Read one tunnel command under the request timeout. |
+| Logical stream | valid TCP command | relaying | Apply egress policy, connect destination, then relay with idle/quota limits. |
+| Logical stream | valid UDP command | datagram transaction | Relay one datagram and response, then shut down the stream. |
+| Logical stream | malformed request, policy/connect/quota/idle/I/O error | closed | End only this stream unless the error came from the physical transport. |
+| Logical stream | EOF and relay shutdown | closed normally | Release stream permits and finish accounting. |
+
+Native mux streams additionally have protocol-level half-close and reset
+operations (`FIN` and `RST`); the common relay lifecycle above deliberately
+describes the application-level outcome shared by the mux wrapper. Yamux has
+its own internal stream/session machinery. Neither mux mode migrates a stream
+to another physical lane after failure.
+
+For Yamux, `FIN` closes only the sender's write direction. The stream remains
+readable until the peer sends its own `FIN`; data traveling in that reverse
+direction remains valid in between.
+
+On the remote, invalid or timed-out authentication follows the configured
+fallback-or-reject path and does not enter mux service. Once authenticated,
+mux session errors end the physical session. A zero per-session stream limit
+drops the newly yielded stream; global permit exhaustion or a per-session
+permit wait timeout returns from the peer handler and ends that physical
+session. Malformed or timed-out tunnel requests, egress denial, egress connect
+errors, quota errors, and relay/idle timeout end the affected stream. EOF and
+stream shutdown complete the relay normally. AEAD/frame errors
+are fail-fast at the physical transport and therefore terminate its mux
+session and streams. The listener remains available for subsequent peers.
+
+For Yamux, receiving a remote `GoAway` marks the session as remote-closing,
+rejects subsequent stream opens, and sends a normal `GoAway` response when the
+local side has not already sent one. With both close flags set, the session
+stream ends; a regression test exercises this response and termination path.
+
+This is an implementation map, not a promise of transparent recovery: there is
+no stream migration, replay, or automatic retry of an established proxy flow.
+The state labels above describe control flow in the client lane and server
+handler, not a shared protocol state field on the wire.
 
 The current production tunnel still uses TCP as the physical underlay. The core
 crate also contains UDP underlay primitives: packet codec, session id, sequence
@@ -213,17 +376,31 @@ they are TCP-only.
 
 ## Source Layout
 
-`espejismo-core` is organized by responsibility:
+The workspace separates shared tunnel primitives, the two executable
+applications, and the bundled Yamux implementation:
 
-- `config/`: TOML and base64 configuration loading.
-- `crypto/`: authenticated first packet, X25519, HKDF, and AEAD helpers.
-- `ingress/`: local protocol parsers such as SOCKS5 and HTTP proxy.
-- `mux/`: in-tree native mux beta with OPEN, DATA, WINDOW_UPDATE, FIN, RST,
-  PING, and GOAWAY frames. Its native implementation is split into session,
-  frame codec, pending-queue, and test modules.
-- `protocol/`: encrypted frames, puzzles, UDP underlay primitives, and replay
-  protection.
-- `transport/`: bridge between encrypted frames and `AsyncRead + AsyncWrite`.
+- `crates/espejismo-core/src/` contains shared libraries. Its `config/` module
+  loads TOML and profiles; `crypto/` implements authenticated key exchange;
+  `protocol/` contains encrypted framing, requests, puzzles, replay protection,
+  and experimental UDP reliability primitives; `transport/` bridges frames to
+  async byte streams; and `underlay.rs` adapts raw TCP, WebSocket, and HTTP/2.
+  `ingress/` provides SOCKS5 and HTTP proxy parsing/authentication. Other
+  top-level modules cover admin, CLI support, DNS, egress policy, extension
+  interfaces, logging, metrics, mux configuration, runtime state, TCP helpers,
+  and update checks. The in-tree native mux implementation is under `mux/`.
+- `crates/espejismo-client/src/main.rs` builds `espejismo-local`; its sibling
+  modules implement proxy handlers, lane/tunnel management, mux adaptation,
+  adaptive behavior, and platform-specific routing and TUN support.
+- `crates/espejismo-server/src/main.rs` builds `espejismo-remote`; its sibling
+  modules handle peers, mux adaptation, relay and limits, fallback, tarpit, and
+  upstream SOCKS/HTTP proxy chains. `src/bin/bench_http.rs` is a separate HTTP
+  benchmark executable, not part of the remote service path.
+- `crates/tokio-yamux/` is the workspace's Yamux library crate. It owns the
+  Yamux session, stream, frame, control, and configuration implementation used
+  by the production mux mode; it is separate from the native mux in core.
+
+This is a directory-level map, not a stable public module API. The crate source
+trees are authoritative when implementation files are added or reorganized.
 
 ## Adaptive Padding
 
@@ -239,8 +416,10 @@ retain unbounded connections.
 
 When `reject_delay_ms = 0`, invalid sockets are moved into a global bounded
 silent tarpit pool. The pool has a hard capacity and time-to-live with oldest
-entry eviction, so file descriptor and memory usage remain bounded. The tarpit
-does not send drip bytes to unknown peers.
+entry eviction, so file descriptor and memory usage remain bounded. Expiry is
+swept at the configured hold interval (capped at five seconds, with a one
+millisecond minimum), so short holds do not inherit a fixed five-second delay.
+The tarpit does not send drip bytes to unknown peers.
 
 If HTTP fallback is enabled, HTTP-looking probes can be forwarded to a configured
 upstream. Without an upstream, the built-in fallback returns a small HTTP 200

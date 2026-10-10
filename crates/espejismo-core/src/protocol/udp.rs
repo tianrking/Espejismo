@@ -7,6 +7,8 @@ const MAGIC: &[u8; 4] = b"ESPU";
 const VERSION: u8 = 1;
 const HEADER_LEN: usize = 4 + 1 + 1 + 8 + 4 + 4 + 2;
 const MAX_PAYLOAD: usize = 65_507 - HEADER_LEN;
+// Keep a lost datagram from being retransmitted at the base interval forever.
+const MAX_RETRANSMIT_DELAY: Duration = Duration::from_secs(16);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
@@ -109,6 +111,7 @@ pub struct DeliveredDatagram {
 struct PendingPacket {
     packet: UdpPacket,
     last_sent: Instant,
+    retry_after: Duration,
 }
 
 #[derive(Debug)]
@@ -198,6 +201,7 @@ impl UdpReliability {
             PendingPacket {
                 packet: packet.clone(),
                 last_sent: now,
+                retry_after: self.retransmit_after.min(MAX_RETRANSMIT_DELAY),
             },
         );
         Ok(packet)
@@ -237,8 +241,12 @@ impl UdpReliability {
     pub fn due_retransmissions(&mut self, now: Instant) -> Vec<UdpPacket> {
         let mut due = Vec::new();
         for pending in self.pending.values_mut() {
-            if now.duration_since(pending.last_sent) >= self.retransmit_after {
+            if now.duration_since(pending.last_sent) >= pending.retry_after {
                 pending.last_sent = now;
+                pending.retry_after = pending
+                    .retry_after
+                    .saturating_mul(2)
+                    .min(MAX_RETRANSMIT_DELAY);
                 due.push(pending.packet.clone());
             }
         }
@@ -286,6 +294,34 @@ mod tests {
             .due_retransmissions(start + Duration::from_secs(1))
             .is_empty());
         assert_eq!(tx.pending_len(), 0);
+    }
+
+    #[test]
+    fn retransmission_interval_backs_off_and_saturates() {
+        let start = Instant::now();
+        let base = Duration::from_millis(100);
+        let mut tx = UdpReliability::new(7, base);
+        let packet = tx.next_data(b"lost".to_vec(), start).unwrap();
+
+        let deadlines = [100, 300, 700, 1_500, 3_100, 6_300, 12_700, 25_500];
+        let mut previous = start;
+        for deadline_ms in deadlines {
+            let deadline = start + Duration::from_millis(deadline_ms);
+            assert!(
+                tx.due_retransmissions(deadline - Duration::from_nanos(1))
+                    .is_empty()
+            );
+            assert_eq!(tx.due_retransmissions(deadline), vec![packet.clone()]);
+            previous = deadline;
+        }
+        assert!(
+            tx.due_retransmissions(previous + Duration::from_secs(16) - Duration::from_nanos(1))
+                .is_empty()
+        );
+        assert_eq!(
+            tx.due_retransmissions(previous + Duration::from_secs(16)),
+            vec![packet]
+        );
     }
 
     #[test]

@@ -2,10 +2,19 @@ use anyhow::{ensure, Result};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Serialize, Deserialize)]
 pub struct ProxyAuth {
     pub username: String,
     pub password: String,
+}
+
+impl std::fmt::Debug for ProxyAuth {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ProxyAuth")
+            .field("username", &"<redacted>")
+            .field("password", &"<redacted>")
+            .finish()
+    }
 }
 
 impl ProxyAuth {
@@ -17,6 +26,10 @@ impl ProxyAuth {
         ensure!(
             self.username.len() <= u8::MAX as usize,
             "local.auth.username must be at most 255 bytes"
+        );
+        ensure!(
+            !self.password.is_empty(),
+            "local.auth.password must not be empty"
         );
         ensure!(
             self.password.len() <= u8::MAX as usize,
@@ -32,5 +45,68 @@ impl ProxyAuth {
             return false;
         }
         bool::from(username.ct_eq(expected_user) & password.ct_eq(expected_pass))
+    }
+}
+
+#[cfg(test)]
+mod debug_tests {
+    use super::ProxyAuth;
+
+    fn auth() -> ProxyAuth {
+        ProxyAuth {
+            username: "user".into(),
+            password: "pass".into(),
+        }
+    }
+
+    #[test]
+    fn debug_output_redacts_local_proxy_credentials() {
+        let output = format!("{:?}", ProxyAuth {
+            username: "private-user".into(),
+            password: "private-password".into(),
+        });
+        assert!(output.contains("<redacted>"));
+        assert!(!output.contains("private-user"));
+        assert!(!output.contains("private-password"));
+    }
+
+    #[test]
+    fn matches_only_exact_credentials_at_length_and_byte_boundaries() {
+        let auth = auth();
+
+        assert!(auth.matches(b"user", b"pass"));
+        assert!(!auth.matches(b"User", b"pass"));
+        assert!(!auth.matches(b"user", b"pAss"));
+        assert!(!auth.matches(b"user\0", b"pass"));
+        assert!(!auth.matches(b"user", b"pass\0"));
+        assert!(!auth.matches(b"use", b"pass"));
+        assert!(!auth.matches(b"user", b"pas"));
+        assert!(!auth.matches(b"", b""));
+    }
+
+    #[test]
+    fn matches_empty_configured_password_without_accepting_other_lengths() {
+        let auth = ProxyAuth {
+            username: "user".into(),
+            password: String::new(),
+        };
+
+        assert!(auth.matches(b"user", b""));
+        assert!(!auth.matches(b"user", b"x"));
+        assert!(!auth.matches(b"user", b"\0"));
+    }
+
+    #[test]
+    fn validation_enforces_rfc1929_nonempty_credential_fields() {
+        let mut auth = auth();
+        assert!(auth.validate().is_ok());
+
+        auth.password.clear();
+        let error = auth.validate().unwrap_err().to_string();
+        assert!(error.contains("local.auth.password must not be empty"));
+
+        auth.password = "pass".into();
+        auth.username.clear();
+        assert!(auth.validate().is_err());
     }
 }

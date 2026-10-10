@@ -5,7 +5,10 @@ use tokio::time::{timeout, Duration};
 
 use super::ProxyAuth;
 
+// Bound slow local proxy clients while allowing ordinary headers to arrive incrementally.
 const HTTP_PROXY_HEADER_TIMEOUT: Duration = Duration::from_secs(15);
+// Match the hard cap to the bytes accepted, including the terminating CRLF pair.
+const HTTP_PROXY_MAX_HEADER_SIZE: usize = 32 * 1024;
 
 #[derive(Clone, Debug)]
 pub struct HttpTarget {
@@ -34,12 +37,17 @@ where
     let mut header = Vec::with_capacity(2048);
     let mut read_buf = [0_u8; 2048];
     loop {
-        if header.len() >= 32 * 1024 {
+        let remaining = HTTP_PROXY_MAX_HEADER_SIZE.saturating_sub(header.len());
+        if remaining == 0 {
             bail!("HTTP proxy header too large");
         }
-        let n = timeout(HTTP_PROXY_HEADER_TIMEOUT, stream.read(&mut read_buf))
-            .await
-            .context("HTTP proxy header read timeout")??;
+        let read_len = remaining.min(read_buf.len());
+        let n = timeout(
+            HTTP_PROXY_HEADER_TIMEOUT,
+            stream.read(&mut read_buf[..read_len]),
+        )
+        .await
+        .context("HTTP proxy header read timeout")??;
         if n == 0 {
             bail!("HTTP proxy connection closed before headers complete");
         }
@@ -104,12 +112,17 @@ where
         });
     }
 
+    validate_transfer_encoding(&header_lines)?;
     let content_length = parse_content_length(&header_lines);
     let (authority, path) = parse_absolute_http_target(target)?;
     let rewritten = rewrite_absolute_request(method, &path, version, &header_lines);
     let mut prebuffer = rewritten.into_bytes();
     let mut prebuffer_body_bytes = 0;
     if let Some(extra) = overflow {
+        // Keep already-read body bytes opaque: chunk framing and HTTP trailers
+        // are forwarded downstream as part of the original request body. The
+        // upstream HTTP server owns chunk syntax validation; validating only
+        // this prebuffer would reject valid chunked bodies split across reads.
         prebuffer_body_bytes = extra.len();
         prebuffer.extend_from_slice(&extra);
     }
@@ -131,6 +144,35 @@ fn parse_content_length(lines: &[&str]) -> Option<u64> {
             .then(|| value.trim().parse::<u64>().ok())
             .flatten()
     })
+}
+
+// This proxy forwards request bodies without decoding them. Accept only the
+// framing it can safely account for, and reject ambiguous framing before the
+// request is sent to an upstream server.
+fn validate_transfer_encoding(lines: &[&str]) -> Result<()> {
+    let mut encodings = Vec::new();
+    let mut has_content_length = false;
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.eq_ignore_ascii_case("content-length") {
+            has_content_length = true;
+        }
+        if name.eq_ignore_ascii_case("transfer-encoding") {
+            encodings.extend(value.split(',').map(str::trim));
+        }
+    }
+    if encodings.is_empty() {
+        return Ok(());
+    }
+    if has_content_length {
+        bail!("HTTP request has both Transfer-Encoding and Content-Length");
+    }
+    if encodings.len() != 1 || !encodings[0].eq_ignore_ascii_case("chunked") {
+        bail!("HTTP proxy only supports a single chunked Transfer-Encoding");
+    }
+    Ok(())
 }
 
 fn parse_absolute_http_target(target: &str) -> Result<(String, String)> {
@@ -190,6 +232,10 @@ fn rewrite_absolute_request(method: &str, path: &str, version: &str, lines: &[&s
         {
             continue;
         }
+        // Forwarding metadata such as Via remains opaque client input. This
+        // proxy neither parses its chain nor synthesizes or normalizes entries.
+        // Keep Expect: 100-continue intact. The upstream server owns the
+        // interim response; the bidirectional proxy path relays it to the client.
         rewritten.push_str(line);
         rewritten.push_str("\r\n");
     }
@@ -207,7 +253,10 @@ fn find_header_end(data: &[u8], search_from: usize) -> Option<usize> {
 
 #[cfg(test)]
 mod tests {
-    use super::{accept_http_proxy, parse_content_length};
+    use super::{
+        accept_http_proxy, parse_content_length, validate_transfer_encoding,
+        HTTP_PROXY_MAX_HEADER_SIZE,
+    };
     use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
 
     #[test]
@@ -220,6 +269,21 @@ mod tests {
     fn ignores_invalid_content_length() {
         let lines = ["Content-Length: nope"];
         assert_eq!(parse_content_length(&lines), None);
+    }
+
+    #[test]
+    fn accepts_only_one_chunked_transfer_encoding() {
+        assert!(validate_transfer_encoding(&["Transfer-Encoding: ChUnKeD"]).is_ok());
+        for headers in [
+            vec!["Transfer-Encoding: gzip, chunked"],
+            vec!["Transfer-Encoding: chunked", "Transfer-Encoding: chunked"],
+            vec!["Transfer-Encoding: gzip"],
+            vec!["Transfer-Encoding:"],
+            vec!["Transfer-Encoding: chunked", "Content-Length: 0"],
+        ] {
+            assert!(validate_transfer_encoding(&headers).is_err(), "{headers:?}");
+        }
+        assert!(validate_transfer_encoding(&["Content-Length: 0"]).is_ok());
     }
 
     #[tokio::test]
@@ -243,6 +307,172 @@ mod tests {
             .prebuffer
             .starts_with(b"GET /files/256m.bin?mirror=hk HTTP/1.1\r\nHost: example.test\r\n"));
         writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn forwarded_headers_preserve_chains_duplicates_and_case() {
+        let (mut client, mut proxy) = duplex(4096);
+        let writer = tokio::spawn(async move {
+            client
+                .write_all(
+                    b"GET http://example.test/ HTTP/1.1\r\n\
+                      x-forwarded-for: 192.0.2.1, 198.51.100.2\r\n\
+                      X-Forwarded-For: 203.0.113.4\r\n\
+                      X-Forwarded-Proto:\tHTTPS \r\n\
+                      X-Forwarded-Host: edge.example.test:8443\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let target = accept_http_proxy(&mut proxy).await.unwrap();
+        let headers = std::str::from_utf8(&target.prebuffer).unwrap();
+        assert!(headers.contains("x-forwarded-for: 192.0.2.1, 198.51.100.2\r\n"));
+        assert!(headers.contains("X-Forwarded-For: 203.0.113.4\r\n"));
+        assert!(headers.contains("X-Forwarded-Proto:\tHTTPS \r\n"));
+        assert!(headers.contains("X-Forwarded-Host: edge.example.test:8443\r\n"));
+        assert_eq!(
+            headers
+                .lines()
+                .filter(|line| line.to_ascii_lowercase().starts_with("x-forwarded-for:"))
+                .count(),
+            2
+        );
+        writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn via_header_is_opaque_at_the_header_size_boundary() {
+        let (mut client, mut proxy) = duplex(HTTP_PROXY_MAX_HEADER_SIZE + 64);
+        let prefix = b"GET http://example.test/ HTTP/1.1\r\nVia: 1.1 edge, 2.0 [2001:db8::1]:8080\r\nX-Note: ";
+        let suffix = b"\r\n\r\n";
+        let padding_len = HTTP_PROXY_MAX_HEADER_SIZE - prefix.len() - suffix.len();
+        let mut request = Vec::with_capacity(HTTP_PROXY_MAX_HEADER_SIZE + 8);
+        request.extend_from_slice(prefix);
+        request.resize(request.len() + padding_len, b'a');
+        request.extend_from_slice(suffix);
+        request.extend_from_slice(b"body");
+        let writer = tokio::spawn(async move {
+            client.write_all(&request).await.unwrap();
+        });
+
+        let target = accept_http_proxy(&mut proxy).await.unwrap();
+        assert_eq!(target.prebuffer_body_bytes, 0);
+        assert!(target
+            .prebuffer
+            .windows(b"Via: 1.1 edge, 2.0 [2001:db8::1]:8080\r\n".len())
+            .any(|window| window == b"Via: 1.1 edge, 2.0 [2001:db8::1]:8080\r\n"));
+        assert!(target.prebuffer.ends_with(b"\r\n\r\n"));
+        let mut body = [0; 4];
+        proxy.read_exact(&mut body).await.unwrap();
+        assert_eq!(&body, b"body");
+        writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn via_header_over_limit_is_rejected() {
+        let (mut client, mut proxy) = duplex(HTTP_PROXY_MAX_HEADER_SIZE + 64);
+        let prefix = b"GET http://example.test/ HTTP/1.1\r\nVia: ";
+        let mut request = Vec::with_capacity(HTTP_PROXY_MAX_HEADER_SIZE + 1);
+        request.extend_from_slice(prefix);
+        request.resize(HTTP_PROXY_MAX_HEADER_SIZE - 3, b'a');
+        request.extend_from_slice(b"\r\n\r\n");
+        let writer = tokio::spawn(async move {
+            client.write_all(&request).await.unwrap();
+        });
+
+        assert!(accept_http_proxy(&mut proxy).await.is_err());
+        writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn chunked_request_preserves_declared_and_received_trailers() {
+        let (mut client, mut proxy) = duplex(4096);
+        let writer = tokio::spawn(async move {
+            client
+                .write_all(
+                    b"POST http://example.test/upload HTTP/1.1\r\n\
+                      Host: example.test\r\n\
+                      Transfer-Encoding: chunked\r\n\
+                      Trailer: Digest, X-Request-Id\r\n\r\n\
+                      3\r\nabc\r\n0\r\nDigest: sha-256=abc\r\nX-Request-Id: 7\r\n\r\n",
+                )
+                .await
+                .unwrap();
+        });
+
+        let target = accept_http_proxy(&mut proxy).await.unwrap();
+        assert_eq!(target.authority, "example.test:80");
+        assert_eq!(target.content_length, None);
+        let body_start = target
+            .prebuffer
+            .windows(4)
+            .position(|window| window == b"\r\n\r\n")
+            .unwrap()
+            + 4;
+        assert_eq!(
+            target.prebuffer_body_bytes,
+            target.prebuffer.len() - body_start
+        );
+        assert!(target
+            .prebuffer
+            .windows(b"Trailer: Digest, X-Request-Id\r\n".len())
+            .any(|window| window == b"Trailer: Digest, X-Request-Id\r\n"));
+        assert!(target
+            .prebuffer
+            .ends_with(b"3\r\nabc\r\n0\r\nDigest: sha-256=abc\r\nX-Request-Id: 7\r\n\r\n"));
+        writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn chunked_edge_cases_remain_opaque_for_upstream_validation() {
+        // The proxy does not decode request bodies. Keep these wire forms
+        // intact so the upstream HTTP parser, which sees the complete stream,
+        // validates overflow, termination, extensions, and trailer syntax.
+        let bodies: &[&[u8]] = &[
+            b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\r\n", // size overflows u64
+            b"3\r\nabc\r\n",                         // missing zero chunk
+            b"3;name=value\r\nabc\r\n0\r\n\r\n",     // chunk extension
+            b"0\r\nBad Trailer\r\n\r\n",             // illegal trailer field
+        ];
+
+        for body in bodies {
+            let (mut client, mut proxy) = duplex(4096);
+            let mut request = b"POST http://example.test/upload HTTP/1.1\r\n\
+                               Transfer-Encoding: chunked\r\n\r\n"
+                .to_vec();
+            request.extend_from_slice(body);
+            let writer = tokio::spawn(async move {
+                client.write_all(&request).await.unwrap();
+            });
+
+            let target = accept_http_proxy(&mut proxy).await.unwrap();
+            let body_start = target
+                .prebuffer
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .unwrap()
+                + 4;
+            assert_eq!(&target.prebuffer[body_start..], *body);
+            assert_eq!(target.prebuffer_body_bytes, body.len());
+            writer.await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn rejects_conflicting_transfer_encoding_and_content_length() {
+        let (mut client, mut proxy) = duplex(4096);
+        client
+            .write_all(
+                b"POST http://example.test/upload HTTP/1.1\r\n\
+                  Transfer-Encoding: chunked\r\n\
+                  Content-Length: 3\r\n\r\n\
+                  3\r\nabc\r\n0\r\n\r\n",
+            )
+            .await
+            .unwrap();
+
+        assert!(accept_http_proxy(&mut proxy).await.is_err());
     }
 
     #[tokio::test]

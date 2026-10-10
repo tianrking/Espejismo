@@ -4,6 +4,13 @@ This quickstart uses release packages and one TOML config file. The installer
 downloads and extracts binaries only; it does not create services or edit system
 network settings.
 
+For common questions about ports, connectivity, UDP, and protocol behavior, see
+the [FAQ](FAQ.md).
+For router port forwarding, CGNAT, and testing a NAT-hosted server, see
+[NAT deployment](NAT.md).
+For Windows-specific installation, firewall, and TUN notes, see
+[Windows deployment](WINDOWS.md).
+
 ## Download
 
 Linux/macOS, or Windows Git Bash:
@@ -40,7 +47,13 @@ Edit the extracted example:
 cp ~/.espejismo/configs/espejismo.toml ./espejismo.toml
 ```
 
-Set at least:
+In the copied file, set the same long random secret in both
+`[shared].psk` and `[[remote.users]].psk`. The example config already defines a
+`default` remote user; changing only `[shared].psk` leaves the server expecting
+the old user PSK, so the client handshake will fail. Keep the two values
+identical on the server and client. Also set `[local].server` on the client to
+the server's public IP or hostname and port. The server listens on
+`[remote].listen`:
 
 ```toml
 [shared]
@@ -53,7 +66,17 @@ http_listen = "127.0.0.1:6681"
 
 [remote]
 listen = "0.0.0.0:6690"
+
+[[remote.users]]
+name = "default"
+psk = "same-long-random-secret-as-shared-psk"
 ```
+
+The block above shows the relevant server authentication fields; retain the
+other sections from the example config. On the client, configure `local.server`
+as `"YOUR_SERVER_IP_OR_DOMAIN:6690"`. For a smaller config without per-user
+authentication, remove the `[[remote.users]]` table on the server; then the
+remote authenticates directly with `[shared].psk`.
 
 Recommended remote egress guard:
 

@@ -2,10 +2,29 @@ use std::io;
 use std::time::Duration;
 
 use futures::StreamExt;
-use tokio::io::{duplex, AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 
-use super::{client_session, server_session, NativeMuxConfig};
+use super::{NativeMuxConfig, client_session, server_session};
 use crate::protocol::request::StreamPriority;
+
+#[test]
+fn native_stream_id_allocator_uses_last_ids_before_exhaustion() {
+    let mut next_odd = u64::from(u32::MAX - 2);
+    assert_eq!(super::allocate_stream_id(&mut next_odd), Some(u32::MAX - 2));
+    assert_eq!(super::allocate_stream_id(&mut next_odd), Some(u32::MAX));
+    assert_eq!(super::allocate_stream_id(&mut next_odd), None);
+
+    let mut next_even = u64::from(u32::MAX - 3);
+    assert_eq!(
+        super::allocate_stream_id(&mut next_even),
+        Some(u32::MAX - 3)
+    );
+    assert_eq!(
+        super::allocate_stream_id(&mut next_even),
+        Some(u32::MAX - 1)
+    );
+    assert_eq!(super::allocate_stream_id(&mut next_even), None);
+}
 
 #[test]
 fn native_frame_parser_rejects_unknown_types_and_large_payloads() {
@@ -13,6 +32,36 @@ fn native_frame_parser_rejects_unknown_types_and_large_payloads() {
     let mut frame = vec![super::FRAME_DATA, 0, 0, 0, 1];
     frame.extend_from_slice(&((super::MAX_PAYLOAD as u32) + 1).to_be_bytes());
     assert!(super::validate_frame_bytes_for_fuzz(&frame).is_err());
+}
+
+#[tokio::test]
+async fn native_frame_reader_handles_empty_truncated_and_oversized_input() {
+    use tokio::io::AsyncWriteExt;
+
+    let (writer, mut reader) = tokio::io::duplex(64);
+    drop(writer);
+    assert!(
+        super::frame::read_frame(&mut reader)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    for length in 1..9 {
+        let (mut writer, mut reader) = tokio::io::duplex(64);
+        writer.write_all(&vec![0; length]).await.unwrap();
+        drop(writer);
+        assert!(super::frame::read_frame(&mut reader).await.is_err());
+    }
+
+    let (mut writer, mut reader) = tokio::io::duplex(64);
+    writer
+        .write_all(&[super::FRAME_DATA, 0, 0, 0, 1])
+        .await
+        .unwrap();
+    writer.write_all(&((u32::MAX).to_be_bytes())).await.unwrap();
+    drop(writer);
+    assert!(super::frame::read_frame(&mut reader).await.is_err());
 }
 
 #[test]
@@ -26,14 +75,199 @@ fn native_pending_frames_enforce_limit() {
             queued_stream: None,
         })
         .unwrap();
-    assert!(pending
-        .push_control(super::pending::PendingFrame {
+    assert!(
+        pending
+            .push_control(super::pending::PendingFrame {
+                kind: super::FRAME_PING,
+                stream_id: 0,
+                payload: vec![1; 8],
+                queued_stream: None,
+            })
+            .is_err()
+    );
+}
+
+#[test]
+fn native_pending_frames_report_watermarks_and_congestion_recovery() {
+    use super::pending::{PendingFrame, PendingFrames};
+
+    let mut pending = PendingFrames::new(4);
+    let frame = |stream_id| PendingFrame {
+        kind: super::FRAME_DATA,
+        stream_id,
+        payload: vec![],
+        queued_stream: Some(stream_id),
+    };
+
+    assert_eq!(pending.occupancy_percent(), 0);
+    assert!(!pending.is_congested());
+    for stream_id in 0..2 {
+        pending
+            .push_data(StreamPriority::Bulk, frame(stream_id))
+            .unwrap();
+    }
+    assert_eq!(pending.occupancy_percent(), 50);
+    assert!(!pending.is_congested());
+
+    pending.push_data(StreamPriority::Bulk, frame(2)).unwrap();
+    assert_eq!(pending.occupancy_percent(), 75);
+    assert!(pending.is_congested());
+    pending.push_data(StreamPriority::Bulk, frame(3)).unwrap();
+    assert_eq!(pending.occupancy_percent(), 100);
+    assert!(pending.is_congested());
+    let congestion = pending
+        .push_data(StreamPriority::Bulk, frame(4))
+        .unwrap_err()
+        .to_string();
+    assert!(congestion.contains("congested"));
+
+    pending.pop_next().unwrap();
+    assert_eq!(pending.occupancy_percent(), 75);
+    assert!(pending.is_congested());
+    pending.pop_next().unwrap();
+    assert_eq!(pending.occupancy_percent(), 50);
+    assert!(!pending.is_congested());
+}
+
+#[test]
+fn native_pending_frames_bound_bulk_starvation_under_interactive_load() {
+    use super::pending::{PendingFrame, PendingFrames};
+
+    let mut pending = PendingFrames::new(32);
+    for id in 0..10 {
+        pending
+            .push_data(
+                StreamPriority::Interactive,
+                PendingFrame {
+                    kind: super::FRAME_DATA,
+                    stream_id: id,
+                    payload: vec![],
+                    queued_stream: Some(id),
+                },
+            )
+            .unwrap();
+    }
+    pending
+        .push_data(
+            StreamPriority::Bulk,
+            PendingFrame {
+                kind: super::FRAME_DATA,
+                stream_id: 99,
+                payload: vec![],
+                queued_stream: Some(99),
+            },
+        )
+        .unwrap();
+
+    let sent: Vec<_> = (0..9)
+        .map(|_| pending.pop_next().unwrap().stream_id)
+        .collect();
+    assert_eq!(sent, vec![0, 1, 2, 3, 4, 5, 6, 7, 99]);
+}
+
+#[test]
+fn native_pending_frames_preserve_priority_when_bulk_is_not_backlogged() {
+    use super::pending::{PendingFrame, PendingFrames};
+
+    let mut pending = PendingFrames::new(4);
+    for id in [1, 2] {
+        pending
+            .push_data(
+                StreamPriority::Bulk,
+                PendingFrame {
+                    kind: super::FRAME_DATA,
+                    stream_id: id,
+                    payload: vec![],
+                    queued_stream: Some(id),
+                },
+            )
+            .unwrap();
+    }
+    pending
+        .push_data(
+            StreamPriority::Interactive,
+            PendingFrame {
+                kind: super::FRAME_DATA,
+                stream_id: 3,
+                payload: vec![],
+                queued_stream: Some(3),
+            },
+        )
+        .unwrap();
+
+    assert_eq!(pending.pop_next().unwrap().stream_id, 3);
+    assert_eq!(pending.pop_next().unwrap().stream_id, 1);
+}
+
+#[test]
+fn native_pending_frames_apply_burst_limit_at_exact_boundary() {
+    use super::pending::{PendingFrame, PendingFrames};
+
+    let mut pending = PendingFrames::new(16);
+    let frame = |stream_id| PendingFrame {
+        kind: super::FRAME_DATA,
+        stream_id,
+        payload: vec![],
+        queued_stream: Some(stream_id),
+    };
+
+    // The burst counter only advances while both classes are backlogged.
+    for id in 0..8 {
+        pending
+            .push_data(StreamPriority::Interactive, frame(id))
+            .unwrap();
+        assert_eq!(pending.pop_next().unwrap().stream_id, id);
+    }
+    pending.push_data(StreamPriority::Bulk, frame(90)).unwrap();
+    pending
+        .push_data(StreamPriority::Interactive, frame(8))
+        .unwrap();
+    assert_eq!(pending.pop_next().unwrap().stream_id, 8);
+    assert_eq!(pending.pop_next().unwrap().stream_id, 90);
+}
+
+#[test]
+fn native_pending_frames_control_and_empty_queues_do_not_corrupt_burst_state() {
+    use super::pending::{PendingFrame, PendingFrames};
+
+    let mut pending = PendingFrames::new(16);
+    let data = |stream_id| PendingFrame {
+        kind: super::FRAME_DATA,
+        stream_id,
+        payload: vec![],
+        queued_stream: Some(stream_id),
+    };
+    for id in 0..8 {
+        pending
+            .push_data(StreamPriority::Interactive, data(id))
+            .unwrap();
+    }
+    pending.push_data(StreamPriority::Bulk, data(120)).unwrap();
+    for id in 0..8 {
+        assert_eq!(pending.pop_next().unwrap().stream_id, id);
+    }
+    pending
+        .push_control(PendingFrame {
             kind: super::FRAME_PING,
             stream_id: 0,
-            payload: vec![1; 8],
+            payload: vec![],
             queued_stream: None,
         })
-        .is_err());
+        .unwrap();
+    assert_eq!(pending.pop_next().unwrap().kind, super::FRAME_PING);
+    assert_eq!(pending.pop_next().unwrap().stream_id, 120);
+
+    // After draining both classes, a new contention period starts fresh.
+    for id in 30..40 {
+        pending
+            .push_data(StreamPriority::Interactive, data(id))
+            .unwrap();
+    }
+    pending.push_data(StreamPriority::Bulk, data(130)).unwrap();
+    for id in 30..38 {
+        assert_eq!(pending.pop_next().unwrap().stream_id, id);
+    }
+    assert_eq!(pending.pop_next().unwrap().stream_id, 130);
 }
 
 #[tokio::test]
@@ -61,6 +295,43 @@ async fn native_mux_opens_stream_and_roundtrips_data() {
     let mut response = [0_u8; 4];
     client_stream.read_exact(&mut response).await.unwrap();
     assert_eq!(&response, b"pong");
+}
+
+#[tokio::test]
+async fn native_mux_session_end_reclaims_unclosed_stream_state() {
+    let (client_io, server_io) = duplex(64 * 1024);
+    let (mut client_control, mut client_session) =
+        client_session(client_io, NativeMuxConfig::default());
+    let (_server_control, mut server_session) =
+        server_session(server_io, NativeMuxConfig::default());
+
+    let client_session_task =
+        tokio::spawn(async move { while client_session.next().await.is_some() {} });
+    let mut client_stream = client_control
+        .open_stream(StreamPriority::Interactive)
+        .await
+        .unwrap();
+    let mut server_stream = server_session.next().await.unwrap().unwrap();
+
+    // Neither endpoint sends FIN/RST. Losing the carrier must still end the
+    // session and wake handles retained by the caller.
+    drop(server_session);
+    tokio::time::timeout(Duration::from_secs(1), client_session_task)
+        .await
+        .expect("session task should exit after its peer disappears")
+        .unwrap();
+
+    let mut byte = [0; 1];
+    assert_eq!(client_stream.read(&mut byte).await.unwrap(), 0);
+    assert_eq!(server_stream.read(&mut byte).await.unwrap(), 0);
+    assert_eq!(
+        client_stream.write(b"x").await.unwrap_err().kind(),
+        io::ErrorKind::BrokenPipe
+    );
+    assert_eq!(
+        server_stream.write(b"x").await.unwrap_err().kind(),
+        io::ErrorKind::BrokenPipe
+    );
 }
 
 #[tokio::test]
@@ -114,6 +385,35 @@ async fn native_mux_bulk_transfer_preserves_integrity() {
 }
 
 #[tokio::test]
+async fn native_mux_reassembles_write_crossing_multiple_max_frame_boundaries() {
+    let (client_io, server_io) = duplex(64 * 1024);
+    let (mut client_control, mut client_session) =
+        client_session(client_io, NativeMuxConfig::default());
+    let (_server_control, mut server_session) =
+        server_session(server_io, NativeMuxConfig::default());
+
+    tokio::spawn(async move { while client_session.next().await.is_some() {} });
+    let mut client_stream = client_control
+        .open_stream(StreamPriority::Interactive)
+        .await
+        .unwrap();
+    let mut server_stream = server_session.next().await.unwrap().unwrap();
+
+    let total = 2 * super::MAX_PAYLOAD + 137;
+    let expected: Vec<u8> = (0..total).map(|offset| (offset % 251) as u8).collect();
+    let expected_for_writer = expected.clone();
+    let writer = tokio::spawn(async move {
+        server_stream.write_all(&expected_for_writer).await.unwrap();
+        server_stream.shutdown().await.unwrap();
+    });
+
+    let mut received = vec![0; total];
+    client_stream.read_exact(&mut received).await.unwrap();
+    writer.await.unwrap();
+    assert_eq!(received, expected);
+}
+
+#[tokio::test]
 async fn native_mux_ping_reports_rtt() {
     let (client_io, server_io) = duplex(64 * 1024);
     let (client_control, mut client_session) =
@@ -145,12 +445,61 @@ async fn native_mux_enforces_max_streams() {
         .await
         .unwrap();
     let first_server_stream = server_session.next().await.unwrap().unwrap();
-    assert!(client_control
-        .open_stream(StreamPriority::Interactive)
-        .await
-        .is_err());
+    assert!(
+        client_control
+            .open_stream(StreamPriority::Interactive)
+            .await
+            .is_err()
+    );
     drop(first_stream);
     drop(first_server_stream);
+}
+
+#[tokio::test]
+async fn native_mux_bounds_aggregate_unread_data_across_many_streams() {
+    const STREAMS: usize = 32;
+    const WINDOW: usize = 8;
+    let (client_io, server_io) = duplex(64 * 1024);
+    let config = NativeMuxConfig {
+        max_streams: STREAMS,
+        initial_window_bytes: WINDOW,
+        stream_buffer_frames: 2,
+        ..NativeMuxConfig::default()
+    };
+    let (mut client_control, mut client_session) = client_session(client_io, config);
+    let (_server_control, mut server_session) = server_session(server_io, config);
+    tokio::spawn(async move { while client_session.next().await.is_some() {} });
+
+    let mut client_streams = Vec::with_capacity(STREAMS);
+    let mut server_streams = Vec::with_capacity(STREAMS);
+    for _ in 0..STREAMS {
+        client_streams.push(
+            client_control
+                .open_stream(StreamPriority::Bulk)
+                .await
+                .unwrap(),
+        );
+        server_streams.push(server_session.next().await.unwrap().unwrap());
+    }
+
+    // Every stream can fill its byte window, but an unread peer cannot grow
+    // aggregate in-flight payload beyond max_streams * initial_window_bytes.
+    for stream in &mut client_streams {
+        assert_eq!(stream.write(&[0; WINDOW]).await.unwrap(), WINDOW);
+    }
+    for stream in &mut client_streams {
+        assert!(
+            tokio::time::timeout(Duration::from_millis(25), stream.write(b"x"))
+                .await
+                .is_err()
+        );
+    }
+
+    for stream in &mut server_streams {
+        let mut data = [0; WINDOW];
+        stream.read_exact(&mut data).await.unwrap();
+        assert_eq!(data, [0; WINDOW]);
+    }
 }
 
 #[tokio::test]
@@ -291,21 +640,49 @@ async fn native_mux_goaway_drains_existing_streams() {
 
     tokio::spawn(async move { while client_session.next().await.is_some() {} });
 
-    let mut client_stream = client_control
+    let client_stream = client_control
         .open_stream(StreamPriority::Interactive)
         .await
         .unwrap();
-    let mut server_stream = server_session.next().await.unwrap().unwrap();
+    let server_stream = server_session.next().await.unwrap().unwrap();
     server_control.goaway().unwrap();
 
-    client_stream.write_all(b"after-goaway").await.unwrap();
-    let mut received = vec![0_u8; 12];
-    server_stream.read_exact(&mut received).await.unwrap();
-    assert_eq!(&received, b"after-goaway");
-    assert!(client_control
-        .open_stream(StreamPriority::Interactive)
-        .await
-        .is_err());
+    // Keep the stream alive across GOAWAY and exercise both directions with
+    // enough data to span many mux frames. FIN must follow all queued data.
+    let client_payload: Vec<u8> = (0..256 * 1024).map(|n| (n % 251) as u8).collect();
+    let server_payload: Vec<u8> = (0..192 * 1024).map(|n| (n % 239) as u8).collect();
+    let (mut client_read, mut client_write) = tokio::io::split(client_stream);
+    let (mut server_read, mut server_write) = tokio::io::split(server_stream);
+    tokio::join!(
+        async {
+            client_write.write_all(&client_payload).await.unwrap();
+            client_write.shutdown().await.unwrap();
+        },
+        async {
+            let mut received = vec![0; client_payload.len()];
+            server_read.read_exact(&mut received).await.unwrap();
+            assert_eq!(received, client_payload);
+            let mut eof = [0];
+            assert_eq!(server_read.read(&mut eof).await.unwrap(), 0);
+        },
+        async {
+            server_write.write_all(&server_payload).await.unwrap();
+            server_write.shutdown().await.unwrap();
+        },
+        async {
+            let mut received = vec![0; server_payload.len()];
+            client_read.read_exact(&mut received).await.unwrap();
+            assert_eq!(received, server_payload);
+            let mut eof = [0];
+            assert_eq!(client_read.read(&mut eof).await.unwrap(), 0);
+        },
+    );
+    assert!(
+        client_control
+            .open_stream(StreamPriority::Interactive)
+            .await
+            .is_err()
+    );
 }
 
 #[tokio::test]
@@ -348,4 +725,221 @@ async fn native_mux_idle_session_exits() {
         .await
         .unwrap();
     assert!(next.is_none());
+}
+
+#[tokio::test]
+async fn native_mux_idle_gc_waits_for_all_concurrent_streams_to_close() {
+    const STREAMS: usize = 8;
+    let (client_io, server_io) = duplex(64 * 1024);
+    let config = NativeMuxConfig {
+        session_idle_timeout: Duration::from_millis(40),
+        drain_timeout: Duration::from_millis(20),
+        ..NativeMuxConfig::default()
+    };
+    let (mut client_control, mut client_session) = client_session(client_io, config);
+    let (_server_control, mut server_session) = server_session(server_io, config);
+
+    let client_session_task =
+        tokio::spawn(async move { while client_session.next().await.is_some() {} });
+    let server_session_task = tokio::spawn(async move {
+        let mut accepted_streams = Vec::with_capacity(STREAMS);
+        while let Some(stream) = server_session.next().await {
+            accepted_streams.push(stream.unwrap());
+        }
+        accepted_streams
+    });
+
+    let mut client_streams = Vec::with_capacity(STREAMS);
+    for _ in 0..STREAMS {
+        client_streams.push(
+            client_control
+                .open_stream(StreamPriority::Interactive)
+                .await
+                .unwrap(),
+        );
+    }
+
+    // Idle time must not reclaim a session while any logical stream remains open.
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(!client_session_task.is_finished());
+    assert!(!server_session_task.is_finished());
+
+    drop(client_streams);
+    tokio::time::timeout(Duration::from_secs(1), async {
+        client_session_task.await.unwrap();
+        drop(server_session_task.await.unwrap());
+    })
+    .await
+    .expect("both sessions should be reclaimed after the final stream closes");
+}
+
+#[tokio::test]
+async fn native_mux_transport_disconnect_wakes_blocked_stream_writer() {
+    let (client_io, server_io) = duplex(64 * 1024);
+    let config = NativeMuxConfig {
+        initial_window_bytes: 4,
+        ..NativeMuxConfig::default()
+    };
+    let (mut client_control, mut client_session) = client_session(client_io, config);
+    let (_server_control, mut server_session) = server_session(server_io, config);
+    let client_session_task =
+        tokio::spawn(async move { while client_session.next().await.is_some() {} });
+
+    let mut client_stream = client_control
+        .open_stream(StreamPriority::Interactive)
+        .await
+        .unwrap();
+    let _server_stream = server_session.next().await.unwrap().unwrap();
+    client_stream.write_all(b"full").await.unwrap();
+
+    let blocked_writer = tokio::spawn(async move { client_stream.write(b"x").await });
+    tokio::task::yield_now().await;
+    drop(server_session);
+
+    let result = tokio::time::timeout(Duration::from_secs(1), blocked_writer)
+        .await
+        .expect("session teardown should wake a writer blocked on flow control")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(result.kind(), io::ErrorKind::BrokenPipe);
+    tokio::time::timeout(Duration::from_secs(1), client_session_task)
+        .await
+        .expect("session task should stop after transport EOF")
+        .unwrap();
+}
+
+#[tokio::test]
+async fn native_mux_replacement_session_does_not_inherit_failed_stream_state() {
+    // A new authenticated physical session is a fresh mux namespace. Existing
+    // streams fail with their original carrier; only newly opened streams use
+    // the replacement session (transparent stream migration is not supported).
+    let (old_client_io, old_server_io) = duplex(64 * 1024);
+    let (mut old_client_control, mut old_client_session) =
+        client_session(old_client_io, NativeMuxConfig::default());
+    let (_old_server_control, mut old_server_session) =
+        server_session(old_server_io, NativeMuxConfig::default());
+    let old_client_task =
+        tokio::spawn(async move { while old_client_session.next().await.is_some() {} });
+
+    let mut old_client_stream = old_client_control
+        .open_stream(StreamPriority::Interactive)
+        .await
+        .unwrap();
+    let _old_server_stream = old_server_session.next().await.unwrap().unwrap();
+    old_client_stream
+        .write_all(b"before-disconnect")
+        .await
+        .unwrap();
+    drop(old_server_session);
+
+    let mut stale_data = [0; 1];
+    let stale_read = tokio::time::timeout(
+        Duration::from_secs(1),
+        old_client_stream.read(&mut stale_data),
+    )
+    .await
+    .expect("old stream should observe carrier loss")
+    .expect("carrier loss should be reported as stream termination");
+    assert_eq!(stale_read, 0, "stale stream must terminate at EOF");
+    tokio::time::timeout(Duration::from_secs(1), old_client_task)
+        .await
+        .expect("old mux session should terminate")
+        .unwrap();
+
+    let (new_client_io, new_server_io) = duplex(64 * 1024);
+    let (mut new_client_control, mut new_client_session) =
+        client_session(new_client_io, NativeMuxConfig::default());
+    let (_new_server_control, mut new_server_session) =
+        server_session(new_server_io, NativeMuxConfig::default());
+    tokio::spawn(async move { while new_client_session.next().await.is_some() {} });
+
+    let mut new_client_stream = new_client_control
+        .open_stream(StreamPriority::Interactive)
+        .await
+        .unwrap();
+    let mut new_server_stream = new_server_session.next().await.unwrap().unwrap();
+    new_client_stream
+        .write_all(b"after-reconnect")
+        .await
+        .unwrap();
+    let mut received = [0; 15];
+    new_server_stream.read_exact(&mut received).await.unwrap();
+    assert_eq!(&received, b"after-reconnect");
+}
+
+#[tokio::test]
+async fn native_mux_goaway_timeout_wakes_blocked_stream_writer() {
+    let (client_io, server_io) = duplex(64 * 1024);
+    let config = NativeMuxConfig {
+        initial_window_bytes: 4,
+        drain_timeout: Duration::from_millis(30),
+        ..NativeMuxConfig::default()
+    };
+    let (mut client_control, mut client_session) = client_session(client_io, config);
+    let (_server_control, mut server_session) = server_session(server_io, config);
+    tokio::spawn(async move { while client_session.next().await.is_some() {} });
+
+    let mut client_stream = client_control
+        .open_stream(StreamPriority::Interactive)
+        .await
+        .unwrap();
+    let _server_stream = server_session.next().await.unwrap().unwrap();
+    client_stream.write_all(b"full").await.unwrap();
+    let blocked_writer = tokio::spawn(async move { client_stream.write(b"x").await });
+    tokio::task::yield_now().await;
+
+    client_control.goaway().unwrap();
+    let result = tokio::time::timeout(Duration::from_secs(1), blocked_writer)
+        .await
+        .expect("drain timeout should close flow state and wake blocked writers")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(result.kind(), io::ErrorKind::BrokenPipe);
+}
+
+#[tokio::test]
+async fn native_mux_goaway_timeout_wakes_concurrent_stream_read_and_write() {
+    let (client_io, server_io) = duplex(64 * 1024);
+    let config = NativeMuxConfig {
+        initial_window_bytes: 4,
+        drain_timeout: Duration::from_millis(30),
+        ..NativeMuxConfig::default()
+    };
+    let (mut client_control, mut client_session) = client_session(client_io, config);
+    let (_server_control, mut server_session) = server_session(server_io, config);
+    tokio::spawn(async move { while client_session.next().await.is_some() {} });
+
+    let client_stream = client_control
+        .open_stream(StreamPriority::Interactive)
+        .await
+        .unwrap();
+    let _server_stream = server_session.next().await.unwrap().unwrap();
+    let (mut reader, mut writer) = tokio::io::split(client_stream);
+    writer.write_all(b"full").await.unwrap();
+
+    // Exercise both stream directions while session teardown reclaims the flow state.
+    let pending_read = tokio::spawn(async move {
+        let mut byte = [0; 1];
+        reader.read(&mut byte).await
+    });
+    let blocked_writer = tokio::spawn(async move { writer.write(b"x").await });
+    tokio::task::yield_now().await;
+
+    client_control.goaway().unwrap();
+    let read_result = tokio::time::timeout(Duration::from_secs(1), pending_read)
+        .await
+        .expect("drain timeout should wake a read pending on an open stream")
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        read_result, 0,
+        "closed stream should report EOF to its reader"
+    );
+
+    let write_result = tokio::time::timeout(Duration::from_secs(1), blocked_writer)
+        .await
+        .expect("drain timeout should wake a writer blocked on flow control")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(write_result.kind(), io::ErrorKind::BrokenPipe);
 }
