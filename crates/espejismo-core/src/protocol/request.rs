@@ -4,6 +4,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub const CMD_TCP_CONNECT: u8 = 1;
 pub const CMD_UDP_DATAGRAM: u8 = 2;
+/// Maximum UDP payload representable by the tunnel's 16-bit length field.
+/// This is a protocol ceiling, not a path-MTU-safe packet size.
+pub const MAX_UDP_PAYLOAD_LEN: usize = u16::MAX as usize;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -76,7 +79,7 @@ pub async fn write_udp_datagram_with_priority<W>(
 where
     W: AsyncWriteExt + Unpin,
 {
-    if payload.len() > u16::MAX as usize {
+    if payload.len() > MAX_UDP_PAYLOAD_LEN {
         bail!("UDP payload too large");
     }
     writer.write_u8(CMD_UDP_DATAGRAM).await?;
@@ -143,7 +146,7 @@ where
 mod tests {
     use super::{
         CMD_TCP_CONNECT, CMD_UDP_DATAGRAM, StreamPriority, TunnelRequest, read_tunnel_request,
-        write_tcp_connect_with_priority, write_udp_datagram_with_priority,
+        MAX_UDP_PAYLOAD_LEN, write_tcp_connect_with_priority, write_udp_datagram_with_priority,
     };
 
     #[test]
@@ -215,7 +218,7 @@ mod tests {
 
     #[tokio::test]
     async fn udp_datagram_rejects_payload_larger_than_wire_length_limit() {
-        let payload = vec![0_u8; u16::MAX as usize + 1];
+        let payload = vec![0_u8; MAX_UDP_PAYLOAD_LEN + 1];
         let mut wire = Vec::new();
 
         assert!(
@@ -232,11 +235,35 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn udp_datagram_accepts_exact_wire_payload_limit() {
+        let payload = vec![0x5a; MAX_UDP_PAYLOAD_LEN];
+        let mut wire = Vec::new();
+
+        write_udp_datagram_with_priority(
+            &mut wire,
+            "example.com:53",
+            StreamPriority::Interactive,
+            &payload,
+        )
+        .await
+        .unwrap();
+
+        let request = read_tunnel_request(&mut &wire[..]).await.unwrap();
+        match request {
+            TunnelRequest::UdpDatagram { payload: actual, .. } => assert_eq!(actual, payload),
+            _ => panic!("expected UDP datagram request"),
+        }
+    }
+
+    #[tokio::test]
     async fn maximum_udp_datagram_survives_fragmented_stream_io() {
         // A small duplex buffer forces the length-prefixed datagram across many
         // underlying reads and writes, as happens when a large request is split
         // into transport frames or TCP segments.
-        let payload: Vec<u8> = (0..=u8::MAX).cycle().take(u16::MAX as usize).collect();
+        let payload: Vec<u8> = (0..=u8::MAX)
+            .cycle()
+            .take(MAX_UDP_PAYLOAD_LEN)
+            .collect();
         let (mut tx, mut rx) = tokio::io::duplex(31);
         let expected = payload.clone();
         let writer = tokio::spawn(async move {

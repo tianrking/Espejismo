@@ -282,6 +282,12 @@ SOCKS5 UDP ASSOCIATE is carried as application-level UDP DATAGRAM requests over
 the authenticated mux tunnel. The current production path does not use a UDP
 physical underlay.
 
+The UDP DATAGRAM payload length is a 16-bit field, so the protocol accepts at
+most 65,535 payload bytes. This is a wire-format ceiling, not a path-MTU-safe
+size: the TUN stack uses its configured interface MTU and does not perform IP
+fragmentation or path-MTU discovery on behalf of the UDP relay. Large datagrams
+may therefore be dropped by the local network stack or the underlying path.
+
 The core UDP underlay packet codec and reliability/congestion primitives are
 reserved for future transport integration. Implementations MUST treat that
 underlay as experimental unless explicitly enabled by a future protocol version

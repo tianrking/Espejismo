@@ -5,6 +5,8 @@ use std::{
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use crate::protocol::request::MAX_UDP_PAYLOAD_LEN;
+
 use super::ProxyAuth;
 
 const SOCKS_UDP_FRAGMENT_TIMEOUT: Duration = Duration::from_secs(5);
@@ -106,7 +108,7 @@ impl SocksUdpReassembler {
                 .payload
                 .len()
                 .saturating_add(parsed.packet.payload.len())
-                > u16::MAX as usize
+                > MAX_UDP_PAYLOAD_LEN
         {
             self.reset();
             return Ok(None);
@@ -423,7 +425,7 @@ where
 mod tests {
     use super::{
         accept_request_with_auth, build_udp_packet, parse_udp_packet, reply_udp_associate,
-        SocksRequest, SocksTarget, SocksUdpReassembler,
+        SocksRequest, SocksTarget, SocksUdpReassembler, MAX_UDP_PAYLOAD_LEN,
     };
     use crate::ingress::ProxyAuth;
     use std::net::Ipv6Addr;
@@ -1086,7 +1088,7 @@ mod tests {
     fn socks_udp_reassembler_drops_sequences_over_wire_payload_limit() {
         let mut reassembler = SocksUdpReassembler::default();
         let mut first = vec![0, 0, 1, 1, 127, 0, 0, 1, 0, 53];
-        first.extend(std::iter::repeat_n(b'a', u16::MAX as usize));
+        first.extend(std::iter::repeat_n(b'a', MAX_UDP_PAYLOAD_LEN));
         let last = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'b'];
         assert!(reassembler.push(&first).unwrap().is_none());
         assert!(reassembler.push(&last).unwrap().is_none());
@@ -1097,12 +1099,12 @@ mod tests {
     fn socks_udp_reassembler_accepts_payload_at_wire_limit() {
         let mut reassembler = SocksUdpReassembler::default();
         let mut first = vec![0, 0, 1, 1, 127, 0, 0, 1, 0, 53];
-        first.extend(std::iter::repeat_n(b'a', u16::MAX as usize - 1));
+        first.extend(std::iter::repeat_n(b'a', MAX_UDP_PAYLOAD_LEN - 1));
         let last = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'z'];
 
         assert!(reassembler.push(&first).unwrap().is_none());
         let packet = reassembler.push(&last).unwrap().unwrap();
-        assert_eq!(packet.payload.len(), u16::MAX as usize);
+        assert_eq!(packet.payload.len(), MAX_UDP_PAYLOAD_LEN);
         assert_eq!(packet.payload.first(), Some(&b'a'));
         assert_eq!(packet.payload.last(), Some(&b'z'));
     }

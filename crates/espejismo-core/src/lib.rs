@@ -66,7 +66,7 @@ pub use protocol::replay::ReplayCache;
 pub use protocol::request::{
     read_tunnel_request, write_tcp_connect, write_tcp_connect_with_priority, write_udp_datagram,
     write_udp_datagram_with_priority, StreamPriority, TunnelRequest, CMD_TCP_CONNECT,
-    CMD_UDP_DATAGRAM,
+    CMD_UDP_DATAGRAM, MAX_UDP_PAYLOAD_LEN,
 };
 pub use protocol::udp::{
     DeliveredDatagram, UdpCongestionController, UdpPacket, UdpPacketKind, UdpReliability,
