@@ -432,9 +432,8 @@ where
     if opcode >= 0x8 {
         ensure!(len <= 125, "websocket control frame exceeds 125 bytes");
     }
-    let expected_masked = role == WebSocketRole::Server;
     ensure!(
-        masked == expected_masked,
+        websocket_mask_matches_peer_role(masked, role),
         "websocket frame mask bit did not match peer role"
     );
     let mut mask = [0_u8; 4];
@@ -482,6 +481,10 @@ fn apply_websocket_mask(payload: &mut [u8], mask: &[u8; 4]) {
     for (i, byte) in payload.iter_mut().enumerate() {
         *byte ^= mask[i % mask.len()];
     }
+}
+
+fn websocket_mask_matches_peer_role(masked: bool, role: WebSocketRole) -> bool {
+    masked == (role == WebSocketRole::Server)
 }
 
 async fn write_ws_frame<W>(
@@ -703,6 +706,34 @@ mod tests {
                 "frame {frame:?}, role {role:?}"
             );
         }
+    }
+
+    #[tokio::test]
+    async fn websocket_masked_payload_matches_rfc_vector_and_unmasked_client_frame_is_rejected() {
+        // RFC 6455's "Hello" example pins both the key byte order and the
+        // repeating four-byte XOR cycle through the frame reader.
+        let masked_hello = [
+            0x82, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58,
+        ];
+        let (mut wire, mut peer) = duplex(32);
+        peer.write_all(&masked_hello).await.unwrap();
+        drop(peer);
+        let frame = super::read_ws_frame(&mut wire, super::WebSocketRole::Server, 1024)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(frame, super::WsFrame::Data(payload) if payload == b"Hello"));
+
+        let (mut wire, mut peer) = duplex(32);
+        peer.write_all(&[0x82, 0x05, b'H', b'e', b'l', b'l', b'o'])
+            .await
+            .unwrap();
+        drop(peer);
+        assert!(
+            super::read_ws_frame(&mut wire, super::WebSocketRole::Server, 1024)
+                .await
+                .is_err()
+        );
     }
 
     #[tokio::test]
