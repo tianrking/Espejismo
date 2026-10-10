@@ -226,11 +226,35 @@ where
     let ping_writer = wire_writer.clone();
 
     tokio::spawn(async move {
+        let mut fragmented_message: Option<Vec<u8>> = None;
         loop {
             match read_ws_frame(&mut wire_reader, role, max_frame_bytes).await {
                 Ok(Some(WsFrame::Data(payload))) => {
-                    if app_writer.write_all(&payload).await.is_err() {
+                    if fragmented_message.is_some()
+                        || app_writer.write_all(&payload).await.is_err()
+                    {
                         break;
+                    }
+                }
+                Ok(Some(WsFrame::DataStart(payload))) => {
+                    if fragmented_message.is_some() || payload.len() > max_frame_bytes {
+                        break;
+                    }
+                    fragmented_message = Some(payload);
+                }
+                Ok(Some(WsFrame::Continuation(payload, final_fragment))) => {
+                    let Some(message) = fragmented_message.as_mut() else {
+                        break;
+                    };
+                    if message.len().saturating_add(payload.len()) > max_frame_bytes {
+                        break;
+                    }
+                    message.extend_from_slice(&payload);
+                    if final_fragment {
+                        let message = fragmented_message.take().expect("message is present");
+                        if app_writer.write_all(&message).await.is_err() {
+                            break;
+                        }
                     }
                 }
                 Ok(Some(WsFrame::Ping(payload))) => {
@@ -259,6 +283,7 @@ where
                 }
             }
         }
+        let _ = app_writer.shutdown().await;
     });
 
     tokio::spawn(async move {
@@ -380,6 +405,8 @@ fn spawn_http2_io(
 #[derive(Debug)]
 enum WsFrame {
     Data(Vec<u8>),
+    DataStart(Vec<u8>),
+    Continuation(Vec<u8>, bool),
     Ping(Vec<u8>),
     Pong,
     Close(Vec<u8>),
@@ -397,14 +424,7 @@ where
     reader.read_exact(&mut head).await?;
     let opcode = head[0] & 0x0f;
     ensure!(head[0] & 0x70 == 0, "websocket reserved bits are set");
-    ensure!(
-        opcode != 0x0,
-        "websocket continuation frames are unsupported"
-    );
-    ensure!(
-        head[0] & 0x80 != 0,
-        "websocket fragmented frames are unsupported"
-    );
+    let final_fragment = head[0] & 0x80 != 0;
     let masked = head[1] & 0x80 != 0;
     let mut len = u64::from(head[1] & 0x7f);
     if len == 126 {
@@ -430,6 +450,7 @@ where
     );
     let payload_len = usize::try_from(len).context("websocket frame length does not fit usize")?;
     if opcode >= 0x8 {
+        ensure!(final_fragment, "websocket control frame is fragmented");
         ensure!(len <= 125, "websocket control frame exceeds 125 bytes");
     }
     ensure!(
@@ -454,7 +475,9 @@ where
             std::str::from_utf8(&payload).context("websocket text payload is not UTF-8")?;
             bail!("websocket text frames are unsupported")
         }
-        0x2 => Ok(Some(WsFrame::Data(payload))),
+        0x0 => Ok(Some(WsFrame::Continuation(payload, final_fragment))),
+        0x2 if final_fragment => Ok(Some(WsFrame::Data(payload))),
+        0x2 => Ok(Some(WsFrame::DataStart(payload))),
         0x8 => {
             // RFC 6455 permits an empty close payload, or a two-byte status
             // code followed by a UTF-8 reason. A one-byte code is truncated.
@@ -845,34 +868,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn websocket_fragment_boundaries_are_rejected() {
-        // A non-final binary frame starts a fragmented message; a final
-        // continuation frame is also invalid without a fragmented message.
-        for (frame, expected_error) in [
-            (&[0x02, 0x00][..], "fragmented frames are unsupported"),
-            (&[0x80, 0x00][..], "continuation frames are unsupported"),
-        ] {
+    async fn websocket_fragment_frame_boundaries_are_parsed() {
+        for (frame, continuation) in [(&[0x02, 0x00][..], false), (&[0x80, 0x00][..], true)] {
             let (mut wire, mut peer) = duplex(16);
             peer.write_all(frame).await.unwrap();
-            let error = super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
+            let parsed = super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
                 .await
-                .unwrap_err();
-            assert!(error.to_string().contains(expected_error));
+                .unwrap()
+                .unwrap();
+            assert!(if continuation {
+                matches!(parsed, super::WsFrame::Continuation(payload, true) if payload.is_empty())
+            } else {
+                matches!(parsed, super::WsFrame::DataStart(payload) if payload.is_empty())
+            });
         }
-
-        // A valid RFC 6455 message could place control frames between data
-        // fragments. This adapter does not reassemble messages, so reject the
-        // opening fragment before consuming the interleaved PING/continuation.
-        let (mut wire, mut peer) = duplex(32);
-        peer.write_all(&[0x02, 0x01, b'a', 0x89, 0x00, 0x80, 0x01, b'b'])
-            .await
-            .unwrap();
-        let error = super::read_ws_frame(&mut wire, super::WebSocketRole::Client, 1024)
-            .await
-            .unwrap_err();
-        assert!(error
-            .to_string()
-            .contains("fragmented frames are unsupported"));
     }
 
     #[tokio::test]
@@ -914,6 +923,80 @@ mod tests {
         let mut response = [0; 4];
         peer.read_exact(&mut response).await.unwrap();
         assert_eq!(response, [0x8a, 2, 9, 8]);
+    }
+
+    #[tokio::test]
+    async fn websocket_ping_can_interleave_a_fragmented_binary_message() {
+        let (mut peer, wire) = duplex(1024);
+        let mut app = super::spawn_websocket_io(wire, super::WebSocketRole::Client, 1024);
+        peer.write_all(&[0x02, 2, b'a', b'b', 0x89, 1, b'!', 0x80, 2, b'c', b'd'])
+            .await
+            .unwrap();
+
+        let pong = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            super::read_ws_frame(&mut peer, super::WebSocketRole::Server, 1024),
+        )
+        .await
+        .expect("PING between fragments should be answered")
+        .unwrap()
+        .unwrap();
+        assert!(matches!(pong, super::WsFrame::Pong));
+        let mut message = [0_u8; 4];
+        app.read_exact(&mut message).await.unwrap();
+        assert_eq!(&message, b"abcd");
+    }
+
+    #[tokio::test]
+    async fn websocket_close_interrupts_fragment_reassembly() {
+        let (mut peer, wire) = duplex(1024);
+        let mut app = super::spawn_websocket_io(wire, super::WebSocketRole::Client, 1024);
+        peer.write_all(&[0x02, 2, b'a', b'b', 0x88, 0])
+            .await
+            .unwrap();
+        let close = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            super::read_ws_frame(&mut peer, super::WebSocketRole::Server, 1024),
+        )
+        .await
+        .expect("CLOSE should be acknowledged")
+        .unwrap()
+        .unwrap();
+        assert!(matches!(close, super::WsFrame::Close(payload) if payload.is_empty()));
+        let mut byte = [0_u8; 1];
+        assert_eq!(app.read(&mut byte).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn websocket_rejects_invalid_data_frame_interleaving() {
+        for frames in [
+            vec![0x80, 1, b'x'],
+            vec![0x02, 1, b'a', 0x82, 1, b'b'],
+        ] {
+            let (mut peer, wire) = duplex(1024);
+            let mut app = super::spawn_websocket_io(wire, super::WebSocketRole::Client, 1024);
+            peer.write_all(&frames).await.unwrap();
+            let mut output = Vec::new();
+            tokio::time::timeout(std::time::Duration::from_secs(1), app.read_to_end(&mut output))
+                .await
+                .expect("invalid sequence should close app stream")
+                .unwrap();
+            assert!(output.is_empty(), "invalid message leaked bytes");
+        }
+
+        let (mut peer, wire) = duplex(4096);
+        let mut app = super::spawn_websocket_io(wire, super::WebSocketRole::Client, 1024);
+        let fragment = vec![b'x'; 600];
+        peer.write_all(&[0x02, 126, 2, 88]).await.unwrap();
+        peer.write_all(&fragment).await.unwrap();
+        peer.write_all(&[0x80, 126, 2, 88]).await.unwrap();
+        peer.write_all(&fragment).await.unwrap();
+        let mut output = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(1), app.read_to_end(&mut output))
+            .await
+            .expect("oversized reassembled message should close app stream")
+            .unwrap();
+        assert!(output.is_empty(), "partial oversized message leaked bytes");
     }
 
     #[tokio::test]
