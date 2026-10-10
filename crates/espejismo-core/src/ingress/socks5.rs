@@ -7,6 +7,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use super::ProxyAuth;
 
+const SOCKS_UDP_FRAGMENT_TIMEOUT: Duration = Duration::from_secs(5);
+
 #[derive(Clone, Debug)]
 pub struct SocksTarget {
     pub host: String,
@@ -89,7 +91,7 @@ impl SocksUdpReassembler {
         if sequence == 1 {
             self.reset();
             self.target = Some(parsed.packet.target.clone());
-            self.expires_at = Some(now + Duration::from_secs(5));
+            self.expires_at = Some(now + SOCKS_UDP_FRAGMENT_TIMEOUT);
             self.peer = peer;
         } else if self.target.is_none() {
             return Ok(None);
@@ -933,6 +935,37 @@ mod tests {
             .is_none());
         assert!(reassembler.target.is_none());
         assert!(reassembler.payload.is_empty());
+    }
+
+    #[test]
+    fn socks_udp_reassembly_is_isolated_between_concurrent_associations() {
+        let mut association_a = SocksUdpReassembler::default();
+        let mut association_b = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        let last = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'z'];
+        let peer = "192.0.2.10:40000".parse().unwrap();
+
+        assert!(association_a.push_from(peer, &first).unwrap().is_none());
+        assert!(association_b.push_from(peer, &last).unwrap().is_none());
+        let completed = association_a.push_from(peer, &last).unwrap().unwrap();
+
+        assert_eq!(completed.payload, b"az");
+        assert!(association_b.target.is_none());
+        assert!(association_b.payload.is_empty());
+    }
+
+    #[test]
+    fn socks_udp_reassembler_accepts_reused_peer_after_fragment_expiry() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let peer = "192.0.2.10:40000".parse().unwrap();
+        let stale_first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'x'];
+        let fresh_final = [0, 0, 0x81, 1, 127, 0, 0, 1, 0, 53, b'y'];
+
+        assert!(reassembler.push_from(peer, &stale_first).unwrap().is_none());
+        reassembler.expires_at = Some(Instant::now() - Duration::from_secs(1));
+
+        let completed = reassembler.push_from(peer, &fresh_final).unwrap().unwrap();
+        assert_eq!(completed.payload, b"y");
     }
 
     #[test]
