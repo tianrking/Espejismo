@@ -45,6 +45,11 @@ protects access to the local proxy only; it is separate from the PSK that
 authenticates the encrypted tunnel. Bind to loopback or protect the network
 path when allowing remote clients to reach this listener.
 
+The listener supports only no-auth and username/password methods. GSSAPI is
+not implemented: it is rejected unless a configured no-auth policy explicitly
+selects no-auth from the client's offered methods. With credentials configured,
+the listener selects username/password even if GSSAPI is also offered.
+
 ## TCP, UDP, and DNS
 
 TCP uses SOCKS5 `CONNECT`. UDP uses `UDP ASSOCIATE`; the client opens a

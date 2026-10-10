@@ -712,6 +712,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gssapi_only_offer_is_rejected() {
+        // GSSAPI (0x01) is not implemented; the server must not claim it.
+        let (result, response) = exchange(vec![5, 1, 1], None).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 0xff]);
+    }
+
+    #[tokio::test]
+    async fn no_auth_configuration_selects_no_auth_from_gssapi_offer() {
+        // Explicitly selecting no-auth is a policy fallback, not GSSAPI.
+        let request = vec![5, 2, 1, 0, 5, 1, 0, 1, 127, 0, 0, 1, 0, 80];
+        let (result, response) = exchange(request, None).await;
+        assert!(matches!(result.unwrap(), SocksRequest::Connect(_)));
+        assert_eq!(&response[..4], &[5, 0, 5, 0]);
+    }
+
+    #[tokio::test]
+    async fn configured_auth_selects_password_over_gssapi() {
+        let request = vec![
+            5, 2, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4, b'p', b'a', b's', b's', 5, 1, 0, 1, 127,
+            0, 0, 1, 0, 80,
+        ];
+        let (result, response) = exchange(request, Some(auth())).await;
+        assert!(matches!(result.unwrap(), SocksRequest::Connect(_)));
+        assert_eq!(&response[..4], &[5, 2, 1, 0]);
+    }
+
+    #[tokio::test]
     async fn no_auth_rejects_password_only_offer() {
         let (result, response) = exchange(vec![5, 1, 2], None).await;
         assert!(result.is_err());
