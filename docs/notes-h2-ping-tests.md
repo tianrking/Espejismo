@@ -2,33 +2,44 @@
 
 ## Scope and rationale
 
-The HTTP/2 underlay already had a byte-stream round trip test, but it did not
-exercise connection-level HTTP/2 PING/PONG behavior. `h2` exposes a
-`PingPong` handle on each connection. Its API permits one outstanding user
-PING; a second send before the matching PONG is rejected. The test now covers
-that limit and verifies that probing works in both directions after the first
-probe is acknowledged.
+HTTP/2 PING is a connection-level health check (RFC 9113 §6.7). The existing
+test covered `h2::PingPong`'s one-outstanding-user-PING boundary and successful
+acknowledgment in both directions. This round adds timeout and malformed-frame
+coverage using the existing `h2` decoder over in-memory Tokio duplex streams.
+No performance change is intended; throughput improvement is 0%.
 
-This follows HTTP/2's connection-level PING model (RFC 9113, section 6.7) and
-uses the `h2` crate API rather than adding another protocol implementation.
-That keeps the existing real HTTP/2 underlay behavior and project positioning
-unchanged. No performance change is intended; expected throughput improvement
-is 0%.
+The `h2` 0.4 API automatically handles inbound PING frames and exposes no hook
+or setting to rate-limit them. An inbound malicious-frequency limit would need
+a separate framing/connection layer. This round records that design limitation
+instead of claiming protection the code does not provide. No project
+positioning or transport behavior is changed.
 
 ## Implementation
 
-- Added `http2_ping_allows_one_outstanding_probe_at_a_time` in
-  `crates/espejismo-core/src/underlay.rs`.
-- The test runs client and server over Tokio `duplex`, asserts that a second
-  in-flight PING is rejected, waits for its PONG, then verifies the reverse
-  direction. One-second timeouts make a missing acknowledgment fail promptly.
-- No loopback sockets are used, so the test is runnable inside the sandbox.
+- `http2_ping_allows_one_outstanding_probe_at_a_time` checks that a second
+  in-flight user PING is rejected, then verifies PONGs both ways.
+- `http2_ping_wait_can_be_bounded_when_peer_does_not_respond` leaves the peer
+  connection undriven, confirms a caller timeout bounds the wait, and verifies
+  the timed-out probe remains in flight until connection teardown.
+- `http2_ping_rejects_non_eight_byte_payloads` feeds 0-, 7-, and 9-byte PING
+  payloads into the raw frame decoder and expects the connection to reject
+  each malformed frame.
+- The hostile-frequency rate limit is not tested as a project defense because
+  the upstream API provides no enforcement point. A flood characterization
+  test would not establish protection.
+- All tests use `tokio::io::duplex`; no loopback sockets are involved.
 
 ## Verification
 
-- `$HOME/.cargo/bin/cargo test -p espejismo-core http2_ping_allows_one_outstanding_probe_at_a_time --offline` — passed (1 test; 235 filtered out; no ignored tests involved).
-- `$HOME/.cargo/bin/cargo test -p espejismo-core --offline` — passed: 235 unit tests passed, 1 existing loopback-bind test ignored, 0 failed; 1 config example integration test passed; 10 HTTP proxy integration tests passed; 1 doctest passed.
+- `$HOME/.cargo/bin/cargo test -p espejismo-core http2_ping_ --offline` —
+  passed: all 3 PING tests; no ignored tests involved.
+- `$HOME/.cargo/bin/cargo test -p espejismo-core --offline` — passed: 319
+  unit tests passed, 1 existing test ignored, 0 failed; 1 config example
+  integration test passed; all 10 HTTP proxy integration tests passed; 1
+  doctest passed.
+- `$HOME/.cargo/bin/cargo fmt --all -- --check` reports pre-existing formatting
+  differences across unrelated files; the changed test block was formatted
+  with rustfmt and does not add whole-repository formatting churn.
 
-This is a correctness and boundary-test change, not a performance optimization;
-no benchmark comparison applies. No throughput or latency improvement is
-claimed.
+This is a correctness and boundary-test change, not a performance optimization.
+No throughput or latency improvement is claimed.

@@ -2002,6 +2002,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn http2_ping_wait_can_be_bounded_when_peer_does_not_respond() {
+        let (client_io, server_io) = duplex(64 * 1024);
+        let (_client, mut client_conn) = h2::client::Builder::new()
+            .handshake::<_, bytes::Bytes>(client_io)
+            .await
+            .unwrap();
+        // Keep the peer connection undriven: it cannot read the PING or emit
+        // its ACK. The application-level timeout must bound the wait.
+        let _server = h2::server::Builder::new()
+            .handshake::<_, bytes::Bytes>(server_io)
+            .await
+            .unwrap();
+        let mut ping = client_conn.ping_pong().expect("client ping handle");
+        tokio::spawn(async move {
+            let _ = client_conn.await;
+        });
+
+        ping.send_ping(h2::Ping::opaque()).unwrap();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_millis(20),
+            futures::future::poll_fn(|cx| ping.poll_pong(cx)),
+        )
+        .await;
+        assert!(
+            result.is_err(),
+            "unanswered PING must hit the caller timeout"
+        );
+        assert!(
+            ping.send_ping(h2::Ping::opaque()).is_err(),
+            "timed-out probe remains in flight until connection teardown"
+        );
+    }
+
+    #[tokio::test]
+    async fn http2_ping_rejects_non_eight_byte_payloads() {
+        // RFC 9113 §6.7 requires PING payloads to be exactly eight octets.
+        // Feed malformed frames to h2's decoder over memory (no loopback).
+        for len in [0, 7, 9] {
+            let frame = raw_frame(6, 0, 0, &vec![0; len]);
+            let (mut server, _peer) = http2_server_after_raw_frames(&frame).await;
+            let result = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+                .await
+                .expect("malformed PING must be processed");
+            assert!(
+                result.is_none() || result.unwrap().is_err(),
+                "PING payload length {len} must terminate the connection"
+            );
+        }
+    }
+
+    #[tokio::test]
     async fn http2_underlay_carries_crypto_handshake() {
         let (client, server) = duplex(64 * 1024);
         let server_task = tokio::spawn(async move {
