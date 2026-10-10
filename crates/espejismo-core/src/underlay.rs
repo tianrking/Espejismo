@@ -1179,6 +1179,64 @@ mod tests {
         assert_eq!(accepted.0.uri().path(), "/");
     }
 
+    // WINDOW_UPDATE has a 31-bit increment, and zero is a protocol error.
+    // Exercise raw frames so the h2 decoder's connection-versus-stream
+    // handling remains pinned without introducing a second frame parser.
+    #[tokio::test]
+    async fn http2_window_update_rejects_zero_connection_increment() {
+        let frames = raw_frame(8, 0, 0, &[0, 0, 0, 0]);
+        let (mut server, _peer) = http2_server_after_raw_frames(&frames).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+            .await
+            .expect("zero connection increment should be processed");
+        assert!(result.is_none() || result.unwrap().is_err());
+    }
+
+    #[tokio::test]
+    async fn http2_window_update_accepts_positive_stream_increment() {
+        let headers = [0x82, 0x86, 0x84, 0x01, 0x01, b'x'];
+        let mut frames = raw_frame(1, 4, 1, &headers);
+        frames.extend_from_slice(&raw_frame(8, 0, 1, &[0, 0, 0, 1]));
+        let (mut server, _peer) = http2_server_after_raw_frames(&frames).await;
+        let accepted = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+            .await
+            .expect("valid stream update should be processed")
+            .expect("connection should remain open")
+            .expect("request should be accepted");
+        assert_eq!(accepted.0.uri().path(), "/");
+    }
+
+    #[tokio::test]
+    async fn http2_window_update_rejects_zero_stream_increment() {
+        let headers = [0x82, 0x86, 0x84, 0x01, 0x01, b'x'];
+        let mut frames = raw_frame(1, 4, 1, &headers);
+        frames.extend_from_slice(&raw_frame(8, 0, 1, &[0, 0, 0, 0]));
+        // Open a second stream after the malformed update so the decoder's
+        // response is observable through the server connection API.
+        frames.extend_from_slice(&raw_frame(1, 5, 3, &headers));
+        let (mut server, _peer) = http2_server_after_raw_frames(&frames).await;
+        let first = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+            .await
+            .expect("first request should be processed");
+        assert!(first.is_some());
+        let next = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+            .await
+            .expect("zero stream increment should be rejected");
+        assert!(next.is_some_and(|result| result.is_err()));
+    }
+
+    #[tokio::test]
+    async fn http2_window_update_rejects_max_increment_overflow() {
+        // 2^31-1 is the largest legal increment field, but adding it to the
+        // default receive window overflows HTTP/2's 31-bit window limit.
+        let frames = raw_frame(8, 0, 0, &[0x7f, 0xff, 0xff, 0xff]);
+        let (mut server, _peer) = http2_server_after_raw_frames(&frames).await;
+        let result = tokio::time::timeout(std::time::Duration::from_secs(1), server.accept())
+            .await
+            .expect("overflowing connection window should be processed");
+        assert!(result.is_none() || result.unwrap().is_err());
+    }
+
     // A split HPACK block must continue on the same stream and finish with
     // END_HEADERS; the h2 crate owns these wire-level framing rules.
     #[tokio::test]
