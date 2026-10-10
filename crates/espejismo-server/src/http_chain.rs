@@ -371,6 +371,69 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn tls_alpn_selects_server_preference_and_rejects_mismatch() {
+        use tokio_rustls::TlsConnector;
+        use tokio_rustls::rustls::ClientConfig;
+
+        let cert = CertificateDer::from(
+            include_bytes!("../tests/data/untrusted-localhost-cert.der").to_vec(),
+        );
+        let key = PrivateKeyDer::try_from(
+            include_bytes!("../tests/data/untrusted-localhost-key.der").to_vec(),
+        )
+        .unwrap();
+        let base_server = ServerConfig::builder()
+            .with_no_client_auth()
+            .with_single_cert(vec![cert], key)
+            .unwrap();
+        let base_client = ClientConfig::builder()
+            .dangerous()
+            .with_custom_certificate_verifier(Arc::new(AlpnTestVerifier))
+            .with_no_client_auth();
+
+        // Rustls selects the first mutually supported protocol in server order.
+        let mut server_config = base_server.clone();
+        server_config.alpn_protocols = vec![b"http/1.1".to_vec(), b"h2".to_vec()];
+        let mut client_config = base_client.clone();
+        client_config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            TlsAcceptor::from(Arc::new(server_config))
+                .accept(server_io)
+                .await
+                .unwrap()
+                .get_ref()
+                .1
+                .alpn_protocol()
+                .map(ToOwned::to_owned)
+        });
+        let client = TlsConnector::from(Arc::new(client_config))
+            .connect(ServerName::try_from("localhost").unwrap(), client_io)
+            .await
+            .expect("overlapping ALPN lists should complete the handshake");
+        assert_eq!(client.get_ref().1.alpn_protocol(), Some(&b"http/1.1"[..]));
+        assert_eq!(server.await.unwrap(), Some(b"http/1.1".to_vec()));
+
+        // A non-empty client offer with no server match is a TLS negotiation error.
+        let mut server_config = base_server;
+        server_config.alpn_protocols = vec![b"h2".to_vec()];
+        let mut client_config = base_client;
+        client_config.alpn_protocols = vec![b"http/1.1".to_vec()];
+        let (client_io, server_io) = tokio::io::duplex(4096);
+        let server = tokio::spawn(async move {
+            TlsAcceptor::from(Arc::new(server_config))
+                .accept(server_io)
+                .await
+                .is_ok()
+        });
+        let client = TlsConnector::from(Arc::new(client_config))
+            .connect(ServerName::try_from("localhost").unwrap(), client_io)
+            .await;
+        assert!(client.is_err(), "mismatched ALPN must fail the client handshake");
+        assert!(!server.await.unwrap(), "mismatched ALPN must fail the server handshake");
+    }
+
+    #[tokio::test]
     async fn tls12_ocsp_staple_bytes_reach_certificate_verifier_unchanged() {
         use std::sync::Mutex;
         use tokio_rustls::TlsConnector;
