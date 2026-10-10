@@ -899,6 +899,26 @@ mod tests {
     }
 
     #[test]
+    fn socks_udp_reassembler_discards_duplicate_fragment_and_resets_sequence() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        let second = [0, 0, 2, 1, 127, 0, 0, 1, 0, 53, b'b'];
+        let duplicate = [0, 0, 2, 1, 127, 0, 0, 1, 0, 53, b'x'];
+        let stale_final = [0, 0, 0x83, 1, 127, 0, 0, 1, 0, 53, b'c'];
+        let fresh_final = [0, 0, 0x81, 1, 127, 0, 0, 1, 0, 53, b'c'];
+
+        assert!(reassembler.push(&first).unwrap().is_none());
+        assert!(reassembler.push(&second).unwrap().is_none());
+        assert!(reassembler.push(&duplicate).unwrap().is_none());
+        assert!(reassembler.push(&stale_final).unwrap().is_none());
+        assert!(reassembler.target.is_none());
+        assert!(reassembler.payload.is_empty());
+
+        let packet = reassembler.push(&fresh_final).unwrap().unwrap();
+        assert_eq!(packet.payload, b"c");
+    }
+
+    #[test]
     fn socks_udp_reassembler_discards_sequence_after_malformed_datagram() {
         let mut reassembler = SocksUdpReassembler::default();
         let first = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
@@ -1031,6 +1051,20 @@ mod tests {
         assert!(reassembler.push(&first).unwrap().is_none());
         assert!(reassembler.push(&last).unwrap().is_none());
         assert!(reassembler.target.is_none());
+    }
+
+    #[test]
+    fn socks_udp_reassembler_accepts_payload_at_wire_limit() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let mut first = vec![0, 0, 1, 1, 127, 0, 0, 1, 0, 53];
+        first.extend(std::iter::repeat_n(b'a', u16::MAX as usize - 1));
+        let last = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'z'];
+
+        assert!(reassembler.push(&first).unwrap().is_none());
+        let packet = reassembler.push(&last).unwrap().unwrap();
+        assert_eq!(packet.payload.len(), u16::MAX as usize);
+        assert_eq!(packet.payload.first(), Some(&b'a'));
+        assert_eq!(packet.payload.last(), Some(&b'z'));
     }
 
     #[test]
