@@ -1738,6 +1738,8 @@ mod tests {
             "permessage-deflate",
             "permessage-deflate; server_max_window_bits=8",
             "permessage-deflate; client_no_context_takeover; server_no_context_takeover",
+            "x-unknown-extension",
+            "x-unknown-extension; mode=opaque; level=7",
         ] {
             let response = super::parse_http_headers(&format!(
                 "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Extensions: {extension}\r\n\r\n"
@@ -1745,6 +1747,31 @@ mod tests {
             .unwrap();
             assert!(!super::websocket_response_matches(&response), "{extension}");
         }
+    }
+
+    #[tokio::test]
+    async fn websocket_server_ignores_unknown_extension_offers_without_negotiating_them() {
+        // An offer is optional: a server without extension support may
+        // complete the base handshake, but must omit the extension response.
+        let (server_io, mut peer) = duplex(4096);
+        let server = tokio::spawn(async move {
+            super::accept_websocket_underlay(server_io, "/espejismo", 1024).await
+        });
+        peer.write_all(b"GET /espejismo HTTP/1.1\r\nHost: example.com\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: x-unknown-extension; mode=opaque; level=7, permessage-deflate; server_max_window_bits=8\r\n\r\n")
+            .await
+            .unwrap();
+
+        let mut response = Vec::new();
+        let mut byte = [0_u8; 1];
+        while !response.ends_with(b"\r\n\r\n") {
+            peer.read_exact(&mut byte).await.unwrap();
+            response.push(byte[0]);
+        }
+        let response = String::from_utf8(response).unwrap();
+        assert!(response.starts_with("HTTP/1.1 101 "));
+        assert!(!response.to_ascii_lowercase().contains("sec-websocket-extensions:"));
+        drop(peer);
+        drop(server.await.unwrap().unwrap());
     }
 
     #[tokio::test]
