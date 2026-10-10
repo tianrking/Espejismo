@@ -120,7 +120,9 @@ where
     let mut prebuffer_body_bytes = 0;
     if let Some(extra) = overflow {
         // Keep already-read body bytes opaque: chunk framing and HTTP trailers
-        // are forwarded downstream as part of the original request body.
+        // are forwarded downstream as part of the original request body. The
+        // upstream HTTP server owns chunk syntax validation; validating only
+        // this prebuffer would reject valid chunked bodies split across reads.
         prebuffer_body_bytes = extra.len();
         prebuffer.extend_from_slice(&extra);
     }
@@ -420,6 +422,41 @@ mod tests {
             .prebuffer
             .ends_with(b"3\r\nabc\r\n0\r\nDigest: sha-256=abc\r\nX-Request-Id: 7\r\n\r\n"));
         writer.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn chunked_edge_cases_remain_opaque_for_upstream_validation() {
+        // The proxy does not decode request bodies. Keep these wire forms
+        // intact so the upstream HTTP parser, which sees the complete stream,
+        // validates overflow, termination, extensions, and trailer syntax.
+        let bodies: &[&[u8]] = &[
+            b"FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\r\n", // size overflows u64
+            b"3\r\nabc\r\n",                         // missing zero chunk
+            b"3;name=value\r\nabc\r\n0\r\n\r\n",     // chunk extension
+            b"0\r\nBad Trailer\r\n\r\n",             // illegal trailer field
+        ];
+
+        for body in bodies {
+            let (mut client, mut proxy) = duplex(4096);
+            let mut request = b"POST http://example.test/upload HTTP/1.1\r\n\
+                               Transfer-Encoding: chunked\r\n\r\n"
+                .to_vec();
+            request.extend_from_slice(body);
+            let writer = tokio::spawn(async move {
+                client.write_all(&request).await.unwrap();
+            });
+
+            let target = accept_http_proxy(&mut proxy).await.unwrap();
+            let body_start = target
+                .prebuffer
+                .windows(4)
+                .position(|window| window == b"\r\n\r\n")
+                .unwrap()
+                + 4;
+            assert_eq!(&target.prebuffer[body_start..], *body);
+            assert_eq!(target.prebuffer_body_bytes, body.len());
+            writer.await.unwrap();
+        }
     }
 
     #[tokio::test]
