@@ -54,6 +54,10 @@ fragment reassembly. Fragments are accepted only in order from the same source
 IP address and UDP port; a source endpoint change discards the pending sequence.
 The association ends after the configured idle timeout without UDP traffic. It
 uses the same local proxy authentication setting as CONNECT.
+On an authenticated listener, RFC 1929 credentials are checked on the TCP
+control connection before UDP ASSOCIATE is accepted. Missing or invalid
+credentials cannot create a UDP relay. Fragment reassembly state is cleared
+after completion, so a peer can begin a fresh sequence on the same association.
 
 For hostname requests, configure applications to use remote name resolution
 (often shown as `socks5h://`); an application using `socks5://` may resolve the

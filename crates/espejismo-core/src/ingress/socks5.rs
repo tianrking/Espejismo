@@ -636,6 +636,31 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn udp_associate_requires_credentials_on_its_control_connection() {
+        let mut valid = vec![5, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4];
+        valid.extend_from_slice(b"pass");
+        valid.extend_from_slice(&[5, 3, 0, 1, 0, 0, 0, 0, 0, 0]);
+        let (result, response) = exchange(valid, Some(auth())).await;
+        assert!(matches!(result.unwrap(), SocksRequest::UdpAssociate));
+        assert_eq!(&response, &[5, 2, 1, 0]);
+
+        // Authenticated TCP control streams authorize the associated UDP relay;
+        // an unauthenticated or incorrectly authenticated stream cannot reach
+        // command parsing (and therefore cannot create an association).
+        let (result, response) =
+            exchange(vec![5, 1, 0, 5, 3, 0, 1, 0, 0, 0, 0, 0, 0], Some(auth())).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 0xff]);
+
+        let mut invalid = vec![5, 1, 2, 1, 4, b'u', b's', b'e', b'r', 4];
+        invalid.extend_from_slice(b"nope");
+        invalid.extend_from_slice(&[5, 3, 0, 1, 0, 0, 0, 0, 0, 0]);
+        let (result, response) = exchange(invalid, Some(auth())).await;
+        assert!(result.is_err());
+        assert_eq!(response, [5, 2, 1, 1]);
+    }
+
+    #[tokio::test]
     async fn udp_associate_reply_encodes_ipv4_and_ipv6_bound_endpoints() {
         use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
         use tokio::io::AsyncReadExt;
@@ -1025,6 +1050,21 @@ mod tests {
 
         let completed = reassembler.push_from(peer, &fresh_final).unwrap().unwrap();
         assert_eq!(completed.payload, b"y");
+    }
+
+    #[test]
+    fn socks_udp_reassembler_allows_same_peer_to_start_a_new_sequence_after_completion() {
+        let mut reassembler = SocksUdpReassembler::default();
+        let peer = "192.0.2.10:40000".parse().unwrap();
+        let first_a = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'a'];
+        let final_a = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'b'];
+        let first_b = [0, 0, 1, 1, 127, 0, 0, 1, 0, 53, b'c'];
+        let final_b = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'd'];
+
+        assert!(reassembler.push_from(peer, &first_a).unwrap().is_none());
+        assert_eq!(reassembler.push_from(peer, &final_a).unwrap().unwrap().payload, b"ab");
+        assert!(reassembler.push_from(peer, &first_b).unwrap().is_none());
+        assert_eq!(reassembler.push_from(peer, &final_b).unwrap().unwrap().payload, b"cd");
     }
 
     #[test]
