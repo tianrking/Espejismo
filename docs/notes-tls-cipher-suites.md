@@ -8,7 +8,9 @@ Following rustls' provider-based configuration model (also used by the project's
 
 ## Changes and validation
 
-- Made the ring provider and safe TLS 1.2/1.3 defaults explicit for HTTPS proxy TLS.
-- Extended the local ALPN negotiation test to assert that a successfully negotiated suite belongs to the production HTTPS proxy configuration's offered suite list. This exercises negotiation at the configured boundary while preserving the no-ALPN behavior.
-- Test evidence: `cargo test -p espejismo-server http_chain::tests --offline` passed all 6 targeted HTTPS proxy tests; `cargo test --workspace --offline` passed the client (45), core (183 unit + 1 config integration + 5 HTTP proxy integration), server (36 passed, 1 ignored), and tokio-yamux unit (45) tests, but the tokio-yamux `window_update_deadlock` integration test could not bind its local socket in this sandbox (`PermissionDenied`, line 31). This failure is outside the TLS change; full workspace success is therefore not claimed.
+- Added in-memory TLS 1.2 coverage that gives client and server two shared suites in opposite orders and checks the server preference when `ignore_client_order` is enabled. A second handshake with disjoint single-suite lists must fail on both peers.
+- Added a production HTTPS proxy suite-set assertion covering rejection of TLS_RSA_WITH_AES_128_CBC_SHA and TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA legacy CBC suites. The test checks the configured ring provider rather than a hand-maintained replacement suite list, preserving Rustls' safe defaults.
+- `cargo test --offline -p espejismo-server tls_cipher_suites -- --nocapture`: passed (1), covering server preference and no-overlap failure.
+- `cargo test --offline -p espejismo-server https_proxy_cipher_suites_exclude_weak_legacy_suites`: passed (1), covering exclusion of weak legacy CBC suites from the HTTPS proxy provider.
+- `cargo test --offline -p espejismo-server`: passed (74 passed, 0 failed, 1 ignored). The ignored test requires loopback bind and is unrelated; all in-memory TLS tests ran.
 - Performance: no performance claim or benchmark is applicable; negotiated suite behavior is unchanged and no cipher suite is added or removed relative to the workspace's selected ring provider.
