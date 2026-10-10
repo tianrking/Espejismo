@@ -239,6 +239,8 @@ where
         }
         3 => Ok(SocksRequest::UdpAssociate),
         _ => {
+            // BIND (0x02) requires a second inbound peer and listener lifecycle,
+            // which this ingress deliberately does not expose.
             reply(stream, 0x07).await?;
             bail!("unsupported SOCKS5 command {cmd}");
         }
@@ -578,12 +580,28 @@ mod tests {
         for request in cases {
             // Unsupported BIND must fail during request parsing; it must not
             // wait for a peer connection or a listener timeout.
-            let (result, response) = tokio::time::timeout(
-                Duration::from_secs(1),
-                exchange(request, None),
-            )
-            .await
-            .expect("BIND rejection must not wait for a second connection");
+            let (result, response) =
+                tokio::time::timeout(Duration::from_secs(1), exchange(request, None))
+                    .await
+                    .expect("BIND rejection must not wait for a second connection");
+            assert!(result.is_err());
+            assert_eq!(&response[2..4], &[5, 7]);
+        }
+    }
+
+    #[tokio::test]
+    async fn concurrent_bind_requests_are_rejected_without_cross_talk() {
+        let burst = (0..32).map(|index| {
+            let request = vec![5, 1, 0, 5, 2, 0, 1, 192, 0, 2, index as u8, 0, index as u8];
+            exchange(request, None)
+        });
+
+        let results =
+            tokio::time::timeout(Duration::from_secs(1), futures::future::join_all(burst))
+                .await
+                .expect("unsupported BIND requests must not wait for peer connections");
+        assert_eq!(results.len(), 32);
+        for (result, response) in results {
             assert!(result.is_err());
             assert_eq!(&response[2..4], &[5, 7]);
         }
@@ -1092,9 +1110,23 @@ mod tests {
         let final_b = [0, 0, 0x82, 1, 127, 0, 0, 1, 0, 53, b'd'];
 
         assert!(reassembler.push_from(peer, &first_a).unwrap().is_none());
-        assert_eq!(reassembler.push_from(peer, &final_a).unwrap().unwrap().payload, b"ab");
+        assert_eq!(
+            reassembler
+                .push_from(peer, &final_a)
+                .unwrap()
+                .unwrap()
+                .payload,
+            b"ab"
+        );
         assert!(reassembler.push_from(peer, &first_b).unwrap().is_none());
-        assert_eq!(reassembler.push_from(peer, &final_b).unwrap().unwrap().payload, b"cd");
+        assert_eq!(
+            reassembler
+                .push_from(peer, &final_b)
+                .unwrap()
+                .unwrap()
+                .payload,
+            b"cd"
+        );
     }
 
     #[test]
